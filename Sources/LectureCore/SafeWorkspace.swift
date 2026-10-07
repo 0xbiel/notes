@@ -1,0 +1,164 @@
+import Foundation
+
+public final class SafeWorkspace {
+    public let root: URL
+    public let courseRoot: URL
+    public let storageRoot: URL
+    public let originalRoot: URL
+    private let fm = FileManager.default
+
+    public init(root: URL, originalRoot: URL) throws {
+        self.root = root.standardizedFileURL
+        self.originalRoot = originalRoot.standardizedFileURL.resolvingSymlinksInPath()
+        courseRoot = self.root.appendingPathComponent("copied-course", isDirectory: true)
+        storageRoot = self.root.appendingPathComponent("session-storage", isDirectory: true)
+        try rejectLinks(self.root)
+        guard !inside(self.root.resolvingSymlinksInPath(), self.originalRoot),
+              self.root.resolvingSymlinksInPath() != self.originalRoot else {
+            throw ReplayError.unsafePath(root.path)
+        }
+        try rejectLinks(courseRoot)
+    }
+
+    private func inside(_ child: URL, _ parent: URL) -> Bool {
+        child.path.hasPrefix(parent.path + "/")
+    }
+
+    private func rejectLinks(_ path: URL) throws {
+        var current = URL(fileURLWithPath: "/", isDirectory: true)
+        // /tmp and /var are system symlinks on macOS: they are resolved before
+        // being used as test roots. App/workspace components themselves cannot be links.
+        for component in path.pathComponents.dropFirst() {
+            current.appendPathComponent(component)
+            if let attributes = try? fm.attributesOfItem(atPath: current.path),
+               attributes[.type] as? FileAttributeType == .typeSymbolicLink {
+                throw ReplayError.unsafePath(current.path)
+            }
+        }
+    }
+
+    public func validated(_ path: URL, under allowedRoot: URL) throws -> URL {
+        let lexical = path.standardizedFileURL
+        guard lexical != allowedRoot, inside(lexical, allowedRoot) else {
+            throw ReplayError.unsafePath(path.path)
+        }
+        try rejectLinks(lexical)
+        let resolved = lexical.resolvingSymlinksInPath()
+        guard inside(resolved, allowedRoot.resolvingSymlinksInPath()),
+              !inside(resolved, originalRoot), resolved != originalRoot else {
+            throw ReplayError.unsafePath(path.path)
+        }
+        if let attributes = try? fm.attributesOfItem(atPath: lexical.path) {
+            guard attributes[.type] as? FileAttributeType == .typeRegular,
+                  ((attributes[.referenceCount] as? NSNumber)?.intValue ?? 1) == 1 else {
+                throw ReplayError.unsafePath(path.path)
+            }
+        }
+        return lexical
+    }
+
+    public func noteURL(_ filename: String) throws -> URL {
+        let components = filename.components(separatedBy: "/")
+        guard !filename.hasPrefix("/"), filename.hasSuffix(".md"),
+              components.allSatisfy({ !$0.isEmpty && !$0.hasPrefix(".") && $0 != ".." }) else {
+            throw ReplayError.unsafePath(filename)
+        }
+        return try validated(courseRoot.appendingPathComponent(filename), under: courseRoot)
+    }
+
+    public func noteNames() throws -> [String] {
+        try rejectLinks(courseRoot)
+        guard let iterator = fm.enumerator(at: courseRoot, includingPropertiesForKeys: [.isSymbolicLinkKey], options: [.skipsHiddenFiles]) else { return [] }
+        var names: [String] = []
+        for case let url as URL in iterator {
+            try rejectLinks(url)
+            if url.pathExtension == "md" {
+                let relative = String(url.path.dropFirst(courseRoot.path.count + 1))
+                _ = try noteURL(relative)
+                names.append(relative)
+            }
+        }
+        return names.sorted()
+    }
+
+    public func createFolder(_ relative: String) throws {
+        let components = relative.components(separatedBy: "/")
+        guard !relative.hasPrefix("/"), components.allSatisfy({ !$0.isEmpty && !$0.hasPrefix(".") }) else {
+            throw ReplayError.unsafePath(relative)
+        }
+        let url = courseRoot.appendingPathComponent(relative)
+        try rejectLinks(url)
+        guard inside(url.standardizedFileURL, courseRoot) else { throw ReplayError.unsafePath(relative) }
+        try fm.createDirectory(at: url, withIntermediateDirectories: true)
+        try rejectLinks(url)
+    }
+
+    public func createNote(_ relative: String, text: String) throws {
+        let url = try noteURL(relative)
+        guard !fm.fileExists(atPath: url.path) else { throw ReplayError.invalidResponse("Ya existe una nota con ese nombre.") }
+        if relative.contains("/") {
+            let folder = relative.components(separatedBy: "/").dropLast().joined(separator: "/")
+            try createFolder(folder)
+        }
+        _ = try noteURL(relative)
+        // Exclusive creation refuses an existing file. Foundation does not allow
+        // combining withoutOverwriting and atomic; replacements use writeNote.
+        try Data(text.utf8).write(to: url, options: .withoutOverwriting)
+    }
+
+    public func folderNames() throws -> [String] {
+        try rejectLinks(courseRoot)
+        guard let iterator = fm.enumerator(at: courseRoot, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else { return [] }
+        var result: [String] = []
+        for case let url as URL in iterator {
+            try rejectLinks(url)
+            if try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true {
+                result.append(String(url.path.dropFirst(courseRoot.path.count + 1)))
+            }
+        }
+        return result.sorted()
+    }
+
+    public func readNote(_ filename: String) throws -> String {
+        try String(contentsOf: noteURL(filename), encoding: .utf8)
+    }
+
+    public func writeNote(_ filename: String, expected: String, replacement: String) throws {
+        let url = try noteURL(filename)
+        guard try String(contentsOf: url, encoding: .utf8) == expected else { throw ReplayError.conflict }
+        // Check again immediately before an atomic replacement; no user-supplied
+        // path, symlink or hard link is accepted.
+        _ = try noteURL(filename)
+        try Data(replacement.utf8).write(to: url, options: .atomic)
+    }
+
+    public func writeStorage(_ relative: String, data: Data) throws {
+        let url = storageRoot.appendingPathComponent(relative)
+        _ = try validated(url, under: storageRoot)
+        try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        _ = try validated(url, under: storageRoot)
+        try data.write(to: url, options: .atomic)
+    }
+
+    public func readStorage(_ relative: String) throws -> Data {
+        try Data(contentsOf: validated(storageRoot.appendingPathComponent(relative), under: storageRoot))
+    }
+
+    public func loadSessions() throws -> [SessionDocument] {
+        let directory = storageRoot.appendingPathComponent("sessions")
+        guard fm.fileExists(atPath: directory.path) else { return [] }
+        try rejectLinks(directory)
+        return try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "json" }.map {
+                let url = try validated($0, under: storageRoot)
+                return try JSONDecoder().decode(SessionDocument.self, from: Data(contentsOf: url))
+            }.sorted { $0.metadata.startedAt > $1.metadata.startedAt }
+    }
+
+    public func save(_ session: SessionDocument) throws {
+        guard UUID(uuidString: session.id) != nil else { throw ReplayError.unsafePath(session.id) }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try writeStorage("sessions/\(session.id).json", data: encoder.encode(session))
+    }
+}
