@@ -163,11 +163,12 @@ struct ProviderPreferences: View {
     @StateObject private var preferences: ProviderPreferencesModel
     @State private var checkTask: Task<Void, Never>?
     @State private var showRuntime = false
-    @State private var contentWidth: CGFloat = 680
+    let contentWidth: CGFloat
     @AppStorage("notes.language") private var language = "es"
 
-    init(ai: AIController) {
+    init(ai: AIController, contentWidth: CGFloat = 680) {
         self.ai = ai
+        self.contentWidth = contentWidth
         _preferences = StateObject(wrappedValue: ProviderPreferencesModel(ai: ai))
     }
 
@@ -203,7 +204,6 @@ struct ProviderPreferences: View {
                 }
             }
             .frame(maxWidth: .infinity)
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
             .background(.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 12))
             .clipShape(RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(.separator.opacity(0.4)))

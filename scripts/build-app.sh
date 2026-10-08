@@ -8,7 +8,7 @@ swift build --build-system native --disable-sandbox --scratch-path .build-native
 notes_workspace="${1:-${NOTES_WORKSPACE:-$prototype_root}}"
 python3 - "$notes_workspace" <<'PY'
 from pathlib import Path
-import plistlib,shutil,tempfile,subprocess,sys
+import os,plistlib,shutil,tempfile,subprocess,sys
 root=Path.cwd(); stage=Path(tempfile.mkdtemp(prefix='derecho-build-stage-'))
 try:
     workspace=Path(sys.argv[1]).absolute()
@@ -25,9 +25,19 @@ try:
     destination=root/'build/Notes.app'
     if destination.is_symlink():raise RuntimeError('Generated app path must not be a symlink')
     destination.parent.mkdir(exist_ok=True)
-    # Copy signed generated files only; preserve the active process and all notes.
-    shutil.copytree(app,destination,dirs_exist_ok=True,copy_function=shutil.copyfile)
-    (destination/'Contents/MacOS/Notes').chmod(0o755)
+    # Replace file inodes instead of overwriting a mapped executable. Overwriting
+    # can leave macOS with stale signed pages and cause CODESIGNING Invalid Page.
+    def replace_file(source, target):
+        fd, temporary = tempfile.mkstemp(prefix='.notes-build-', dir=Path(target).parent)
+        os.close(fd)
+        try:
+            shutil.copyfile(source, temporary)
+            shutil.copymode(source, temporary)
+            os.replace(temporary, target)
+        finally:
+            if os.path.exists(temporary): os.unlink(temporary)
+        return target
+    shutil.copytree(app,destination,dirs_exist_ok=True,copy_function=replace_file)
     subprocess.run(['codesign','--verify','--deep',str(destination)],check=True)
     print(destination)
 finally:shutil.rmtree(stage)

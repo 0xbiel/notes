@@ -85,13 +85,14 @@ struct SidebarSearchGlass: ViewModifier {
 }
 
 struct ControlHoverBackground: ViewModifier {
+    var cornerRadius: CGFloat = 8
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.isEnabled) private var isEnabled
     @State private var hovered = false
 
     func body(content: Content) -> some View {
         content
-            .background(Color.primary.opacity(hovered && isEnabled ? 0.08 : 0), in: RoundedRectangle(cornerRadius: 8))
+            .background(Color.primary.opacity(hovered && isEnabled ? 0.08 : 0), in: RoundedRectangle(cornerRadius: cornerRadius))
             .onHover { hovered = $0 }
             .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovered)
     }
@@ -119,14 +120,17 @@ struct NotebookPreferences: View {
                 Spacer()
             }.padding(.horizontal, 18).frame(height: 58).background(WindowDragRegion())
             Divider().opacity(0.4)
-            ScrollView {
+            GeometryReader { geometry in
+                let inset: CGFloat = geometry.size.width < 700 ? 24 : 40
+                ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
                     Text(section == .general ? "Preferencias" : section.title).font(.largeTitle.weight(.semibold))
                     if section == .theme {
                         NotebookThemePreferences().frame(maxWidth: 500)
                     } else if section == .providers {
                         if let ai = model.ai {
-                            ProviderPreferences(ai: ai).id(ai.outbox.workspace.root.path)
+                            ProviderPreferences(ai: ai, contentWidth: max(0, min(680, geometry.size.width - inset * 2)))
+                                .id(ai.outbox.workspace.root.path)
                         } else {
                             Text("Abre un espacio local para configurar los proveedores.").foregroundStyle(.secondary)
                         }
@@ -142,8 +146,9 @@ struct NotebookPreferences: View {
                             ], selection: $language)
                         }
                     }
-                }.frame(maxWidth: 680, alignment: .leading)
-                    .padding(40).frame(maxWidth: .infinity, alignment: .topLeading)
+                }.frame(width: max(0, min(680, geometry.size.width - inset * 2)), alignment: .leading)
+                    .padding(inset).frame(maxWidth: .infinity, alignment: .topLeading)
+                }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(nsColor: .textBackgroundColor))
@@ -152,6 +157,7 @@ struct NotebookPreferences: View {
 
 struct NotebookPreferencesSidebar: View {
     @Binding var section: NotebookPreferencesSection
+    var compact = false
     let onBack: () -> Void
 
     var body: some View {
@@ -168,7 +174,7 @@ struct NotebookPreferencesSidebar: View {
                     .font(.body.weight(.medium)).frame(maxWidth: .infinity, alignment: .leading)
                     .padding(12)
                     .contentShape(Rectangle())
-            }.buttonStyle(.plain).modifier(ControlHoverBackground()).keyboardShortcut(.cancelAction).padding(.horizontal, 12)
+            }.buttonStyle(.plain).modifier(ControlHoverBackground(cornerRadius: compact ? CompactLayout.rowRadius : 8)).keyboardShortcut(.cancelAction).padding(.horizontal, 12)
         }.padding(.top, 10).padding(.bottom, 12)
     }
 
@@ -177,9 +183,9 @@ struct NotebookPreferencesSidebar: View {
             Label(title, systemImage: symbol)
                 .font(.body.weight(selected ? .semibold : .regular))
                 .frame(maxWidth: .infinity, alignment: .leading).padding(12)
-                .background(selected ? Color.primary.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 9))
+                .background(selected ? Color.primary.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: compact ? CompactLayout.rowRadius : 9))
                 .contentShape(Rectangle())
-        }.buttonStyle(.plain).modifier(ControlHoverBackground()).accessibilityAddTraits(selected ? .isSelected : [])
+        }.buttonStyle(.plain).modifier(ControlHoverBackground(cornerRadius: compact ? CompactLayout.rowRadius : 8)).accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 
