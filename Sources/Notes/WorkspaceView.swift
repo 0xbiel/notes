@@ -97,6 +97,7 @@ struct WorkbenchView: View {
                         .contentShape(Rectangle())
                 }
                     .buttonStyle(.plain)
+                    .modifier(ControlHoverBackground())
                     .help(chrome.compact ? "Salir del modo compacto · ⌥⌘C" : "Modo compacto · ⌥⌘C")
                     .accessibilityLabel(chrome.compact ? "Salir del modo compacto" : "Alternar modo compacto")
             }.padding(.horizontal, 18).frame(height: chrome.compact ? 50 : 58)
@@ -162,7 +163,7 @@ struct NoteToolbar: View {
         HStack(spacing: 7) {
                 modeSelector
                 Button { model.saveDraft() } label: { Label(model.isDirty ? "Guardar cambios" : "Guardado", systemImage: model.isDirty ? "square.and.arrow.down" : "checkmark").frame(width: 26, height: 26) }
-                    .disabled(!model.isDirty).help("Guardar la copia · ⌘S")
+                    .modifier(ControlHoverBackground()).disabled(!model.isDirty).help("Guardar la copia · ⌘S")
                 Menu {
                     Section("Formato") {
                         Button("Negrita") { NSApp.sendAction(#selector(MarkdownTextView.toggleMarkdownBold(_:)), to: nil, from: nil) }.keyboardShortcut("b")
@@ -178,9 +179,9 @@ struct NoteToolbar: View {
                     Button("Nueva nota") { model.creationInitialName = ""; model.creationKind = "nota" }
                     Button("Nueva carpeta") { model.creationInitialName = ""; model.creationKind = "carpeta" }
                     Button("Nuevo cuaderno") { model.creationInitialName = ""; model.creationKind = "cuaderno" }
-                } label: { Label("Opciones de la nota", systemImage: "ellipsis").frame(width: 26, height: 26) }.help("Opciones de la nota")
+                } label: { Label("Opciones de la nota", systemImage: "ellipsis").frame(width: 26, height: 26) }.modifier(ControlHoverBackground()).help("Opciones de la nota")
                 Button { model.showInspector.toggle() } label: { Label("Inspector", systemImage: "sidebar.right").frame(width: 26, height: 26) }
-                    .help("Mostrar u ocultar inspector · ⌥⌘I")
+                    .modifier(ControlHoverBackground()).help("Mostrar u ocultar inspector · ⌥⌘I")
         }.labelStyle(.iconOnly).buttonStyle(.plain).padding(.horizontal, 12).padding(.vertical, 7)
     }
 }
@@ -203,14 +204,14 @@ struct CourseSidebar: View {
                     TextField("Buscar", text: $query).textFieldStyle(.plain).accessibilityLabel("Filtrar archivos")
                     if !query.isEmpty {
                         Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
-                            .buttonStyle(.plain).help("Limpiar búsqueda")
+                            .buttonStyle(.plain).modifier(ControlHoverBackground()).help("Limpiar búsqueda")
                     }
                 }.padding(.horizontal, 11).frame(height: 34)
                     .modifier(SidebarSearchGlass())
                 filterMenu
                 Button { model.creationInitialName = ""; model.creationKind = "nota" } label: {
                     Image(systemName: "square.and.pencil").frame(width: 28, height: 34)
-                }.buttonStyle(.plain).help("Nueva nota · ⌘N").accessibilityLabel("Nueva nota")
+                }.buttonStyle(.plain).modifier(ControlHoverBackground()).help("Nueva nota · ⌘N").accessibilityLabel("Nueva nota")
             }.padding(.horizontal, 12)
             if section != .notes, let media = model.media {
                 RecordingSidebar(model: model, media: media, query: query, filter: section)
@@ -226,7 +227,7 @@ struct CourseSidebar: View {
                         }
                     } label: {
                         HStack(spacing: 9) {
-                            Image(systemName: "book.closed.fill").foregroundStyle(Color.accentColor)
+                            Image(systemName: "book.closed.fill").foregroundStyle(.secondary)
                             Text(notebook.name).font(.callout.weight(.semibold)).lineLimit(2)
                             Spacer(minLength: 2)
                             Text("\(model.noteNames(in: notebook).count)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
@@ -244,12 +245,14 @@ struct CourseSidebar: View {
                     Button("Nueva nota") { model.creationInitialName = ""; model.creationKind = "nota" }
                     Button("Nueva carpeta") { model.creationInitialName = ""; model.creationKind = "carpeta" }
                     Button("Nuevo cuaderno") { model.creationInitialName = ""; model.creationKind = "cuaderno" }
-                } label: { Image(systemName: "plus") }.menuStyle(.borderlessButton).fixedSize().help("Añadir nota, carpeta o cuaderno").accessibilityLabel("Añadir")
+                } label: { Image(systemName: "plus").frame(width: 28, height: 34).contentShape(Rectangle()) }
+                    .menuStyle(.borderlessButton).fixedSize()
+                    .help("Añadir nota, carpeta o cuaderno").accessibilityLabel("Añadir")
                 Button { model.showPreferences = true } label: {
                     Image(systemName: "gearshape").frame(width: 28, height: 28)
-                }.buttonStyle(.plain).help("Preferencias · ⌘,").accessibilityLabel("Preferencias")
+                }.buttonStyle(.plain).modifier(ControlHoverBackground()).help("Preferencias · ⌘,").accessibilityLabel("Preferencias")
                 Spacer()
-            }.padding(.horizontal, 16).padding(.vertical, 12)
+            }.padding(.horizontal, 20).padding(.vertical, 12)
         }.onChange(of: model.selectedNotebookID) { _, id in expanded.insert(id) }
 
     }
@@ -267,6 +270,7 @@ struct CourseSidebar: View {
             .labelStyle(.iconOnly)
             .font(.system(size: 14, weight: .medium))
             .frame(width: 34, height: 34)
+            .modifier(ControlHoverBackground())
             .accessibilityLabel("Filtrar por tipo: \(section.title)")
             .help("Texto, audio o vídeos importados")
     }
@@ -299,7 +303,7 @@ struct CourseTreeRow: View {
             } else {
                 HStack(spacing: 9) {
                     Image(systemName: model.selectedNote == node.path ? "doc.text.fill" : "doc.text")
-                        .foregroundStyle(model.selectedNote == node.path ? Color.accentColor : .secondary)
+                        .foregroundStyle(model.selectedNote == node.path ? .primary : .secondary)
                     Text(node.name).font(.callout).lineLimit(2)
                     Spacer(minLength: 2)
                     if model.hasDraft(for: node.path) { Circle().fill(Color.orange).frame(width: 5, height: 5).accessibilityLabel("Sin guardar") }
@@ -397,7 +401,8 @@ struct QuickOpenSheet: View {
                     .onSubmit { open(selection ?? matches.first) }
                     .onKeyPress(.downArrow) { moveSelection(1); return .handled }
                     .onKeyPress(.upArrow) { moveSelection(-1); return .handled }
-                Button { model.showQuickOpen = false } label: { Image(systemName: "xmark") }.buttonStyle(.plain).help("Cerrar · Esc")
+                Button { model.showQuickOpen = false } label: { Image(systemName: "xmark").frame(width: 28, height: 28) }
+                    .buttonStyle(.plain).modifier(ControlHoverBackground()).help("Cerrar · Esc")
             }.padding(20)
             Divider()
             if matches.isEmpty {
@@ -573,7 +578,7 @@ private struct RecordingSidebar: View {
                             }.buttonStyle(.plain).help(status.detail)
                                 .accessibilityLabel("\(job.sourceName), \(status.title), \(timestamp(job.duration))")
                         }
-                    }.padding(.horizontal, 12).padding(.bottom, 12)
+                    }.padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 12)
                 }
             }
         }

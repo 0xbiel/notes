@@ -84,6 +84,19 @@ struct SidebarSearchGlass: ViewModifier {
     }
 }
 
+struct ControlHoverBackground: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var hovered = false
+
+    func body(content: Content) -> some View {
+        content
+            .background(Color.primary.opacity(hovered && isEnabled ? 0.08 : 0), in: RoundedRectangle(cornerRadius: 8))
+            .onHover { hovered = $0 }
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovered)
+    }
+}
+
 enum NotebookPreferencesSection: String, CaseIterable {
     case general, theme, providers
     var title: LocalizedStringKey {
@@ -153,8 +166,9 @@ struct NotebookPreferencesSidebar: View {
             Button(action: onBack) {
                 Label("Volver a notas", systemImage: "arrow.left")
                     .font(.body.weight(.medium)).frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 12)
-            }.buttonStyle(.plain).keyboardShortcut(.cancelAction).padding(.horizontal, 16)
+                    .padding(12)
+                    .contentShape(Rectangle())
+            }.buttonStyle(.plain).modifier(ControlHoverBackground()).keyboardShortcut(.cancelAction).padding(.horizontal, 12)
         }.padding(.top, 10).padding(.bottom, 12)
     }
 
@@ -165,7 +179,7 @@ struct NotebookPreferencesSidebar: View {
                 .frame(maxWidth: .infinity, alignment: .leading).padding(12)
                 .background(selected ? Color.primary.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 9))
                 .contentShape(Rectangle())
-        }.buttonStyle(.plain).accessibilityAddTraits(selected ? .isSelected : [])
+        }.buttonStyle(.plain).modifier(ControlHoverBackground()).accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 

@@ -8,7 +8,8 @@ struct SessionInspector: View {
             HStack {
                 Text(title).font(.headline)
                 Spacer()
-                Button { model.showInspector = false } label: { Image(systemName: "xmark") }.buttonStyle(.plain).help("Cerrar inspector").accessibilityLabel("Cerrar inspector")
+                Button { model.showInspector = false } label: { Image(systemName: "xmark").frame(width: 28, height: 28) }
+                    .buttonStyle(.plain).modifier(ControlHoverBackground()).help("Cerrar inspector").accessibilityLabel("Cerrar inspector")
             }.padding(18)
             Picker("Inspector", selection: $model.selectedTab) {
                 Label("Grabaciones", systemImage: "waveform").tag("library")
