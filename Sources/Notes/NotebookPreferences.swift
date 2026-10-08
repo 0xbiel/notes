@@ -26,21 +26,56 @@ enum NotebookPalette: String, CaseIterable, Identifiable {
 }
 
 struct NotebookThemeBackground: View {
+    var blendsBehindWindow = false
     @AppStorage("notes.palette") private var palette = NotebookPalette.graphite.rawValue
     @AppStorage("notes.themeIntensity") private var intensity = 0.18
+    @AppStorage("notes.sidebarTransparency") private var transparency = 1.0
     @AppStorage("notes.customThemeStops") private var storedStops = ""
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorScheme) private var colorScheme
+    private var neutralColor: Color { colorScheme == .dark ? .black : .white }
     private var color: Color { (NotebookPalette(rawValue: palette) ?? .graphite).color }
     var body: some View {
         ZStack {
-            if reduceTransparency { Color(nsColor: .windowBackgroundColor) }
-            else { Rectangle().fill(.regularMaterial) }
-            LinearGradient(colors: palette == "custom"
-                           ? NotebookThemeStop.decode(storedStops).map { $0.color.opacity(intensity) }
-                           : [color.opacity(intensity), color.opacity(intensity * 0.25), .clear],
-                           startPoint: .topLeading, endPoint: .bottomTrailing)
+            if palette == "custom" && NotebookThemeStop.decode(storedStops).isEmpty {
+                if reduceTransparency {
+                    neutralColor
+                } else {
+                    Group {
+                        if blendsBehindWindow { SidebarVisualEffect() }
+                        else { Rectangle().fill(.regularMaterial) }
+                    }
+                    neutralColor.opacity(1 - min(max(transparency, 0), 1))
+                }
+            } else {
+                if reduceTransparency { Color(nsColor: .windowBackgroundColor) }
+                else if blendsBehindWindow { SidebarVisualEffect() }
+                else { Rectangle().fill(.regularMaterial) }
+                // Keep labels fully opaque; vary only the backing surface.
+                if !reduceTransparency {
+                    Color(nsColor: .windowBackgroundColor)
+                        .opacity(1 - min(max(transparency, 0), 1))
+                }
+                LinearGradient(colors: palette == "custom"
+                               ? NotebookThemeStop.decode(storedStops).map { $0.color.opacity(intensity) }
+                               : [color.opacity(intensity), color.opacity(intensity * 0.25), .clear],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+            }
         }.allowsHitTesting(false)
     }
+}
+
+/// Uses the desktop behind the window as the sidebar's blurred backdrop.
+private struct SidebarVisualEffect: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .sidebar
+        view.blendingMode = .behindWindow
+        view.state = .followsWindowActiveState
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
 }
 
 struct SidebarSearchGlass: ViewModifier {
@@ -137,6 +172,8 @@ struct NotebookPreferencesSidebar: View {
 struct NotebookThemePreferences: View {
     @AppStorage("notes.palette") private var palette = NotebookPalette.graphite.rawValue
     @AppStorage("notes.themeIntensity") private var intensity = 0.18
+    @AppStorage("notes.sidebarTransparency") private var transparency = 1.0
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -146,6 +183,27 @@ struct NotebookThemePreferences: View {
                 HStack {
                     Text("Intensidad").font(.callout)
                     Slider(value: $intensity, in: 0...0.5).accessibilityLabel("Intensidad del color")
+                }
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Transparencia de la barra lateral").font(.headline)
+                    Spacer()
+                    Text(transparency, format: .percent.precision(.fractionLength(0)))
+                        .monospacedDigit().foregroundStyle(.secondary)
+                }
+                Slider(value: $transparency, in: 0...1, step: 0.01)
+                    .accessibilityLabel("Transparencia de la barra lateral")
+                    .accessibilityValue(Text(transparency, format: .percent.precision(.fractionLength(0))))
+                    .disabled(reduceTransparency)
+                HStack {
+                    Text("Opaca")
+                    Spacer()
+                    Text("Translúcida")
+                }.font(.caption).foregroundStyle(.secondary)
+                if reduceTransparency {
+                    Text("Desactiva Reducir transparencia en los ajustes de accesibilidad de macOS para usar este control.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
             HStack(spacing: 8) {

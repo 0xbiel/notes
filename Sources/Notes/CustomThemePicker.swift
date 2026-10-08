@@ -15,7 +15,7 @@ struct NotebookThemeStop: Codable, Equatable {
     static func decode(_ value: String) -> [Self] {
         guard let data = value.data(using: .utf8),
               let stops = try? JSONDecoder().decode([Self].self, from: data),
-              (1...3).contains(stops.count),
+              (0...3).contains(stops.count),
               stops.allSatisfy({ [$0.hue, $0.saturation, $0.brightness].allSatisfy { $0.isFinite && (0...1).contains($0) } })
         else { return [.initial] }
         return stops
@@ -41,14 +41,17 @@ struct CustomThemePicker: View {
     @AppStorage("notes.customThemeStops") private var storedStops = ""
     @AppStorage("notes.language") private var language = "es"
     @AppStorage("notes.appearance") private var appearance = "system"
+    @Environment(\.colorScheme) private var colorScheme
+    private var neutralColor: Color { colorScheme == .dark ? .black : .white }
     @State private var selected = 0
     @State private var dragging = false
     private var stops: [NotebookThemeStop] { NotebookThemeStop.decode(storedStops) }
-    private var index: Int { min(selected, stops.count - 1) }
+    private var index: Int { max(0, min(selected, stops.count - 1)) }
     private func label(_ es: String, _ en: String) -> String { language == "en" ? en : es }
 
     private func update(_ edit: (inout NotebookThemeStop) -> Void) {
         var values = stops
+        guard !values.isEmpty else { return }
         edit(&values[index])
         storedStops = NotebookThemeStop.encode(values)
         palette = "custom"
@@ -57,7 +60,7 @@ struct CustomThemePicker: View {
     private func addColor() {
         var values = stops
         guard values.count < 3 else { return }
-        values.append(.init(hue: (values[index].hue + 0.15).truncatingRemainder(dividingBy: 1), saturation: 0.55, brightness: 0.85))
+        values.append(.init(hue: ((values.last?.hue ?? 0.45) + 0.15).truncatingRemainder(dividingBy: 1), saturation: 0.55, brightness: 0.85))
         storedStops = NotebookThemeStop.encode(values)
         selected = values.count - 1
         palette = "custom"
@@ -65,7 +68,7 @@ struct CustomThemePicker: View {
 
     private func removeColor() {
         var values = stops
-        guard values.count > 1 else { return }
+        guard !values.isEmpty else { return }
         values.remove(at: index)
         selected = max(0, index - 1)
         storedStops = NotebookThemeStop.encode(values)
@@ -74,22 +77,20 @@ struct CustomThemePicker: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            colorField
-                .overlay(alignment: .top) {
-                    HStack(spacing: 5) {
-                        schemeButton("system", "circle.lefthalf.filled", label("Sistema", "System"))
-                        schemeButton("light", "sun.max", label("Claro", "Light"))
-                        schemeButton("dark", "moon", label("Oscuro", "Dark"))
-                    }.padding(8)
-                }
-                .overlay(alignment: .bottom) {
-                    HStack(spacing: 5) {
-                        Button(action: addColor) { Image(systemName: "plus").frame(width: 30, height: 30) }
-                            .disabled(stops.count == 3).accessibilityLabel(label("Añadir color", "Add color"))
-                        Button(action: removeColor) { Image(systemName: "minus").frame(width: 30, height: 30) }
-                            .disabled(stops.count == 1).accessibilityLabel(label("Quitar color", "Remove color"))
-                    }.buttonStyle(.borderless).padding(8)
-                }
+            VStack(spacing: 8) {
+                HStack(spacing: 5) {
+                    schemeButton("system", "circle.lefthalf.filled", label("Sistema", "System"))
+                    schemeButton("light", "sun.max", label("Claro", "Light"))
+                    schemeButton("dark", "moon", label("Oscuro", "Dark"))
+                }.padding(8)
+                colorField
+                HStack(spacing: 5) {
+                    Button(action: addColor) { Image(systemName: "plus").frame(width: 30, height: 30) }
+                        .disabled(stops.count == 3).accessibilityLabel(label("Añadir color", "Add color"))
+                    Button(action: removeColor) { Image(systemName: "minus").frame(width: 30, height: 30) }
+                        .disabled(stops.isEmpty).accessibilityLabel(label("Quitar color", "Remove color"))
+                }.buttonStyle(.borderless).padding(8)
+            }
             HStack(spacing: 12) {
                 ForEach(NotebookPalette.allCases) { option in
                     Button { palette = option.rawValue } label: {
@@ -101,7 +102,7 @@ struct CustomThemePicker: View {
                 }
                 Spacer(minLength: 0)
                 Button { palette = "custom" } label: {
-                    Circle().fill(LinearGradient(colors: stops.map(\.color), startPoint: .topLeading, endPoint: .bottomTrailing))
+                    Circle().fill(LinearGradient(colors: stops.isEmpty ? [neutralColor, neutralColor] : stops.map(\.color), startPoint: .topLeading, endPoint: .bottomTrailing))
                         .frame(width: 26, height: 26)
                         .overlay(Circle().strokeBorder(palette == "custom" ? Color.primary : .clear, lineWidth: 2))
                 }.buttonStyle(.plain).help(label("Personalizado", "Custom"))
@@ -110,13 +111,13 @@ struct CustomThemePicker: View {
             }.padding(.horizontal, 8)
             HStack {
                 Text(label("Luminosidad", "Brightness")).font(.callout)
-                Slider(value: Binding(get: { stops[index].brightness }, set: { value in update { $0.brightness = value } }), in: 0...1)
+                Slider(value: Binding(get: { stops.isEmpty ? 0 : stops[index].brightness }, set: { value in update { $0.brightness = value } }), in: 0...1)
                     .accessibilityLabel(label("Luminosidad", "Brightness"))
                 ColorPicker(label("Color exacto", "Exact color"), selection: Binding(
-                    get: { stops[index].color }, set: { color in update { $0 = .init(color: color) } }
+                    get: { stops.isEmpty ? neutralColor : stops[index].color }, set: { color in update { $0 = .init(color: color) } }
                 ), supportsOpacity: false).labelsHidden()
                     .help(label("Color exacto", "Exact color"))
-            }
+            }.disabled(stops.isEmpty)
         }
     }
 
@@ -129,10 +130,9 @@ struct CustomThemePicker: View {
     }
 
     private func position(_ stop: NotebookThemeStop, in size: CGSize) -> CGPoint {
-        let radius = min(size.width, size.height) / 2 - 48
-        let angle = stop.hue * 2 * Double.pi
-        return CGPoint(x: size.width / 2 + cos(angle) * stop.saturation * radius,
-                       y: size.height / 2 + sin(angle) * stop.saturation * radius)
+        let inset: CGFloat = 20
+        return CGPoint(x: inset + stop.hue * max(1, size.width - 2 * inset),
+                       y: inset + (1 - stop.saturation) * max(1, size.height - 2 * inset))
     }
 
     private var colorField: some View {
@@ -158,6 +158,11 @@ struct CustomThemePicker: View {
             .clipShape(RoundedRectangle(cornerRadius: 12))
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                if stops.isEmpty {
+                    storedStops = NotebookThemeStop.encode([.initial])
+                    selected = 0
+                    palette = "custom"
+                }
                 if !dragging {
                     if let closest = stops.indices.min(by: {
                         let a = position(stops[$0], in: geometry.size)
@@ -166,17 +171,15 @@ struct CustomThemePicker: View {
                     }) { selected = closest }
                     dragging = true
                 }
-                let dx = value.location.x - geometry.size.width / 2
-                let dy = value.location.y - geometry.size.height / 2
-                let radius = min(geometry.size.width, geometry.size.height) / 2 - 48
+                let inset: CGFloat = 20
                 update {
-                    $0.hue = (atan2(dy, dx) / (2 * .pi) + 1).truncatingRemainder(dividingBy: 1)
-                    $0.saturation = min(1, max(0, hypot(dx, dy) / radius))
+                    $0.hue = min(1, max(0, (value.location.x - inset) / max(1, geometry.size.width - 2 * inset)))
+                    $0.saturation = 1 - min(1, max(0, (value.location.y - inset) / max(1, geometry.size.height - 2 * inset)))
                 }
             }.onEnded { _ in dragging = false })
             .accessibilityElement(children: .ignore).accessibilityLabel(label("Campo de color", "Color field"))
             .accessibilityHint(label("Usa Color exacto para seleccionar con el teclado.", "Use Exact color to select with the keyboard."))
-            .accessibilityAction(named: Text(label("Siguiente color", "Next color"))) { selected = (index + 1) % stops.count }
+            .accessibilityAction(named: Text(label("Siguiente color", "Next color"))) { if !stops.isEmpty { selected = (index + 1) % stops.count } }
             .accessibilityAdjustableAction { direction in
                 update { $0.hue = ($0.hue + (direction == .increment ? 0.025 : 0.975)).truncatingRemainder(dividingBy: 1) }
             }

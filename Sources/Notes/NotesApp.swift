@@ -4,9 +4,19 @@ import LectureCore
 @main
 struct NotesApp: App {
     @StateObject private var model = Workbench()
+    @AppStorage("notes.appearance") private var appearance = "system"
     var body: some Scene {
         WindowGroup("Notes Test") {
             WorkbenchView(model: model).frame(minWidth: 940, minHeight: 620)
+                .onChange(of: appearance, initial: true) { _, value in
+                    // Clear the native override immediately when returning to System.
+                    // A nil SwiftUI color-scheme preference can retain the old window appearance.
+                    switch value {
+                    case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+                    case "light": NSApp.appearance = NSAppearance(named: .aqua)
+                    default: NSApp.appearance = nil
+                    }
+                }
                 .onDisappear { model.ai?.stop(); if model.media?.isRecording == true { model.media?.stopMicrophone() } }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in model.ai?.stop(); model.media?.shutdown() }
         }
