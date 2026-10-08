@@ -20,8 +20,9 @@ public struct AIProviderConfiguration: Codable, Equatable, Sendable {
     public var harnessPath: String
     public var accountSendingAllowed: Bool
     public var reasoningEffort: String? = nil
+    public var fastMode: Bool? = nil
 
-    public init(provider: NotesAIProvider, executablePath: String, model: String = "default", homePath: String = "", harnessPath: String = "", accountSendingAllowed: Bool = false) {
+    public init(provider: NotesAIProvider, executablePath: String, model: String = "default", homePath: String = "", harnessPath: String = "", accountSendingAllowed: Bool = true) {
         self.provider = provider; self.executablePath = executablePath; self.model = model
         self.homePath = homePath; self.harnessPath = harnessPath; self.accountSendingAllowed = accountSendingAllowed
     }
@@ -41,14 +42,26 @@ public struct AIProviderConfiguration: Codable, Equatable, Sendable {
 
     public func validateSending() throws {
         try validate()
-        guard provider == .openCode || accountSendingAllowed else {
-            throw MediaError.invalid("Autoriza explícitamente el envío por tu cuenta en Preferencias. Codex y Antigravity no garantizan coste cero ni retención cero.")
+        guard accountSendingAllowed else {
+            throw MediaError.invalid("Este proveedor está desactivado. Actívalo en Preferencias.")
+        }
+    }
+}
+
+public enum AIEditAutonomy: String, Codable, CaseIterable, Sendable {
+    case review, additions, edits
+    public func allows(_ action: AIAction) -> Bool {
+        switch self {
+        case .review: false
+        case .additions: action == .add || action == .priority
+        case .edits: [.add, .priority, .correct, .retract].contains(action)
         }
     }
 }
 
 public struct AIProviderSettings: Codable, Equatable, Sendable {
     public var selectedProvider: NotesAIProvider = .openCode
+    public var editAutonomy: AIEditAutonomy? = nil
     public var openCode: AIProviderConfiguration
     public var codexCLI: AIProviderConfiguration
     public var antigravity: AIProviderConfiguration

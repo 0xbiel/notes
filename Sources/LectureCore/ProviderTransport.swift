@@ -69,15 +69,16 @@ public struct NotesProviderTransport: Sendable {
         } onCancel: { command.cancel() }
     }
 
-    public static func codexArguments(_ configuration: AIProviderConfiguration, schema: URL) -> [String] {
+    public static func codexArguments(_ configuration: AIProviderConfiguration, schema: URL, instructions: String = OpenRouterHarness.systemPrompt) -> [String] {
         var arguments = ["exec", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check", "--sandbox", "read-only", "--json", "--color", "never", "--output-schema", schema.path,
                          "--config", "approval_policy=\"never\"", "--config", "web_search=\"disabled\"", "--config", "mcp_servers={}",
                          "--config", "project_doc_max_bytes=0", "--config", "skills.bundled.enabled=false", "--config", "skills.include_instructions=false",
-                         "--config", "developer_instructions=" + tomlString(OpenRouterHarness.systemPrompt)]
+                         "--config", "developer_instructions=" + tomlString(instructions)]
         for feature in ["shell_tool", "unified_exec", "multi_agent", "multi_agent_v2", "apps", "hooks", "browser_use", "computer_use", "code_mode", "code_mode_only", "code_mode_prewarm", "skill_search"] {
             arguments += ["--disable", feature]
         }
         if configuration.model != "default" { arguments += ["--model", configuration.model] }
+        if configuration.fastMode == true { arguments += ["--config", "service_tier=\"fast\""] }
         if let effort = configuration.reasoningEffort { arguments += ["--config", "model_reasoning_effort=" + tomlString(effort)] }
         return arguments + ["-"]
     }
@@ -93,6 +94,14 @@ public struct NotesProviderTransport: Sendable {
     }
 
     public static func decodeCodexEvents(_ data: Data, for batch: AIBatch) throws -> AIBatch {
+        let text = try decodeCodexText(data)
+        var result = batch
+        result.decisions = try OpenRouterHarness.decodeResponse(text, for: batch)
+        result.stage = .ready; result.error = nil; result.reportedCost = nil
+        return result
+    }
+
+    static func decodeCodexText(_ data: Data) throws -> String {
         guard data.count <= 2_000_000, let lines = String(data: data, encoding: .utf8) else { throw MediaError.invalid("Salida Codex inválida.") }
         var text = ""; var completed = false
         for line in lines.split(separator: "\n") {
@@ -106,9 +115,6 @@ public struct NotesProviderTransport: Sendable {
             if type == "turn.completed" { completed = true }
         }
         guard completed, !text.isEmpty else { throw MediaError.invalid("Codex no devolvió una respuesta completa.") }
-        var result = batch
-        result.decisions = try OpenRouterHarness.decodeResponse(text, for: batch)
-        result.stage = .ready; result.error = nil; result.reportedCost = nil
-        return result
+        return text
     }
 }

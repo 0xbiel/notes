@@ -2,6 +2,19 @@ import XCTest
 @testable import LectureCore
 
 final class GenerationIntegrationTests: XCTestCase {
+    func testLiveConnectionProbeWithSelectedModel() async throws {
+        guard ProcessInfo.processInfo.environment["NOTES_CONNECTION_PROBE"] == "1" else {
+            throw XCTSkip("Set NOTES_CONNECTION_PROBE=1 to send an invented Codex connection probe.")
+        }
+        var configuration = AIProviderSettings().codexCLI
+        configuration.model = "gpt-6-luna"; configuration.reasoningEffort = "low"; configuration.fastMode = true
+        let result = try await ProviderConnectionTest.run(configuration)
+        XCTAssertEqual(result.model, "gpt-6-luna")
+        XCTAssertEqual(result.provider, .codexCLI)
+        XCTAssertGreaterThan(result.elapsedSeconds, 0)
+        XCTAssertFalse(configuration.accountSendingAllowed)
+    }
+
     func testLiveCodexInventedGeneration() async throws { try await accountGeneration(.codexCLI) }
     func testLiveAntigravityInventedGeneration() async throws { try await accountGeneration(.antigravity) }
 

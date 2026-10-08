@@ -40,6 +40,14 @@ final class NotebookWorkflowTests: XCTestCase {
         XCTAssertFalse(reopened.checking)
         XCTAssertEqual(try AIProviderSettings.load(in: XCTUnwrap(model.workspace)).codexCLI.executablePath, "/missing/codex")
         XCTAssertTrue(ai.outbox.batches.isEmpty)
+        await preferences.testConnection()
+        XCTAssertNotNil(preferences.connectionError)
+        XCTAssertNil(preferences.connectionResult)
+        XCTAssertFalse(preferences.testingConnection)
+        XCTAssertTrue(preferences.connectionResultIsCurrent)
+        preferences.selectModel("different-model")
+        XCTAssertFalse(preferences.connectionResultIsCurrent)
+        XCTAssertTrue(ai.outbox.batches.isEmpty)
     }
 
     @MainActor func testModelSelectionFavoritesVisibilityAndCustomModelsSurviveReload() throws {
@@ -58,11 +66,19 @@ final class NotebookWorkflowTests: XCTestCase {
         preferences.selectModel("example-b")
         preferences.hide("example-a")
         preferences.draft.selected.reasoningEffort = "low"
+        preferences.draft.selected.fastMode = true
         preferences.save()
         XCTAssertNil(preferences.error)
         let saved = try AIProviderSettings.load(in: XCTUnwrap(model.workspace))
         XCTAssertEqual(saved.selected.model, "example-b")
         XCTAssertEqual(saved.selected.reasoningEffort, "low")
+        XCTAssertEqual(saved.selected.fastMode, true)
+        preferences.favorite("other-provider-model", provider: .antigravity)
+        XCTAssertTrue(preferences.draft.modelPreferences?["antigravity"]?.favorites.contains("other-provider-model") == true)
+        XCTAssertEqual(preferences.draft.selectedProvider, .codexCLI)
+        preferences.draft.editAutonomy = .additions
+        preferences.save()
+        XCTAssertEqual(try AIProviderSettings.load(in: XCTUnwrap(model.workspace)).editAutonomy, .additions)
         XCTAssertEqual(saved.modelPreferences?["codexCLI"]?.favorites, ["example-c"])
         XCTAssertEqual(saved.modelPreferences?["codexCLI"]?.hidden, ["example-a"])
         XCTAssertEqual(saved.modelPreferences?["codexCLI"]?.custom.count, 3)
@@ -83,6 +99,7 @@ final class NotebookWorkflowTests: XCTestCase {
         let media = try XCTUnwrap(model.media?.selected)
         var settings = ai.providerSettings
         settings.selectedProvider = .codexCLI
+        settings.codexCLI.accountSendingAllowed = false
         try ai.saveProviderSettings(settings)
         ai.send(media: media, ids: Set(media.transcript.map(\.id)))
         XCTAssertNotNil(ai.error)

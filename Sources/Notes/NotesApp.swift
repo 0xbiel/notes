@@ -93,6 +93,14 @@ final class Workbench: ObservableObject {
             editor = try NotebookEditor(workspace: workspace)
             if let editor {
                 ai = try AIController(workspace: workspace, editor: editor)
+                ai?.hasDraft = { [weak self] name in self?.hasDraft(for: name) ?? true }
+                ai?.onAutomaticEdit = { [weak self] change in
+                    guard let self else { return }
+                    self.bases[change.filename] = change.after; self.drafts[change.filename] = change.after
+                    self.persistDrafts(); self.refreshEditorFromDisk()
+                    do { try self.engine?.acknowledgeEditorSave(filename: change.filename, before: change.before, after: change.after) }
+                    catch { self.statusText = "Nota guardada; la sesión de simulación tiene un conflicto." }
+                }
                 media?.onTranscriptUpdate = { [weak self] job in self?.ai?.receive(job) }
             }
             if FileManager.default.fileExists(atPath: workspace.storageRoot.appendingPathComponent("editor-drafts.json").path) {

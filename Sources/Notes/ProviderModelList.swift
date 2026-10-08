@@ -11,7 +11,7 @@ struct ProviderModelList: View {
     private var rows: [AIProviderModel] {
         preferences.models.filter { query.isEmpty || ($0.name + " " + $0.id).localizedCaseInsensitiveContains(query) }
     }
-    private var chosen: AIProviderModel? { preferences.models.first { $0.id == preferences.draft.selected.model } }
+    private var chosen: AIProviderModel? { preferences.selectedModel }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -43,12 +43,20 @@ struct ProviderModelList: View {
                 Text(text("Actualiza para cargar los modelos disponibles.", "Refresh to load available models.")).font(.callout).foregroundStyle(.secondary)
             }
             if let chosen, preferences.draft.selectedProvider == .codexCLI, !chosen.reasoning.isEmpty {
-                Picker(text("Razonamiento", "Reasoning"), selection: $preferences.draft.selected.reasoningEffort) {
-                    Text(text("Predeterminado", "Default")).tag(String?.none)
-                    ForEach(chosen.reasoning, id: \.self) { effort in Text(effort.capitalized).tag(Optional(effort)) }
-                }.font(.callout).accessibilityIdentifier("provider.reasoning")
+                AIOptionSelector(title: text("Razonamiento", "Reasoning"), symbol: "brain", options:
+                    [.init(id: "auto", title: "Auto")] + chosen.reasoning.map { effort in
+                        .init(id: effort, title: effort == "xhigh" ? "Extra High" : effort.capitalized,
+                              badge: effort == chosen.defaultReasoningEffort ? text("Predeterminado", "Default") : nil)
+                    }, selection: Binding(get: { preferences.draft.selected.reasoningEffort ?? "auto" }, set: { preferences.draft.selected.reasoningEffort = $0 == "auto" ? nil : $0 }))
+                    .accessibilityIdentifier("provider.reasoning")
             }
             if preferences.draft.selectedProvider == .codexCLI {
+                if preferences.supportsFastMode {
+                AIOptionSelector(title: text("Velocidad", "Speed"), symbol: "bolt", options: [
+                    .init(id: "standard", title: text("Estándar", "Standard")), .init(id: "fast", title: "Fast")
+                ], selection: Binding(get: { preferences.draft.selected.fastMode == true ? "fast" : "standard" }, set: { preferences.draft.selected.fastMode = $0 == "fast" }))
+                    .help(text("Fast consume más créditos", "Fast uses more credits")).accessibilityIdentifier("provider.fast-mode")
+                }
                 DisclosureGroup(text("Añadir modelo personalizado", "Add custom model"), isExpanded: $showCustom) {
                     HStack {
                         TextField(text("Identificador del modelo", "Model identifier"), text: $customID).textFieldStyle(.roundedBorder)
@@ -60,7 +68,7 @@ struct ProviderModelList: View {
                     }.padding(.top, 8)
                 }.font(.callout)
             }
-            Text(text("Marca favoritos, oculta modelos o cambia su orden. Guarda los cambios para conservar tus preferencias.", "Favorite, hide, or reorder models. Save changes to keep your preferences."))
+            Text(text("Marca favoritos, oculta modelos o cambia su orden.", "Favorite, hide, or reorder models."))
                 .font(.caption).foregroundStyle(.secondary)
         }
         .onChange(of: preferences.draft.selectedProvider) { _, _ in query = ""; customID = ""; showCustom = false }

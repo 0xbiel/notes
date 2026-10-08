@@ -17,19 +17,24 @@ final class ProviderTests: XCTestCase {
         return try AIOutbox(workspace: workspace).enqueue(media: media, selected: media.transcript)
     }
 
-    func testSettingsPersistWithoutCredentialsAndRequireExplicitAccountConsent() throws {
+    func testProvidersDefaultToEnabledAndPersistExplicitOptOuts() throws {
         let (workspace, _) = try environment()
         var settings = AIProviderSettings()
         XCTAssertEqual(settings.selectedProvider, .openCode)
-        XCTAssertFalse(settings.codexCLI.accountSendingAllowed)
-        XCTAssertFalse(settings.antigravity.accountSendingAllowed)
+        XCTAssertTrue(settings.openCode.accountSendingAllowed)
+        XCTAssertTrue(settings.codexCLI.accountSendingAllowed)
+        XCTAssertTrue(settings.antigravity.accountSendingAllowed)
+        settings.openCode.accountSendingAllowed = false
+        XCTAssertThrowsError(try settings.openCode.validateSending())
         settings.selectedProvider = .codexCLI
+        settings.codexCLI.accountSendingAllowed = false
         XCTAssertThrowsError(try settings.selected.validateSending())
         settings.codexCLI.accountSendingAllowed = true
         settings.codexCLI.model = "example-model"
         try settings.save(in: workspace)
         let restored = try AIProviderSettings.load(in: workspace)
         XCTAssertEqual(restored, settings)
+        XCTAssertFalse(restored.openCode.accountSendingAllowed)
         XCTAssertNoThrow(try restored.selected.validateSending())
         let data = String(decoding: try workspace.readStorage("ai-provider-settings.json"), as: UTF8.self)
         XCTAssertFalse(data.contains("apiKey"))
@@ -76,6 +81,46 @@ final class ProviderTests: XCTestCase {
         }
         XCTAssertFalse(arguments.contains("--yolo"))
         XCTAssertFalse(arguments.contains("--model"))
+    }
+
+    func testModelCapabilitiesComeFromCatalogAndLegacySettingsStayManual() throws {
+        let models = try ProviderModelCatalog.codexPage(["data": [
+            ["model": "fast-model", "serviceTiers": [["id": "priority", "name": "Fast"]], "defaultReasoningEffort": "medium"],
+            ["model": "slow-model"],
+            ["model": "legacy-fast", "additionalSpeedTiers": ["fast"]]
+        ]])
+        XCTAssertEqual(models.map { $0.supportsFastMode == true }, [true, false, true])
+        XCTAssertEqual(models.first?.defaultReasoningEffort, "medium")
+        var settings = AIProviderSettings()
+        settings.editAutonomy = .edits
+        XCTAssertEqual(try JSONDecoder().decode(AIProviderSettings.self, from: JSONEncoder().encode(settings)).editAutonomy, .edits)
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(settings)) as? [String: Any])
+        legacy.removeValue(forKey: "editAutonomy")
+        XCTAssertNil(try JSONDecoder().decode(AIProviderSettings.self, from: JSONSerialization.data(withJSONObject: legacy)).editAutonomy)
+        XCTAssertFalse(AIEditAutonomy.edits.allows(.uncertain))
+        XCTAssertFalse(AIEditAutonomy.additions.allows(.retract))
+        XCTAssertTrue(AIEditAutonomy.edits.allows(.retract))
+    }
+
+    func testConnectionProbeIsTinyAndRejectsUnexpectedReplies() throws {
+        XCTAssertLessThan(ProviderConnectionTest.prompt.utf8.count, 64)
+        XCTAssertNoThrow(try ProviderConnectionTest.validateReply(#"{"ok":true}"#))
+        for reply in [#"{"ok":false}"#, #"{"ok":1}"#, #"{"ok":true,"extra":"data"}"#, "", "OK"] {
+            XCTAssertThrowsError(try ProviderConnectionTest.validateReply(reply))
+        }
+        XCTAssertThrowsError(try NotesProviderTransport.decodeCodexText(Data("{\"type\":\"turn.completed\"}\n".utf8)))
+    }
+
+    func testCodexFastModePersistsAndLeavesLegacySettingsCompatible() throws {
+        var configuration = AIProviderConfiguration(provider: .codexCLI, executablePath: "/test/codex", model: "gpt-6-luna")
+        let schema = URL(fileURLWithPath: "/tmp/schema.json")
+        XCTAssertFalse(NotesProviderTransport.codexArguments(configuration, schema: schema).contains("service_tier=\"fast\""))
+        configuration.fastMode = true
+        let restored = try JSONDecoder().decode(AIProviderConfiguration.self, from: JSONEncoder().encode(configuration))
+        XCTAssertTrue(NotesProviderTransport.codexArguments(restored, schema: schema).contains("service_tier=\"fast\""))
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(configuration)) as? [String: Any])
+        legacy.removeValue(forKey: "fastMode")
+        XCTAssertNil(try JSONDecoder().decode(AIProviderConfiguration.self, from: JSONSerialization.data(withJSONObject: legacy)).fastMode)
     }
 
     func testCodexCompletionRejectsToolsErrorsAndPartialResponses() throws {

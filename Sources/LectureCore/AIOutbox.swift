@@ -34,6 +34,7 @@ public struct AIBatch: Codable, Identifiable, Sendable {
     public var syntheticDemoProvenance: String? = nil
     public var model: String = OpenRouterHarness.model
     public var providerConfiguration: AIProviderConfiguration? = nil
+    public var editAutonomy: AIEditAutonomy? = nil
 }
 public struct AIApplyJournal: Codable, Sendable {
     public var proposalID: String
@@ -99,19 +100,38 @@ public final class AIOutbox {
         }
         return chosen.sorted { $0.0 < $1.0 }.map(\.1).joined(separator: "\n\n")
     }
+    public static let maximumBatchSegments = 128
+    public static let maximumBatchCharacters = 12_000
+
+    /// Aim for five minutes, allowing a short sentence-ending grace period.
+    /// Sparse speech can accumulate longer; dense speech flushes before the
+    /// request budget is exceeded. Only complete transcript segments are sent.
     public static func groups(_ segments: [MediaTranscriptSegment], flush: Bool) -> [[MediaTranscriptSegment]] {
-        var result: [[MediaTranscriptSegment]] = []; var pending: [MediaTranscriptSegment] = []; var words = 0
-        for segment in segments.sorted(by: { $0.start < $1.start }) {
-            pending.append(segment); words += segment.text.split(whereSeparator: \.isWhitespace).count
-            if words >= 120 || segment.end - (pending.first?.start ?? segment.start) >= 45 || pending.count >= 20 { result.append(pending); pending = []; words = 0 }
+        var result: [[MediaTranscriptSegment]] = []
+        var pending: [MediaTranscriptSegment] = []
+        var words = 0; var characters = 0
+        func emit() {
+            guard !pending.isEmpty else { return }
+            result.append(pending); pending = []; words = 0; characters = 0
         }
-        if flush && !pending.isEmpty { result.append(pending) }
+        for segment in segments.sorted(by: { $0.start < $1.start }) {
+            let count = segment.text.count
+            // Keep headroom for bounded note context, prior spans and JSON.
+            if !pending.isEmpty && (characters + count > 10_000 || pending.count == maximumBatchSegments) { emit() }
+            pending.append(segment); characters += count
+            words += segment.text.split(whereSeparator: \.isWhitespace).count
+            let duration = segment.end - (pending.first?.start ?? segment.start)
+            let endsSentence = segment.text.trimmingCharacters(in: .whitespacesAndNewlines).last.map { ".!?…".contains($0) } ?? false
+            let timeReady = words >= 100 && duration >= 300 && (endsSentence || duration >= 330)
+            if timeReady || duration >= 450 || characters >= 10_000 || words >= 1_800 || pending.count == maximumBatchSegments { emit() }
+        }
+        if flush { emit() }
         return result
     }
     @discardableResult public func enqueue(media: MediaJob, selected: [MediaTranscriptSegment], prior: [MediaTranscriptSegment] = []) throws -> AIBatch {
-        guard !selected.isEmpty, selected.count <= 32, Set(selected.map(\.id)).count == selected.count,
+        guard !selected.isEmpty, selected.count <= Self.maximumBatchSegments, Set(selected.map(\.id)).count == selected.count,
               selected.allSatisfy({ $0.start.isFinite && $0.end.isFinite && $0.start >= 0 && $0.end >= $0.start && $0.text.count <= 4000 }),
-              selected.map(\.text).joined().count <= 12_000 else { throw MediaError.invalid("Selecciona un fragmento de transcripción más pequeño.") }
+              selected.map(\.text).joined().count <= Self.maximumBatchCharacters else { throw MediaError.invalid("Selecciona un fragmento de transcripción más pequeño.") }
         let note = try workspace.readNote(media.targetNote)
         let context = Self.relevantContext(note: note, selected: selected)
         let previous = Array(prior.suffix(2))

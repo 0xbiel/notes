@@ -64,3 +64,31 @@ The latest UI snapshot combined with this backend passes **70 tests, four opt-in
 Ignored artifacts live under `qa/continuation-2026-10-08/`: invented source fixtures, `transcription-wav.json`, `transcription-mp4.json` and copied test logs. `scripts/make-transcription-fixtures.sh` recreates the invented fixtures without replacing an existing directory. See `TESTING.md` for opt-in commands and privacy boundaries.
 
 Provider research and final logs live under ignored `qa/provider-research/`. The final original-file check verifies all 13 original course files unchanged, with no added files or symlinks. `git diff --check` passes. No commit or installation was made.
+
+## Real recording / GPT-6 Luna fast-mode check — 2026-10-08
+
+An explicitly supplied 35m36s M4A was imported and fully transcribed through the existing local large-v3-turbo path: 72 checkpoints and 245 timestamped segments. The source and copied-source digest checks passed; resuming the completed job preserved the transcript. Private evidence remains under `.private-tests/recording-33/` and is not part of this repository.
+
+Six live Codex CLI requests used `gpt-6-luna`, low reasoning, and explicit `service_tier="fast"`. The first three beginning/middle/end samples returned only asides or uncertain proposals, so the edit assertion correctly failed. A second run reused the completed transcript and sampled substantive groups across the lecture: three requests generated four eligible additions. Generation left the file untouched, applying proposals changed the isolated note, history reloaded exactly, and undo restored the initial note. The live retry passed in 34.55 seconds. The completion stream does not prove which service tier was served.
+
+**Quality finding:** successful mechanics do not imply usable notes. Repeated “Gracias” fragments and distorted Spanish remained despite no repetition warning. Luna flagged many fragments as uncertain, but also converted an ambiguous hazardous-work fragment into an unsupported applicability statement. These outputs are test evidence, not validated study notes. The full recording was transcribed; only six small transcript groups were sent. No interactive native UI or audio-ground-truth accuracy assessment was performed.
+
+## Adaptive five-minute batching — 2026-10-08
+
+The same 245-segment recording now forms seven complete batches: 300, 302, 302, 302, 332, 300 and 248 seconds. Sizes range from 1,142 to 1,913 transcript characters and 29 to 41 segments. All segments were retained exactly once. Offline suite: 86 tests, 9 opt-in checks skipped, no failures; the separate real-transcript batching check also passed. The cadence follows transcript time, with sentence-boundary grace and earlier size-based flushing for denser speech.
+
+A live larger-batch run initially rejected an incomplete model response (unclassified segment IDs). The payload now explicitly requires coverage of every ID, including asides/repetitions, and encourages grouping related IDs. The strict coverage validator remains enabled. Retesting three larger batches using GPT-6 Luna with fast mode requested passed in 55.49 seconds: 75 decisions, 14 applied edits, persisted history verified, all edits undone, source unchanged. This is a successful sample, not a guarantee that future model responses will cover every segment. Evidence: ignored `.private-tests/adaptive-33/`. Final offline suite again passed (86 tests, 9 skipped).
+
+## General AI preferences and visual selector — 2026-10-08
+
+General settings now combines a visual cross-provider model popover, capability-driven thinking/fast controls and editing autonomy. The native isolated Notes build was inspected with the supplied screenshot as the design reference. The popover rendered provider icons, search, cross-provider favorites, selected highlighting and model/provider labels; live catalogs populated Codex, OpenCode and Antigravity. No T3 computer-use interaction was used after the user prohibited it.
+
+Automatic editing tests cover additions, correction permission, legacy review-only behavior, queued permission escalation protection, current permission reductions, dirty drafts, stale notes, uncertain/overlapping ASR, editor refresh, persisted history and undo. Catalog tests cover advertised fast capability and backward-compatible settings. The final suite passed 90 tests with 9 opt-in skips and no failures, including provider-order changes and cross-provider favorite/autonomy persistence checks.
+
+## Connection button and compact option menus — 2026-10-08
+
+The real connection probe passed with GPT-6 Luna, low reasoning and fast mode in the integration suite (91 tests, 9 skipped, no failures). Clicking **Test connection** in the isolated native Notes app also completed successfully in 10.1 seconds and displayed its green model-specific result. The fixture uses no personal notes and does not enable account sending or alter the normal outbox. Failure/stale-result behavior is covered by preferences tests. Reasoning, speed, autonomy and language share the supplied compact menu style; native inspection confirmed selection highlighting and the catalog-derived Medium default badge. A slow catalog load does not block testing the saved model configuration.
+
+The connection test now sends a fixed 46-byte acknowledgement prompt instead of the note fixture, with minimal instructions and a tiny JSON schema. The live GPT-6 Luna low/fast probe passed in 7.647 seconds; provider startup and inference still contribute latency. The suite completed with 92 tests, 9 skipped and no failures, and the Notes app build succeeded. No notes or outbox entries are created.
+
+Provider availability now defaults to enabled for new settings, preserves saved opt-outs, hides disabled providers from model choices and checks current provider enablement before queued sends. General exposes individual provider switches and places editing permissions to the right of the model. The offline suite passed with 92 tests, 10 skipped, zero failures after updating the opt-out regression tests.

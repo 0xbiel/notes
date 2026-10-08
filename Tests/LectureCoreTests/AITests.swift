@@ -33,7 +33,7 @@ final class AITests: XCTestCase {
         XCTAssertTrue(payload.contains("span1")); XCTAssertTrue(payload.contains("tres pasos"))
         XCTAssertFalse(payload.contains("contenido ajeno secreto")); XCTAssertFalse(payload.contains("Tema.md")); XCTAssertFalse(payload.contains(outbox.workspace.originalRoot.path))
         XCTAssertLessThanOrEqual(batch.context.count, 2000)
-        XCTAssertEqual(AIOutbox.groups(media.transcript, flush: false).count, 1)
+        XCTAssertTrue(AIOutbox.groups(media.transcript, flush: false).isEmpty)
         let small = [MediaTranscriptSegment(id: "a", start: 0, end: 2, text: "Un inciso")]
         XCTAssertTrue(AIOutbox.groups(small, flush: false).isEmpty); XCTAssertEqual(AIOutbox.groups(small, flush: true).count, 1)
     }

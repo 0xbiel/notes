@@ -51,6 +51,15 @@ public struct AntigravityTextTransport: Sendable {
     }
 
     public func send(_ batch: AIBatch, checked: @escaping @Sendable () async -> Void = {}) async throws -> AIBatch {
+        let prompt = OpenRouterHarness.systemPrompt + "\n" + String(decoding: try OpenRouterHarness.payload(batch), as: UTF8.self)
+        let text = try await generate(prompt, checked: checked)
+        var result = batch
+        result.decisions = try OpenRouterHarness.decodeResponse(text, for: batch)
+        result.stage = .ready; result.error = nil; result.reportedCost = nil
+        return result
+    }
+
+    func generate(_ prompt: String, checked: @escaping @Sendable () async -> Void = {}) async throws -> String {
         try configuration.validateSending()
         let token = URL(fileURLWithPath: configuration.homePath).appendingPathComponent("antigravity-acp/acp_token.json")
         guard FileManager.default.fileExists(atPath: token.path) else { throw MediaError.invalid("Inicia sesión en Antigravity desde su cliente; Notes no abre login ni copia credenciales.") }
@@ -73,13 +82,9 @@ public struct AntigravityTextTransport: Sendable {
             await checked()
             return try await Task.detached {
                 defer { connection.close() }
-                let text = OpenRouterHarness.systemPrompt + "\n" + String(decoding: try OpenRouterHarness.payload(batch), as: UTF8.self)
-                let finish = try connection.request("session/prompt", params: ["sessionId": prepared, "prompt": [["type": "text", "text": text]]])
+                let finish = try connection.request("session/prompt", params: ["sessionId": prepared, "prompt": [["type": "text", "text": prompt]]])
                 guard finish["stopReason"] as? String == "end_turn" else { throw MediaError.invalid("Antigravity no completó el lote; no se aplica nada.") }
-                var result = batch
-                result.decisions = try OpenRouterHarness.decodeResponse(connection.output, for: batch)
-                result.stage = .ready; result.error = nil; result.reportedCost = nil
-                return result
+                return connection.output
             }.value
         } onCancel: { connection.cancel() }
     }

@@ -8,6 +8,9 @@ final class AIController: ObservableObject {
     @Published var error: String?
     @Published var automaticMediaIDs: Set<String> = []
     let outbox: AIOutbox
+    private let editor: NotebookEditor
+    var hasDraft: (String) -> Bool = { _ in true }
+    var onAutomaticEdit: ((EditorChange) -> Void)?
     let harness: OpenRouterHarness
     let transport: NotesProviderTransport
     @Published var providerSettings: AIProviderSettings
@@ -15,6 +18,7 @@ final class AIController: ObservableObject {
     private var latestMedia: [String: MediaJob] = [:]
     private var drainIDs: Set<String> = []
     init(workspace: SafeWorkspace, editor: NotebookEditor) throws {
+        self.editor = editor
         outbox = try AIOutbox(workspace: workspace)
         harness = OpenRouterHarness(store: LocalMediaStore(workspace: workspace))
         transport = NotesProviderTransport(store: LocalMediaStore(workspace: workspace))
@@ -32,6 +36,7 @@ final class AIController: ObservableObject {
         try providerSettings.selected.validateSending()
         batch.providerConfiguration = providerSettings.selected
         batch.model = providerSettings.selected.model
+        batch.editAutonomy = providerSettings.editAutonomy ?? .review
         try outbox.replace(batch)
     }
     func send(media: MediaJob, ids: Set<String>) {
@@ -103,12 +108,18 @@ final class AIController: ObservableObject {
                     try self.outbox.replace(batch); self.refresh()
                     let id = batch.id
                     let configuration = batch.providerConfiguration ?? AIProviderSettings().openCode
+                    try self.providerSettings.configuration(for: configuration.provider).validateSending()
                     var result = try await self.transport.send(batch, configuration: configuration, checked: { [weak self] in await self?.markSending(id) })
                     // Other approved edits may have changed the local snapshot
                     // while this request was in flight. Never overwrite it.
                     if let current = self.outbox.batches.first(where: { $0.id == id }) { result.expectedNote = current.expectedNote }
                     try self.outbox.replace(result); self.refresh()
                     self.drainIDs.remove(id)
+                    do { try self.applyAutomatic(result) }
+                    catch {
+                        self.error = error.localizedDescription
+                        self.automaticMediaIDs.removeAll(); self.drainIDs.removeAll(); break
+                    }
                     for media in Array(self.latestMedia.values) where self.automaticMediaIDs.contains(media.id) { self.receive(media) }
                 } catch {
                     if let current = self.outbox.batches.first(where: { $0.id == batch.id }) { batch = current }
@@ -119,6 +130,20 @@ final class AIController: ObservableObject {
             }
         }
     }
+    func applyAutomatic(_ batch: AIBatch) throws {
+        guard batch.stage == .ready, batch.syntheticDemoProvenance == nil else { return }
+        let queuedPolicy = batch.editAutonomy ?? .review
+        let currentPolicy = providerSettings.editAutonomy ?? .review
+        for decision in batch.decisions where decision.resolution == nil && queuedPolicy.allows(decision.action) && currentPolicy.allows(decision.action) {
+            // An overlapping ASR hypothesis is never eligible for automatic edits.
+            guard !batch.segments.contains(where: { decision.sourceIDs.contains($0.id) && $0.boundaryReview == true }) else { continue }
+            let change = try outbox.apply(batchID: batch.id, proposalID: decision.id, text: decision.text,
+                                          quote: decision.targetQuote, editor: editor, hasDraft: hasDraft(batch.targetNote))
+            onAutomaticEdit?(change)
+        }
+        refresh()
+    }
+
     private func markSending(_ id: String) {
         guard var batch = outbox.batches.first(where: { $0.id == id }) else { return }
         batch.stage = .sending

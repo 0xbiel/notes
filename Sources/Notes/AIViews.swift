@@ -11,7 +11,7 @@ struct AISendControls: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(ai.providerSettings.selectedProvider == .openCode ? (job.syntheticFixture ? "Demo inventada · retención permitida" : "OpenRouter gratuito · ZDR exigido") : ai.providerSettings.selectedProvider.title).font(.subheadline.weight(.semibold))
-            Text(ai.providerSettings.selectedProvider == .openCode ? (job.syntheticFixture ? "Solo envía los cuatro fragmentos y su nota inventada exacta. Permite retención del proveedor; prohíbe entrenamiento. No incluye apuntes reales." : "Envía el texto seleccionado y hasta 2.000 caracteres relevantes de la copia. El audio permanece local. Cada propuesta requiere revisión.") : "Envía los fragmentos y contexto limitado mediante tu cuenta. Se aplican sus costes y condiciones de retención. El audio permanece local; cada propuesta requiere revisión.").font(.caption).foregroundStyle(.secondary)
+            Text(ai.providerSettings.selectedProvider == .openCode ? (job.syntheticFixture ? "Solo envía los cuatro fragmentos y su nota inventada exacta. Permite retención del proveedor; prohíbe entrenamiento. No incluye apuntes reales." : "Envía el texto seleccionado y hasta 2.000 caracteres relevantes de la copia. El audio permanece local. Los cambios siguen el permiso elegido en General.") : "Envía los fragmentos y contexto limitado mediante tu cuenta. Se aplican sus costes y condiciones de retención. El audio permanece local; los cambios siguen el permiso elegido en General.").font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button(selected.count == job.transcript.count ? "Quitar selección" : "Seleccionar todos") { selected = selected.count == job.transcript.count ? [] : Set(job.transcript.map(\.id)) }.disabled(job.transcript.isEmpty)
                 Spacer()
@@ -26,7 +26,7 @@ struct AISendControls: View {
             }
             Toggle("Enviar automáticamente nuevos fragmentos de esta grabación", isOn: Binding(get: { ai.automaticMediaIDs.contains(job.id) }, set: { ai.setAutomatic($0, media: job) }))
                 .font(.caption).disabled(job.syntheticFixture || job.asrQualityWarning != nil || (job.transcript.isEmpty && job.stage != .transcribing && job.stage != .recording))
-            Text("Agrupa unos 45 segundos o 120 palabras, con hasta dos fragmentos previos de contexto. Recibe la transcripción local durante la grabación o desde archivos importados. Se desactiva al cerrar, ante un error o si Whisper repite frases.").font(.caption2).foregroundStyle(.secondary)
+            Text("Prepara propuestas aproximadamente cada 5 minutos, al terminar una frase. Adelanta el envío si hay mucho texto y espera hasta 7,5 minutos si hay poco. Incluye hasta dos fragmentos previos de contexto. Recibe la transcripción local durante la grabación o desde archivos importados. Se desactiva al cerrar, ante un error o si Whisper repite frases.").font(.caption2).foregroundStyle(.secondary)
             if let error = ai.error { Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
         }.padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
     }
@@ -44,7 +44,7 @@ struct AIReviewInspector: View {
                     if ai.running { ProgressView().controlSize(.small); Button("Parar envío") { ai.stop() } }
                     else if batches.contains(where: { $0.stage == .queued }) { Button("Continuar cola") { ai.continueQueue(notebookID: model.selectedNotebookID) } }
                 }
-                Text("Cada lote conserva su proveedor. Sin herramientas ni cambios automáticos en tus notas.").font(.caption).foregroundStyle(.secondary)
+                Text("Cada lote conserva su proveedor y permiso de edición. Las dudas siempre requieren revisión.").font(.caption).foregroundStyle(.secondary)
                 if batches.isEmpty { ContentUnavailableView("Sin propuestas", systemImage: "checkmark.bubble", description: Text("Selecciona fragmentos en Transcripción y pulsa Enviar selección.")) }
                 ForEach(batches.reversed()) { batch in
                     VStack(alignment: .leading, spacing: 10) {

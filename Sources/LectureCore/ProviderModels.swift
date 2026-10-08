@@ -6,8 +6,10 @@ public struct AIProviderModel: Codable, Equatable, Sendable, Identifiable {
     public var detail: String
     public var isDefault: Bool
     public var reasoning: [String]
-    public init(id: String, name: String, detail: String = "", isDefault: Bool = false, reasoning: [String] = []) {
-        self.id = id; self.name = name; self.detail = detail; self.isDefault = isDefault; self.reasoning = reasoning
+    public var supportsFastMode: Bool? = nil
+    public var defaultReasoningEffort: String? = nil
+    public init(id: String, name: String, detail: String = "", isDefault: Bool = false, reasoning: [String] = [], supportsFastMode: Bool? = nil) {
+        self.id = id; self.name = name; self.detail = detail; self.isDefault = isDefault; self.reasoning = reasoning; self.supportsFastMode = supportsFastMode
     }
 }
 
@@ -37,7 +39,11 @@ public enum ProviderModelCatalog {
             guard let identifier = row["model"] as? String ?? row["id"] as? String else { throw MediaError.invalid("Modelo Codex sin identificador.") }
             try validateID(identifier)
             let efforts = (row["supportedReasoningEfforts"] as? [[String: Any]] ?? []).compactMap { $0["reasoningEffort"] as? String }
-            return .init(id: identifier, name: row["displayName"] as? String ?? identifier, detail: row["description"] as? String ?? "", isDefault: row["isDefault"] as? Bool ?? false, reasoning: efforts)
+            let tiers = row["serviceTiers"] as? [[String: Any]] ?? []
+            let fast = (row["additionalSpeedTiers"] as? [String] ?? []).contains("fast") || tiers.contains { ["fast", "priority"].contains($0["id"] as? String ?? "") }
+            var model = AIProviderModel(id: identifier, name: row["displayName"] as? String ?? identifier, detail: row["description"] as? String ?? "", isDefault: row["isDefault"] as? Bool ?? false, reasoning: efforts, supportsFastMode: fast)
+            model.defaultReasoningEffort = row["defaultReasoningEffort"] as? String
+            return model
         }
     }
 

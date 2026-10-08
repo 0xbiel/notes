@@ -9,6 +9,10 @@ final class ProviderPreferencesModel: ObservableObject {
     @Published private(set) var error: String?
     @Published private(set) var checks: [NotesAIProvider: Bool] = [:]
     @Published private(set) var catalogs: [NotesAIProvider: [AIProviderModel]] = [:]
+    @Published private(set) var testingConnection = false
+    @Published private(set) var connectionResult: ProviderConnectionTestResult?
+    @Published private(set) var connectionError: String?
+    private var testedConfiguration: AIProviderConfiguration?
     let ai: AIController
 
     init(ai: AIController) { self.ai = ai; draft = ai.providerSettings }
@@ -19,7 +23,6 @@ final class ProviderPreferencesModel: ObservableObject {
         draft.selected.executablePath = detected.executablePath
         draft.selected.homePath = detected.homePath
         draft.selected.harnessPath = detected.harnessPath
-        draft.selected.accountSendingAllowed = false
         invalidateSelection()
     }
 
@@ -35,10 +38,12 @@ final class ProviderPreferencesModel: ObservableObject {
         }
     }
 
-    var models: [AIProviderModel] {
-        let known = catalogs[draft.selectedProvider] ?? []
-        let custom = modelPreferences.custom.filter { entry in !known.contains(where: { $0.id == entry.id }) }
-        let options = modelPreferences
+    var models: [AIProviderModel] { models(for: draft.selectedProvider) }
+
+    func models(for provider: NotesAIProvider) -> [AIProviderModel] {
+        let known = catalogs[provider] ?? []
+        let options = draft.modelPreferences?[provider.rawValue] ?? .init()
+        let custom = options.custom.filter { entry in !known.contains(where: { $0.id == entry.id }) }
         func group(_ identifier: String) -> Int { options.favorites.contains(identifier) ? 0 : options.hidden.contains(identifier) ? 2 : 1 }
         return (known + custom).sorted {
             let left = group($0.id), right = group($1.id)
@@ -49,12 +54,25 @@ final class ProviderPreferencesModel: ObservableObject {
         }
     }
 
-    func selectModel(_ identifier: String) { draft.selected.model = identifier; draft.selected.reasoningEffort = nil }
+    var selectedModel: AIProviderModel? {
+        if draft.selected.model == "default" { return models.first(where: \.isDefault) }
+        return models.first { $0.id == draft.selected.model }
+    }
+    var supportsFastMode: Bool { draft.selectedProvider == .codexCLI && selectedModel?.supportsFastMode == true }
+    func selectModel(_ identifier: String) {
+        draft.selected.model = identifier; draft.selected.reasoningEffort = nil
+        draft.selected.fastMode = false
+    }
     func favorite(_ identifier: String) {
-        var options = modelPreferences
+        favorite(identifier, provider: draft.selectedProvider)
+    }
+    func favorite(_ identifier: String, provider: NotesAIProvider) {
+        var options = draft.modelPreferences?[provider.rawValue] ?? .init()
         if options.favorites.contains(identifier) { options.favorites.removeAll { $0 == identifier } }
         else { options.favorites.append(identifier); options.hidden.removeAll { $0 == identifier } }
-        modelPreferences = options
+        var values = draft.modelPreferences ?? [:]
+        values[provider.rawValue] = options
+        draft.modelPreferences = values
     }
     func hide(_ identifier: String) {
         guard identifier != draft.selected.model else { return }
@@ -95,6 +113,29 @@ final class ProviderPreferencesModel: ObservableObject {
 
     func discard() { draft = ai.providerSettings; clearStatus() }
 
+    var connectionResultIsCurrent: Bool { testedConfiguration == draft.selected }
+    func testConnection() async {
+        guard !testingConnection, !ai.running else { return }
+        let configuration = draft.selected
+        testedConfiguration = configuration
+        testingConnection = true; connectionResult = nil; connectionError = nil
+        defer { testingConnection = false }
+        do { connectionResult = try await ProviderConnectionTest.run(configuration) }
+        catch is CancellationError { connectionError = "Prueba cancelada / Test cancelled" }
+        catch { connectionError = error.localizedDescription }
+    }
+
+    func loadCatalogs() async {
+        for provider in NotesAIProvider.allCases where catalogs[provider] == nil && draft.configuration(for: provider).accountSendingAllowed {
+            guard !Task.isCancelled else { return }
+            let configuration = draft.configuration(for: provider)
+            do {
+                let models = try await ai.transport.models(configuration)
+                if draft.configuration(for: provider) == configuration { catalogs[provider] = models }
+            } catch { }
+        }
+    }
+
     func checkInstallation() async {
         guard !checking, !ai.running else { return }
         checking = true; clearStatus()
@@ -104,7 +145,13 @@ final class ProviderPreferencesModel: ObservableObject {
             let result = try await ai.transport.diagnose(configuration)
             if draft.selected == configuration { diagnostic = result.message; checks[configuration.provider] = true }
             let models = try await ai.transport.models(configuration)
-            if draft.selected == configuration { catalogs[configuration.provider] = models }
+            if draft.selected == configuration {
+                catalogs[configuration.provider] = models
+                if configuration.provider == .codexCLI, selectedModel != nil {
+                    if !supportsFastMode { draft.selected.fastMode = false }
+                    if let effort = draft.selected.reasoningEffort, selectedModel?.reasoning.contains(effort) != true { draft.selected.reasoningEffort = nil }
+                }
+            }
         } catch {
             if draft.selected == configuration { self.error = error.localizedDescription; checks[configuration.provider] = false }
         }
@@ -131,6 +178,7 @@ struct ProviderPreferences: View {
         switch provider { case .openCode: "OpenCode"; case .codexCLI: "Codex CLI"; case .antigravity: "Antigravity" }
     }
     private func status(_ provider: NotesAIProvider) -> String {
+        if !preferences.draft.configuration(for: provider).accountSendingAllowed { return text("Desactivado", "Disabled") }
         if preferences.checking, preferences.draft.selectedProvider == provider { return text("Comprobando…", "Checking…") }
         guard let passed = preferences.checks[provider] else { return text("Sin comprobar", "Not checked") }
         return passed ? text("Instalación verificada", "Installation verified") : text("Requiere atención", "Needs attention")
@@ -146,9 +194,9 @@ struct ProviderPreferences: View {
             Group {
                 if contentWidth >= 620 {
                     HStack(alignment: .top, spacing: 0) {
-                        providerList.frame(width: 180)
+                        providerList.frame(width: 220)
                         Divider()
-                        editor.padding(22).frame(width: contentWidth - 181)
+                        editor.padding(22).frame(width: contentWidth - 221)
                     }.fixedSize(horizontal: false, vertical: true)
                 } else {
                     VStack(spacing: 0) { providerList; Divider(); editor.padding(20) }
@@ -157,46 +205,65 @@ struct ProviderPreferences: View {
             .frame(maxWidth: .infinity)
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
             .background(.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 12))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(.separator.opacity(0.4)))
-            Text(text("Cada lote pendiente conserva su proveedor. Las propuestas se revisan antes de modificar una nota.", "Pending batches keep their provider. Review each proposal before it changes a note."))
+            Text(text("Cada lote conserva su proveedor y su permiso de edición. Ajusta los cambios automáticos en General.", "Each batch keeps its provider and editing permission. Set automatic changes in General."))
                 .font(.caption).foregroundStyle(.secondary)
         }
         .disabled(busy)
-        .onChange(of: preferences.draft) { _, _ in preferences.clearStatus() }
+        .onChange(of: preferences.draft) { _, _ in
+            if preferences.hasChanges { preferences.save() }
+        }
+        .onChange(of: ai.providerSettings) { old, updated in
+            if preferences.draft == old { preferences.draft = updated }
+        }
         .task(id: preferences.draft.selectedProvider) {
             if preferences.catalogs[preferences.draft.selectedProvider] == nil { await preferences.checkInstallation() }
         }
         .onDisappear { checkTask?.cancel() }
     }
 
-    private var providerList: some View {
-        VStack(spacing: 4) {
-            ForEach(NotesAIProvider.allCases) { provider in
-                Button {
-                    preferences.draft.selectedProvider = provider
-                    showRuntime = false
-                } label: {
-                    HStack(alignment: .top, spacing: 10) {
-                        ProviderLogo(provider: provider)
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(name(provider)).font(.callout.weight(.medium))
-                            HStack(spacing: 5) {
-                                Circle().fill(preferences.checks[provider] == true ? Color.green : preferences.checks[provider] == false ? .orange : .secondary).frame(width: 5, height: 5)
-                                Text(status(provider)).font(.caption2).foregroundStyle(.secondary)
-                            }
-                            if ai.providerSettings.selectedProvider == provider {
-                                Text(text("En uso", "Active")).font(.caption2.weight(.medium)).foregroundStyle(.secondary)
-                            }
-                        }
-                        Spacer(minLength: 0)
-                    }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(preferences.draft.selectedProvider == provider ? Color.primary.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 9))
-                        .contentShape(Rectangle())
-                }.buttonStyle(.plain).accessibilityLabel(name(provider))
-                    .accessibilityAddTraits(preferences.draft.selectedProvider == provider ? .isSelected : [])
-                    .accessibilityIdentifier("provider.select." + provider.rawValue)
+    private func enabledBinding(_ provider: NotesAIProvider) -> Binding<Bool> {
+        Binding(get: { preferences.draft.configuration(for: provider).accountSendingAllowed }, set: { enabled in
+            switch provider {
+            case .openCode: preferences.draft.openCode.accountSendingAllowed = enabled
+            case .codexCLI: preferences.draft.codexCLI.accountSendingAllowed = enabled
+            case .antigravity: preferences.draft.antigravity.accountSendingAllowed = enabled
             }
-        }.padding(8)
+        })
+    }
+
+    private var providerList: some View {
+        VStack(spacing: 0) {
+            ForEach(NotesAIProvider.allCases) { provider in
+                HStack(spacing: 8) {
+                    Button {
+                        preferences.draft.selectedProvider = provider
+                        showRuntime = false
+                    } label: {
+                        HStack(alignment: .top, spacing: 10) {
+                            ProviderLogo(provider: provider, size: 17)
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(name(provider)).font(.callout.weight(.medium)).lineLimit(1)
+                                Text(status(provider)).font(.caption2).foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                            Spacer(minLength: 0)
+                        }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                    }.buttonStyle(.plain).accessibilityLabel(name(provider))
+                        .accessibilityAddTraits(preferences.draft.selectedProvider == provider ? .isSelected : [])
+                        .accessibilityIdentifier("provider.select." + provider.rawValue)
+                    Toggle(name(provider), isOn: enabledBinding(provider))
+                        .toggleStyle(.switch).controlSize(.mini).labelsHidden().tint(.accentColor)
+                        .accessibilityLabel(text("Activar ", "Enable ") + name(provider))
+                        .accessibilityIdentifier("provider.enabled." + provider.rawValue)
+                }.padding(.horizontal, 12).padding(.vertical, 16)
+                    .background {
+                        Rectangle().fill(preferences.draft.selectedProvider == provider ? Color.primary.opacity(0.06) : .clear)
+                    }
+                if provider != NotesAIProvider.allCases.last { Divider().opacity(0.5) }
+            }
+        }
     }
 
     private var editor: some View {
@@ -225,8 +292,6 @@ struct ProviderPreferences: View {
                 if accountProvider {
                     Text(text("Se envían fragmentos y contexto limitado. Se aplican los costes y la retención de tu cuenta; el audio permanece local.", "Selected text and limited context are sent. Account costs and retention apply; audio stays local."))
                         .font(.caption).foregroundStyle(.secondary)
-                    Toggle(text("Permitir envíos con esta cuenta", "Allow sending with this account"), isOn: $preferences.draft.selected.accountSendingAllowed)
-                        .font(.callout).accessibilityIdentifier("provider.consent")
                 }
             }
             DisclosureGroup(text("Instalación", "Runtime"), isExpanded: $showRuntime) {
@@ -245,24 +310,10 @@ struct ProviderPreferences: View {
             }.font(.headline)
             ProviderModelList(preferences: preferences)
             Divider()
-            HStack {
-                Button(text("Descartar", "Discard")) { preferences.discard() }.disabled(!preferences.hasChanges)
-                Spacer()
-                Button(ai.providerSettings.selectedProvider == preferences.draft.selectedProvider ? text("Guardar cambios", "Save changes") : text("Usar proveedor", "Use provider")) { preferences.save() }
-                    .buttonStyle(.borderedProminent).disabled(!preferences.hasChanges).accessibilityIdentifier("provider.save")
-            }
-            Text(preferences.hasChanges ? text("Cambios sin guardar", "Unsaved changes") : text("Configuración guardada", "Settings saved"))
-                .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("provider.saved-status")
-            if let diagnostic = preferences.diagnostic {
-                Label(diagnostic, systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.caption).textSelection(.enabled)
-                    .accessibilityIdentifier("provider.diagnostic")
-            }
             if let error = preferences.error {
                 Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).font(.caption).textSelection(.enabled)
                     .accessibilityIdentifier("provider.error")
             }
-            Text(text("El catálogo se consulta con tu sesión existente, sin enviar notas. La disponibilidad puede variar según la cuota de tu cuenta.", "The catalog uses your existing sign-in without sending notes. Availability may vary with your account quota."))
-                .font(.caption2).foregroundStyle(.secondary)
         }
     }
 
@@ -272,7 +323,6 @@ struct ProviderPreferences: View {
             TextField(title, text: Binding(get: { value.wrappedValue }, set: { updated in
                 value.wrappedValue = updated
                 preferences.invalidateSelection()
-                if identifier != "provider.model" { preferences.draft.selected.accountSendingAllowed = false }
             })).font(.callout).textFieldStyle(.roundedBorder)
                 .accessibilityLabel(title).accessibilityIdentifier(identifier)
         }

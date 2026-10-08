@@ -26,7 +26,7 @@ Conflicting overlap hypotheses remain visible for review. Repeated decoder outpu
 
 ## AI proposals and privacy
 
-Manual sending includes selected transcript spans and at most 2,000 relevant characters from the target local note. Audio, full-note snapshots and source paths stay local. Optional automatic sending starts disabled, applies only to that recording, groups roughly 45 seconds/120 words with at most two prior spans of context, and stops on errors or suspicious ASR repetition. All note changes still require review.
+Manual sending includes selected transcript spans and at most 2,000 relevant characters from the target local note. Audio, full-note snapshots and source paths stay local. Optional automatic sending starts disabled, applies only to that recording, aims for roughly five minutes at a sentence boundary (up to 30 seconds of grace), waits up to 7.5 minutes for sparse speech, and sends dense passages earlier at bounded text/segment limits, with at most two prior spans of context, and stops on errors or suspicious ASR repetition. General preferences defaults to reviewing all changes, with optional automatic additions or edits to the linked note. Uncertain/overlapping text, unsaved drafts and conflicting edits still require review; automatic edits retain undo history.
 
 The OpenCode adapter pins OpenRouter's free router as the main and small model, disables auxiliary agents and all tools/MCP/sharing, verifies the final effective configuration, and rejects API errors, tool calls, nonzero/missing costs and malformed decisions. Existing OpenCode authorization is used in place; Notes does not create or read out credentials. Router-selected downstream models can vary.
 

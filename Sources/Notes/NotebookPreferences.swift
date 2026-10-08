@@ -83,12 +83,15 @@ struct NotebookPreferences: View {
                             Text("Abre un espacio local para configurar los proveedores.").foregroundStyle(.secondary)
                         }
                     } else {
+                        if let ai = model.ai {
+                            GeneralAIPreferences(ai: ai) { section = .providers }.id(ai.outbox.workspace.root.path)
+                            Divider()
+                        }
                         VStack(alignment: .leading, spacing: 16) {
                             Text("Idioma").font(.headline)
-                            Picker("Idioma", selection: $language) {
-                                Text("Español").tag("es")
-                                Text("English").tag("en")
-                            }.labelsHidden().frame(maxWidth: 240, alignment: .leading)
+                            AIOptionSelector(title: "Idioma / Language", symbol: "globe", options: [
+                                .init(id: "es", title: "Español"), .init(id: "en", title: "English")
+                            ], selection: $language)
                         }
                     }
                 }.frame(maxWidth: 680, alignment: .leading)

@@ -103,7 +103,7 @@ public struct OpenRouterHarness: Sendable {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let quoted = try encoder.encode(value)
         let instructions = """
-        Devuelve {"version":1,"batch_id":"\(batch.id)","decisions":[{"source_ids":["id de segment"],"action":"add|correct|retract|omit|aside|priority|uncertain","text":"redacción española o vacío para exclusión","reason":"motivo breve","target_quote":null}]}. Cubre todos los segmentos del lote, permitiendo varias decisiones en un segmento que mezcle contenido e incisos. Incluye una razón para cada decisión. target_quote solo para correcciones/retractaciones, y debe copiar literalmente un fragmento del note_context. No incluyas comandos, rutas de archivo, herramientas ni texto fuera del JSON. Este lote genera propuestas; todavía no se aplica a los apuntes. DATOS CITADOS:
+        Devuelve {"version":1,"batch_id":"\(batch.id)","decisions":[{"source_ids":["id de segment"],"action":"add|correct|retract|omit|aside|priority|uncertain","text":"redacción española o vacío para exclusión","reason":"motivo breve","target_quote":null}]}. Cubre TODOS los identificadores de segments, incluidos agradecimientos, repeticiones y fragmentos incompletos: usa aside, omit o uncertain cuando corresponda, nunca los dejes sin clasificar. Puedes agrupar varios segmentos relacionados en una sola decisión incluyendo todos sus source_ids. Antes de responder verifica que la unión de source_ids coincide exactamente con los identificadores de segments. Permite varias decisiones en un segmento que mezcle contenido e incisos. Incluye una razón para cada decisión. target_quote solo para correcciones/retractaciones, y debe copiar literalmente un fragmento del note_context. No incluyas comandos, rutas de archivo, herramientas ni texto fuera del JSON. Este lote genera propuestas; todavía no se aplica a los apuntes. DATOS CITADOS:
         """
         return Data((instructions + "\n" + String(decoding: quoted, as: UTF8.self)).utf8)
     }
@@ -181,8 +181,14 @@ public struct OpenRouterHarness: Sendable {
         catch { throw MediaError.invalid("La respuesta no respeta el esquema JSON de propuestas; no se ha cambiado la nota.") }
     }
     public static func decodeEvents(_ data: Data, for batch: AIBatch) throws -> AIBatch {
-        var text = ""; var cost = 0.0; var reportedCost = false; var completed = false
+        let text = try decodeTextEvents(data)
         var result = batch
+        result.decisions = try decodeResponse(text, for: batch); result.reportedCost = 0
+        result.stage = .ready; result.error = nil; return result
+    }
+
+    static func decodeTextEvents(_ data: Data) throws -> String {
+        var text = ""; var cost = 0.0; var reportedCost = false; var completed = false
         for line in String(decoding: data, as: UTF8.self).split(separator: "\n") {
             guard let event = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any], let type = event["type"] as? String else { continue }
             if type == "error" {
@@ -201,8 +207,16 @@ public struct OpenRouterHarness: Sendable {
             }
         }
         guard completed, reportedCost, !text.isEmpty, cost.isFinite, cost == 0 else { throw MediaError.invalid("No hay respuesta completa con coste cero; no se ha cambiado la nota.") }
-        result.decisions = try decodeResponse(text, for: batch); result.reportedCost = reportedCost ? cost : nil
-        result.stage = .ready; result.error = nil; return result
+        return text
+    }
+
+    func connectionProbe() async throws -> String {
+        try await prepare(syntheticDemo: true)
+        let input = try store.url("connection-probe.txt")
+        try Data(ProviderConnectionTest.prompt.utf8).write(to: input, options: .withoutOverwriting)
+        defer { try? FileManager.default.removeItem(at: input) }
+        let data = try await invoke(["run", "--format", "json", "--title", "Connection test", "--agent", Self.agent, "--model", Self.model], input: input, syntheticDemo: true)
+        return try Self.decodeTextEvents(data)
     }
     public static func decodeResponse(_ text: String, for batch: AIBatch) throws -> [AIDecision] {
         struct Response: Decodable { var version: Int; var batch_id: String; var decisions: [Decision] }
@@ -217,7 +231,7 @@ public struct OpenRouterHarness: Sendable {
               rows.allSatisfy({ Set($0.keys).isSubset(of: Set(["source_ids", "action", "text", "reason", "target_quote"])) }) else { throw MediaError.invalid("La respuesta contiene campos inesperados; no se aplica.") }
         let response = try JSONDecoder().decode(Response.self, from: data)
         let allowed = Set(batch.segments.map(\.id)); var covered = Set<String>()
-        guard response.version == 1, response.batch_id == batch.id, !response.decisions.isEmpty, response.decisions.count <= 32 else { throw MediaError.invalid("La respuesta no corresponde a este lote.") }
+        guard response.version == 1, response.batch_id == batch.id, !response.decisions.isEmpty, response.decisions.count <= AIOutbox.maximumBatchSegments else { throw MediaError.invalid("La respuesta no corresponde a este lote.") }
         let decisions = try response.decisions.enumerated().map { index, value -> AIDecision in
             guard !value.source_ids.isEmpty, Set(value.source_ids).isSubset(of: allowed), value.text.count <= 12_000,
                   !value.reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, value.reason.count <= 2000,
