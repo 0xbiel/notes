@@ -4,6 +4,19 @@ import LectureCore
 @testable import Notes
 
 final class RefinementTests: XCTestCase {
+    func testLibrarySeparatesOriginalVideoFromExtractedAudioAndMicrophone() {
+        var video = MediaJob(notebookID: "test", subject: "Test", note: "Test.md", sourceName: "Lecture.MP4")
+        video.audioRelativePath = "extracted.wav"
+        XCTAssertTrue(LibraryContentFilter.video.includes(video))
+        XCTAssertFalse(LibraryContentFilter.audio.includes(video))
+        let audio = MediaJob(notebookID: "test", subject: "Test", note: "Test.md", sourceName: "Lecture.m4a")
+        XCTAssertTrue(LibraryContentFilter.audio.includes(audio))
+        XCTAssertFalse(LibraryContentFilter.video.includes(audio))
+        let microphone = MediaJob(notebookID: "test", subject: "Test", note: "Test.md", sourceName: "Micrófono", microphone: true)
+        XCTAssertTrue(LibraryContentFilter.audio.includes(microphone))
+        XCTAssertFalse(LibraryContentFilter.video.includes(microphone))
+    }
+
     @MainActor func testFormattingRoundTripUndoAndSelection() async throws {
         _ = NSApplication.shared
         let view = MarkdownTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))

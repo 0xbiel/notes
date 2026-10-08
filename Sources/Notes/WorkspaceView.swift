@@ -1,5 +1,6 @@
 import SwiftUI
 import LectureCore
+import UniformTypeIdentifiers
 
 struct WorkbenchView: View {
     @ObservedObject var model: Workbench
@@ -8,46 +9,74 @@ struct WorkbenchView: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var chrome = CompactChrome()
+    @AppStorage("notes.language") private var language = "es"
+    @AppStorage("notes.appearance") private var appearance = "system"
+
+    @State private var preferencesTheme = false
+
+    private let sidebarWidth: CGFloat = 260
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            // One stable document subtree, unchanged by any chrome presentation state.
-            NoteWorkspace(model: model)
-                .padding(.top, chrome.compact ? 0 : 64)
-                .safeAreaInset(edge: .bottom, alignment: .trailing, spacing: 0) {
-                    HStack(alignment: .center) {
+        ZStack(alignment: .topLeading) {
+            HStack(spacing: 0) {
+                Color.clear.frame(width: chrome.compact ? 0 : sidebarWidth)
+                VStack(spacing: 0) {
+                    HStack(spacing: 12) {
+                        noteLocation
+                        Spacer(minLength: 8)
+                        NoteToolbar(model: model)
+                    }
+                    .padding(.horizontal, 18).frame(height: 58)
+                    .background(WindowDragRegion())
+                    Divider().opacity(0.4)
+                    HStack(spacing: 0) {
+                        NoteWorkspace(model: model)
+                        if model.showInspector {
+                            Divider()
+                            SessionInspector(model: model).frame(width: 320)
+                        }
+                    }
+                    HStack {
                         if let media = model.media { NoteRecordingStatus(model: model, media: media) }
                         Spacer(minLength: 12)
                         ListeningDock(model: model)
-                    }.padding(.horizontal, 20).padding(.vertical, 12)
-                        .background(Color(nsColor: .textBackgroundColor))
+                    }.padding(.horizontal, 18).padding(.vertical, 10)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .opacity(model.showPreferences ? 0 : 1)
+                .allowsHitTesting(!model.showPreferences)
+                .accessibilityHidden(model.showPreferences)
+                .overlay {
+                    if model.showPreferences { NotebookPreferences(showingTheme: $preferencesTheme) }
+                }
                 .background(Color(nsColor: .textBackgroundColor))
-
-            topControls
-                .opacity(chrome.toolbarVisible ? 1 : 0)
-                .offset(y: chrome.toolbarVisible ? 0 : -12)
-                .allowsHitTesting(chrome.toolbarVisible)
-                .accessibilityHidden(!chrome.toolbarVisible)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: chrome.toolbarVisible)
-
-            floatingLibrary
-                .frame(width: 280)
-                .padding(.top, 76).padding(.bottom, 86).padding(.trailing, 12)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(.separator.opacity(0.25)))
+                .shadow(color: .black.opacity(0.12), radius: 5, y: 2)
+                .padding(8)
+            }
+            library
+                .frame(width: sidebarWidth)
+                .frame(maxHeight: .infinity)
+                .background { if chrome.compact { NotebookThemeBackground() } }
+                .clipShape(RoundedRectangle(cornerRadius: chrome.compact ? 14 : 0))
+                .shadow(color: .black.opacity(chrome.compact ? 0.18 : 0), radius: 14, x: 4)
+                .padding(chrome.compact ? 12 : 0)
                 .opacity(chrome.sidebarVisible ? 1 : 0)
-                .offset(x: chrome.sidebarVisible ? 0 : 24)
+                .offset(x: chrome.sidebarVisible ? 0 : -sidebarWidth)
                 .allowsHitTesting(chrome.sidebarVisible)
                 .accessibilityHidden(!chrome.sidebarVisible)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: chrome.sidebarVisible)
 
-            edgeControls.padding(.trailing, 3).frame(maxHeight: .infinity)
-            WindowDragRegion().frame(height: 10).frame(maxWidth: .infinity)
         }
+        .environment(\.locale, Locale(identifier: language))
+        .background(NotebookThemeBackground())
+        .preferredColorScheme(appearance == "system" ? nil : appearance == "dark" ? .dark : .light)
         .background(CompactWindowBridge(chrome: chrome, modalPresented: model.showQuickOpen || model.creationKind != nil || model.errorText != nil))
+        .focusedSceneObject(chrome)
         .ignoresSafeArea(.container, edges: .top)
-        .inspector(isPresented: $model.showInspector) {
-            SessionInspector(model: model).inspectorColumnWidth(min: 300, ideal: 340, max: 410)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: chrome.compact)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: chrome.sidebarVisible)
+        .onChange(of: model.showPreferences) { _, presented in
+            if presented { preferencesTheme = false }
         }
         .sheet(isPresented: $model.showQuickOpen) { QuickOpenSheet(model: model) }
         .sheet(isPresented: Binding(get: { model.creationKind != nil }, set: { if !$0 { model.creationKind = nil } })) {
@@ -58,47 +87,30 @@ struct WorkbenchView: View {
         } message: { Text(model.errorText ?? "") }
     }
 
-    private var topControls: some View {
-        HStack(spacing: 14) {
-            noteLocation
-            Spacer(minLength: 8)
-            NoteToolbar(model: model)
-            Button { chrome.toggleCompact() } label: { Image(systemName: chrome.compact ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") }
-                .buttonStyle(.plain).help("Modo compacto · ⇧⌘\\").accessibilityLabel("Alternar modo compacto")
-        }.padding(.leading, 84).padding(.trailing, 24).frame(height: 64)
-            .background(reduceTransparency ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor)) : AnyShapeStyle(.regularMaterial))
-            .background(WindowDragRegion())
-    }
-    private var floatingLibrary: some View {
+    private var library: some View {
         VStack(spacing: 0) {
-            HStack {
-                Button { model.showQuickOpen = true } label: { Label("Abrir nota", systemImage: "magnifyingglass") }
-                    .help("Abrir nota · ⌘P")
+            HStack(spacing: 10) {
+                NativeWindowControls(chrome: chrome).frame(width: 76, height: 34)
                 Spacer()
-                Button { chrome.togglePin() } label: { Image(systemName: chrome.pinned ? "pin.fill" : "pin") }
-                    .help(chrome.pinned ? "Desfijar biblioteca" : "Fijar biblioteca")
-                    .accessibilityLabel(chrome.pinned ? "Desfijar biblioteca" : "Fijar biblioteca")
-                Button { chrome.toggleSidebar() } label: { Image(systemName: "xmark") }
-                    .help("Ocultar biblioteca · ⌘\\").accessibilityLabel("Ocultar biblioteca")
-            }.buttonStyle(.plain).padding(16)
-            Divider()
-            CourseSidebar(model: model)
-        }.background(reduceTransparency ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor)) : AnyShapeStyle(.regularMaterial), in: RoundedRectangle(cornerRadius: 18))
-            .overlay(RoundedRectangle(cornerRadius: 18).stroke(.separator.opacity(0.4)))
-            .shadow(color: .black.opacity(0.14), radius: 18, y: 5)
+                Button { chrome.toggleCompact() } label: {
+                    Image(systemName: "sidebar.left")
+                        .font(.system(size: 16, weight: .medium))
+                        .frame(width: 30, height: 34)
+                        .contentShape(Rectangle())
+                }
+                    .buttonStyle(.plain)
+                    .help(chrome.compact ? "Salir del modo compacto · ⌥⌘C" : "Modo compacto · ⌥⌘C")
+                    .accessibilityLabel(chrome.compact ? "Salir del modo compacto" : "Alternar modo compacto")
+            }.padding(.horizontal, 18).frame(height: chrome.compact ? 50 : 58)
+                .background(WindowDragRegion())
+            if model.showPreferences {
+                NotebookPreferencesSidebar(showingTheme: $preferencesTheme) { model.showPreferences = false }
+            } else {
+                CourseSidebar(model: model)
+            }
+        }
     }
-    private var edgeControls: some View {
-        VStack(spacing: 12) {
-            Button { chrome.toggleSidebar() } label: { Image(systemName: "sidebar.right").frame(width: 24, height: 30) }
-                .keyboardShortcut("\\", modifiers: .command)
-                .help("Biblioteca · ⌘\\").accessibilityLabel("Mostrar u ocultar biblioteca")
-            Button { chrome.toggleCompact() } label: { Image(systemName: chrome.compact ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right").frame(width: 24, height: 30) }
-                .keyboardShortcut("\\", modifiers: [.command, .shift])
-                .help("Modo compacto · ⇧⌘\\").accessibilityLabel("Alternar modo compacto")
-        }.font(.system(size: 11)).buttonStyle(.plain).padding(.vertical, 7)
-            .background(reduceTransparency ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor)) : AnyShapeStyle(.regularMaterial), in: Capsule())
-            .overlay(Capsule().stroke(.separator.opacity(0.35)))
-    }
+
     private var noteLocation: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(model.selectedNote.map { URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent } ?? "Notes")
@@ -112,22 +124,45 @@ struct WorkbenchView: View {
 struct NoteToolbar: View {
     @ObservedObject var model: Workbench
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var selectionAnimation
     var body: some View {
-        Group {
-            if #available(macOS 26.0, *), !reduceTransparency {
-                controls.glassEffect(.regular.interactive(), in: .capsule)
-            } else {
-                controls.background(Color(nsColor: .controlBackgroundColor), in: Capsule())
-                    .overlay(Capsule().stroke(.separator.opacity(0.6)))
-            }
-        }.fixedSize().accessibilityElement(children: .contain)
+        controls.fixedSize().accessibilityElement(children: .contain)
+    }
+    private var modeSelector: some View {
+        HStack(spacing: 2) {
+            modeButton("Editar", value: "edit")
+            modeButton("Ver", value: "preview")
+        }.padding(4)
+            .background(.primary.opacity(0.045), in: Capsule())
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Modo de la nota")
+            .help("Editar o ver la nota · ⌘E")
+    }
+    private func modeButton(_ title: String, value: String) -> some View {
+        Button { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { model.layout = value } } label: {
+            Text(LocalizedStringKey(title)).font(.system(size: 13, weight: model.layout == value ? .semibold : .regular))
+                .foregroundStyle(model.layout == value ? .primary : .secondary)
+                .frame(width: 64, height: 30)
+                .background {
+                    if model.layout == value {
+                        if #available(macOS 26.0, *), !reduceTransparency {
+                            Capsule().fill(.clear).glassEffect(.regular.interactive(), in: .capsule)
+                                .matchedGeometryEffect(id: "note-mode", in: selectionAnimation)
+                        } else {
+                            Capsule().fill(Color(nsColor: .controlBackgroundColor))
+                                .overlay(Capsule().stroke(.separator.opacity(0.5)))
+                        }
+                    }
+                }
+                .contentShape(Capsule())
+        }.buttonStyle(.plain)
+            .accessibilityLabel(title)
+            .accessibilityAddTraits(model.layout == value ? .isSelected : [])
     }
     private var controls: some View {
         HStack(spacing: 7) {
-                Picker("Modo de la nota", selection: $model.layout) {
-                    Label("Editar", systemImage: "pencil").tag("edit")
-                    Label("Ver", systemImage: "doc.richtext").tag("preview")
-                }.pickerStyle(.segmented).labelsHidden().labelStyle(.titleAndIcon).frame(width: 150).help("Editar o ver la nota · ⌘E")
+                modeSelector
                 Button { model.saveDraft() } label: { Label(model.isDirty ? "Guardar cambios" : "Guardado", systemImage: model.isDirty ? "square.and.arrow.down" : "checkmark").frame(width: 26, height: 26) }
                     .disabled(!model.isDirty).help("Guardar la copia · ⌘S")
                 Menu {
@@ -155,28 +190,32 @@ struct NoteToolbar: View {
 struct CourseSidebar: View {
     @ObservedObject var model: Workbench
     @State private var query = ""
-    @State private var section = "notes"
+    @State private var section = LibraryContentFilter.notes
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var expanded: Set<String> = ["derecho"]
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Biblioteca").font(.system(size: 18, weight: .semibold, design: .rounded))
+                Text("Biblioteca").font(.system(size: 20, weight: .semibold, design: .rounded))
                 Spacer()
+            }.padding(.horizontal, 16).padding(.bottom, 10)
+            HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Buscar", text: $query).textFieldStyle(.plain).accessibilityLabel("Filtrar archivos")
+                    if !query.isEmpty {
+                        Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
+                            .buttonStyle(.plain).help("Limpiar búsqueda")
+                    }
+                }.padding(.horizontal, 11).frame(height: 34)
+                    .modifier(SidebarSearchGlass())
+                filterMenu
                 Button { model.creationInitialName = ""; model.creationKind = "nota" } label: {
-                    Image(systemName: "square.and.pencil").frame(width: 28, height: 28)
+                    Image(systemName: "square.and.pencil").frame(width: 28, height: 34)
                 }.buttonStyle(.plain).help("Nueva nota · ⌘N").accessibilityLabel("Nueva nota")
-            }.padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 8)
-            Picker("Contenido de la biblioteca", selection: $section) {
-                Label("Notas", systemImage: "books.vertical").tag("notes")
-                Label("Audio", systemImage: "waveform").tag("audio")
-            }.pickerStyle(.segmented).labelsHidden().padding(.horizontal, 12)
-            HStack {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField(section == "notes" ? "Filtrar notas" : "Filtrar grabaciones", text: $query).textFieldStyle(.plain).accessibilityLabel("Filtrar archivos")
-                if !query.isEmpty { Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).help("Limpiar búsqueda") }
-            }.padding(9).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8)).padding(12)
-            if section == "audio", let media = model.media {
-                RecordingSidebar(model: model, media: media, query: query)
+            }.padding(.horizontal, 12)
+            if section != .notes, let media = model.media {
+                RecordingSidebar(model: model, media: media, query: query, filter: section)
             } else {
             List(selection: Binding(get: { model.selectedNote }, set: { value in if let value, model.notes.contains(value) { model.openNote(value) } })) {
                 ForEach(model.notebooks) { notebook in
@@ -200,7 +239,7 @@ struct CourseSidebar: View {
                             Button("Nueva carpeta") { prepareCreation("carpeta", folder: notebook.rootPrefix, notebook: notebook) }
                         }
                 }
-            }.listStyle(.sidebar)
+            }.listStyle(.sidebar).scrollContentBackground(.hidden)
             }
             HStack {
                 Menu {
@@ -208,11 +247,30 @@ struct CourseSidebar: View {
                     Button("Nueva carpeta") { model.creationInitialName = ""; model.creationKind = "carpeta" }
                     Button("Nuevo cuaderno") { model.creationInitialName = ""; model.creationKind = "cuaderno" }
                 } label: { Image(systemName: "plus") }.menuStyle(.borderlessButton).fixedSize().help("Añadir nota, carpeta o cuaderno").accessibilityLabel("Añadir")
+                Button { model.showPreferences = true } label: {
+                    Image(systemName: "gearshape").frame(width: 28, height: 28)
+                }.buttonStyle(.plain).help("Preferencias · ⌘,").accessibilityLabel("Preferencias")
                 Spacer()
-                Label("Copia local", systemImage: "lock").font(.caption2).foregroundStyle(.secondary).help("Los cambios se guardan en la copia local")
             }.padding(.horizontal, 16).padding(.vertical, 12)
         }.onChange(of: model.selectedNotebookID) { _, id in expanded.insert(id) }
-            .onChange(of: section) { _, _ in query = "" }
+
+    }
+    private var filterMenu: some View {
+        Menu {
+            ForEach(LibraryContentFilter.allCases) { filter in
+                Button { section = filter } label: {
+                    Label(LocalizedStringKey(filter.title), systemImage: filter.symbol)
+                }
+                .accessibilityAddTraits(section == filter ? .isSelected : [])
+            }
+        } label: {
+            Image(systemName: section.symbol)
+        }.menuStyle(.borderlessButton).menuIndicator(.hidden)
+            .labelStyle(.iconOnly)
+            .font(.system(size: 14, weight: .medium))
+            .frame(width: 34, height: 34)
+            .accessibilityLabel("Filtrar por tipo: \(section.title)")
+            .help("Texto, audio o vídeos importados")
     }
     private func prepareCreation(_ kind: String, folder: String, notebook: Notebook) {
         model.selectedNotebookID = notebook.id
@@ -327,12 +385,17 @@ struct QuickOpenSheet: View {
     @State private var query = ""
     @State private var selection: String?
     @FocusState private var focused: Bool
-    private var matches: [String] { model.notes.filter { query.isEmpty || $0.localizedCaseInsensitiveContains(query) } }
+    private let preferencesAction = "notes-action://preferences"
+    private var matches: [String] {
+        let notes = model.notes.filter { query.isEmpty || $0.localizedCaseInsensitiveContains(query) }
+        let showPreferences = query.isEmpty || ["Preferences", "Settings", "Preferencias", "Ajustes", "Theme", "Tema"].contains { $0.localizedCaseInsensitiveContains(query) }
+        return notes + (showPreferences ? [preferencesAction] : [])
+    }
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Abrir una nota…", text: $query).textFieldStyle(.plain).font(.title3).focused($focused)
+                TextField("Abrir nota o preferencias…", text: $query).textFieldStyle(.plain).font(.title3).focused($focused)
                     .onSubmit { open(selection ?? matches.first) }
                     .onKeyPress(.downArrow) { moveSelection(1); return .handled }
                     .onKeyPress(.upArrow) { moveSelection(-1); return .handled }
@@ -346,10 +409,15 @@ struct QuickOpenSheet: View {
                     ForEach(matches, id: \.self) { name in
                         Button { open(name) } label: {
                             HStack(spacing: 12) {
-                                Image(systemName: "doc.text").foregroundStyle(.secondary)
+                                Image(systemName: name == preferencesAction ? "gearshape" : "doc.text").foregroundStyle(.secondary)
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text(URL(fileURLWithPath: name).deletingPathExtension().lastPathComponent).lineLimit(1)
-                                    Text(name).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                    if name == preferencesAction {
+                                        Text("Preferencias")
+                                        Text("General y tema").font(.caption).foregroundStyle(.secondary)
+                                    } else {
+                                        Text(URL(fileURLWithPath: name).deletingPathExtension().lastPathComponent).lineLimit(1)
+                                        Text(name).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                    }
                                 }
                                 Spacer()
                                 if name == model.selectedNote { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }
@@ -364,7 +432,12 @@ struct QuickOpenSheet: View {
             .onChange(of: query) { _, _ in selection = matches.first }
             .onExitCommand { model.showQuickOpen = false }
     }
-    private func open(_ name: String?) { if let name { model.openNote(name); model.showQuickOpen = false } }
+    private func open(_ name: String?) {
+        guard let name else { return }
+        model.showQuickOpen = false
+        if name == preferencesAction { model.showPreferences = true }
+        else { model.showPreferences = false; model.openNote(name) }
+    }
     private func moveSelection(_ offset: Int) {
         guard !matches.isEmpty else { return }
         let index = selection.flatMap { matches.firstIndex(of: $0) } ?? 0
@@ -431,22 +504,44 @@ struct RecordingPresentation {
     var detail: String { job.asrQualityWarning ?? job.error ?? title }
 }
 
+enum LibraryContentFilter: String, CaseIterable, Identifiable {
+    case notes, audio, video
+    var id: Self { self }
+    var title: String {
+        switch self { case .notes: "Texto"; case .audio: "Audio"; case .video: "Vídeo" }
+    }
+    var symbol: String {
+        switch self { case .notes: "doc.text"; case .audio: "waveform"; case .video: "film" }
+    }
+    func includes(_ job: MediaJob) -> Bool {
+        let ext = URL(fileURLWithPath: job.sourceName).pathExtension.lowercased()
+        let isVideo = !job.isMicrophone && (UTType(filenameExtension: ext)?.conforms(to: .movie) == true
+            || ["mp4", "mov", "m4v", "webm", "mkv", "avi"].contains(ext))
+        switch self {
+        case .notes: return false
+        case .audio: return !isVideo
+        case .video: return isVideo
+        }
+    }
+}
+
 private struct RecordingSidebar: View {
     @ObservedObject var model: Workbench
     @ObservedObject var media: MediaController
     let query: String
+    let filter: LibraryContentFilter
     private var jobs: [MediaJob] {
-        media.jobs.filter { query.isEmpty || ($0.sourceName + " " + $0.targetNote + " " + $0.subject).localizedCaseInsensitiveContains(query) }
+        media.jobs.filter { filter.includes($0) && (query.isEmpty || ($0.sourceName + " " + $0.targetNote + " " + $0.subject).localizedCaseInsensitiveContains(query)) }
             .sorted { $0.classDate > $1.classDate }
     }
     var body: some View {
         Group {
             if jobs.isEmpty {
                 VStack(spacing: 12) {
-                    Image(systemName: query.isEmpty ? "waveform" : "magnifyingglass").font(.title2).foregroundStyle(.tertiary)
-                    Text(query.isEmpty ? "Sin grabaciones" : "Sin resultados").font(.callout).foregroundStyle(.secondary)
+                    Image(systemName: query.isEmpty ? filter.symbol : "magnifyingglass").font(.title2).foregroundStyle(.tertiary)
+                    Text(query.isEmpty ? (filter == .video ? "Sin vídeos" : "Sin audio") : "Sin resultados").font(.callout).foregroundStyle(.secondary)
                     if query.isEmpty {
-                        Button("Importar audio…") { model.importMedia() }.disabled(model.selectedNote == nil)
+                        Button(filter == .video ? "Importar vídeo…" : "Importar audio…") { model.importMedia() }.disabled(model.selectedNote == nil)
                     }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {

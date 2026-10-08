@@ -1,0 +1,138 @@
+import SwiftUI
+
+/// Native counterpart to Zen's appearance-aware accent mixes and window material.
+/// Preferences remain local and update the existing editor without replacing it.
+enum NotebookPalette: String, CaseIterable, Identifiable {
+    case graphite, blue, violet, sage, sand
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .graphite: "Grafito"
+        case .blue: "Azul"
+        case .violet: "Violeta"
+        case .sage: "Salvia"
+        case .sand: "Arena"
+        }
+    }
+    var color: Color {
+        switch self {
+        case .graphite: Color.gray
+        case .blue: Color(red: 0.25, green: 0.52, blue: 0.85)
+        case .violet: Color(red: 0.58, green: 0.40, blue: 0.78)
+        case .sage: Color(red: 0.36, green: 0.62, blue: 0.49)
+        case .sand: Color(red: 0.76, green: 0.59, blue: 0.36)
+        }
+    }
+}
+
+struct NotebookThemeBackground: View {
+    @AppStorage("notes.palette") private var palette = NotebookPalette.graphite.rawValue
+    @AppStorage("notes.themeIntensity") private var intensity = 0.18
+    @AppStorage("notes.customThemeStops") private var storedStops = ""
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    private var color: Color { (NotebookPalette(rawValue: palette) ?? .graphite).color }
+    var body: some View {
+        ZStack {
+            if reduceTransparency { Color(nsColor: .windowBackgroundColor) }
+            else { Rectangle().fill(.regularMaterial) }
+            LinearGradient(colors: palette == "custom"
+                           ? NotebookThemeStop.decode(storedStops).map { $0.color.opacity(intensity) }
+                           : [color.opacity(intensity), color.opacity(intensity * 0.25), .clear],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+        }.allowsHitTesting(false)
+    }
+}
+
+struct SidebarSearchGlass: ViewModifier {
+    func body(content: Content) -> some View {
+        content.background(.primary.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct NotebookPreferences: View {
+    @Binding var showingTheme: Bool
+    @AppStorage("notes.language") private var language = "es"
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(showingTheme ? "Tema" : "General").font(.system(size: 13, weight: .medium))
+                Spacer()
+            }.padding(.horizontal, 18).frame(height: 58).background(WindowDragRegion())
+            Divider().opacity(0.4)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 28) {
+                    Text(showingTheme ? "Tema" : "Preferencias").font(.largeTitle.weight(.semibold))
+                    if showingTheme {
+                        NotebookThemePreferences().frame(maxWidth: 500)
+                    } else {
+                        VStack(alignment: .leading, spacing: 16) {
+                            Text("Idioma").font(.headline)
+                            Picker("Idioma", selection: $language) {
+                                Text("Español").tag("es")
+                                Text("English").tag("en")
+                            }.labelsHidden().frame(maxWidth: 240, alignment: .leading)
+                        }
+                    }
+                }.frame(maxWidth: 680, alignment: .leading)
+                    .padding(40).frame(maxWidth: .infinity, alignment: .topLeading)
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(nsColor: .textBackgroundColor))
+    }
+}
+
+struct NotebookPreferencesSidebar: View {
+    @Binding var showingTheme: Bool
+    let onBack: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Preferencias").font(.title2.weight(.semibold)).padding(.horizontal, 16)
+            VStack(spacing: 6) {
+                sectionButton("General", symbol: "slider.horizontal.3", selected: !showingTheme) { showingTheme = false }
+                sectionButton("Tema", symbol: "paintpalette", selected: showingTheme) { showingTheme = true }
+            }.padding(.horizontal, 12)
+            Spacer()
+            Button(action: onBack) {
+                Label("Volver a notas", systemImage: "arrow.left")
+                    .font(.body.weight(.medium)).frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 12)
+            }.buttonStyle(.plain).keyboardShortcut(.cancelAction).padding(.horizontal, 16)
+        }.padding(.top, 10).padding(.bottom, 12)
+    }
+
+    private func sectionButton(_ title: LocalizedStringKey, symbol: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: symbol)
+                .font(.body.weight(selected ? .semibold : .regular))
+                .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                .background(selected ? Color.primary.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 9))
+                .contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+struct NotebookThemePreferences: View {
+    @AppStorage("notes.palette") private var palette = NotebookPalette.graphite.rawValue
+    @AppStorage("notes.themeIntensity") private var intensity = 0.18
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Color del marco").font(.headline)
+                CustomThemePicker(palette: $palette)
+                HStack {
+                    Text("Intensidad").font(.callout)
+                    Slider(value: $intensity, in: 0...0.5).accessibilityLabel("Intensidad del color")
+                }
+            }
+            HStack(spacing: 8) {
+                RoundedRectangle(cornerRadius: 7).fill(.primary.opacity(0.08))
+                    .frame(width: 60)
+                RoundedRectangle(cornerRadius: 9).fill(Color(nsColor: .textBackgroundColor))
+                    .overlay(Text("Vista previa").font(.caption).foregroundStyle(.secondary))
+            }.padding(8).frame(height: 70).background(NotebookThemeBackground().clipShape(RoundedRectangle(cornerRadius: 14)))
+        }
+    }
+}
