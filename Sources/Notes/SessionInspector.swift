@@ -18,7 +18,9 @@ struct SessionInspector: View {
                 Label("Cambios", systemImage: "clock.arrow.circlepath").tag("changes")
             }.pickerStyle(.segmented).labelStyle(.iconOnly).labelsHidden().padding(.horizontal, 16).padding(.bottom, 16)
             Divider()
-            if let session = model.document {
+            if model.selectedTab == "library", let media = model.media {
+                MediaInspector(media: media, model: model).frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let session = model.document {
                 Group {
                     switch model.selectedTab {
                     case "library": if let media = model.media { MediaInspector(media: media, model: model) }

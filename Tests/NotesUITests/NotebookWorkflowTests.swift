@@ -131,6 +131,8 @@ final class NotebookWorkflowTests: XCTestCase {
         defer { model.media?.shutdown(); model.ai?.stop(); try? FileManager.default.removeItem(at: root) }
         try model.createNotebookItem(kind: "cuaderno", name: "Prueba café 👩🏽‍💻")
         let notebookID = model.selectedNotebookID
+        XCTAssertNil(model.selectedNote)
+        try model.createNotebookItem(kind: "nota", name: "Inicio")
         let startNote = try XCTUnwrap(model.selectedNote)
         try model.createNotebookItem(kind: "carpeta", name: "Unidad 1")
         try model.createNotebookItem(kind: "nota", name: "Unidad 1/Correcciones")

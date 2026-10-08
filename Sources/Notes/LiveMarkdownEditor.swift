@@ -46,6 +46,8 @@ struct LiveMarkdownEditor: NSViewRepresentable {
     var heading: String? = nil
     var onChange: (String) -> Void
     var onLink: (URL) -> Void
+    var onTaskToggle: ((String) -> Void)? = nil
+    @AppStorage("notes.accent") private var storedAccent = ""
 
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NSScrollView {
@@ -98,6 +100,11 @@ struct LiveMarkdownEditor: NSViewRepresentable {
             view.liveEditing = owner.editing
             view.setAccessibilityLabel(owner.editing ? "Editar nota, vista previa Markdown" : "Ver nota")
             view.openLink = owner.onLink
+            view.taskAccent = NSColor(NotebookAccent.color(owner.storedAccent))
+            view.didToggleTask = { [weak self, weak view] in
+                guard let self, let view, let currentID = self.currentID, self.editors[currentID] === view else { return }
+                self.owner?.onTaskToggle?(view.string)
+            }
             view.renderMarkdown()
             if let heading = owner.heading, lastHeading != heading {
                 let pattern = "(?m)^#{1,6}[ \t]+" + NSRegularExpression.escapedPattern(for: heading) + "[ \t]*$"
@@ -137,6 +144,16 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         let language: String
     }
 
+    struct TaskItem {
+        let marker: NSRange
+        let state: NSRange
+        let content: NSRange
+        let indent: CGFloat
+        let checked: Bool
+    }
+    private(set) var taskItems: [TaskItem] = []
+    var taskAccent = NSColor.controlAccentColor { didSet { needsDisplay = true } }
+    var didToggleTask: (() -> Void)?
     var liveEditing = true
     var savedScroll = NSPoint.zero
     var openLink: ((URL) -> Void)?
@@ -227,6 +244,9 @@ struct LiveMarkdownEditor: NSViewRepresentable {
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        if let index = taskItems.indices.first(where: { taskRect(taskItems[$0])?.insetBy(dx: -4, dy: -4).contains(point) == true }) {
+            toggleTask(at: index); return
+        }
         for (index, block) in codeBlocks.enumerated() {
             guard let card = blockRect(block) else { continue }
             let compact = collapsedBlocks.contains(block.id) && foldedRange(for: block)?.location == block.body.location
@@ -240,6 +260,9 @@ struct LiveMarkdownEditor: NSViewRepresentable {
 
     override func resetCursorRects() {
         super.resetCursorRects()
+        if !hasMarkedText() {
+            for task in taskItems { if let rect = taskRect(task) { addCursorRect(rect.insetBy(dx: -4, dy: -4), cursor: .pointingHand) } }
+        }
         for block in codeBlocks {
             guard let card = blockRect(block) else { continue }
             let compact = collapsedBlocks.contains(block.id) && foldedRange(for: block)?.location == block.body.location
@@ -307,6 +330,41 @@ struct LiveMarkdownEditor: NSViewRepresentable {
             }
         }
         super.draw(dirtyRect)
+        for task in taskItems {
+            guard let rect = taskRect(task), rect.intersects(dirtyRect) else { continue }
+            let box = NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3)
+            if task.checked { taskAccent.setFill(); box.fill() }
+            else { NSColor.secondaryLabelColor.setStroke(); box.lineWidth = 1.3; box.stroke() }
+            if task.checked {
+                let check = NSBezierPath(); check.move(to: NSPoint(x: rect.minX + 3, y: rect.midY))
+                check.line(to: NSPoint(x: rect.minX + 6, y: rect.maxY - 3))
+                check.line(to: NSPoint(x: rect.maxX - 3, y: rect.minY + 3))
+                NSColor.white.setStroke(); check.lineWidth = 1.7; check.lineCapStyle = .round; check.stroke()
+            }
+        }
+    }
+    private func taskRect(_ item: TaskItem) -> NSRect? {
+        guard let layoutManager, let textContainer, item.content.location < (string as NSString).length else { return nil }
+        layoutManager.ensureLayout(for: textContainer)
+        let glyph = layoutManager.glyphIndexForCharacter(at: item.content.location)
+        let line = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        return NSRect(x: textContainerOrigin.x + item.indent, y: textContainerOrigin.y + line.minY + 4, width: 14, height: 14)
+    }
+    @objc func toggleMarkdownTask(_ sender: Any?) {
+        let location = selectedRange().location
+        if let index = taskItems.firstIndex(where: { NSLocationInRange(location, NSRange(location: $0.marker.location, length: NSMaxRange($0.content) - $0.marker.location + 1)) }) { toggleTask(at: index) }
+    }
+    func toggleTask(at index: Int) {
+        guard !hasMarkedText(), taskItems.indices.contains(index) else { return }
+        let wasEditable = isEditable
+        isEditable = true
+        defer { isEditable = wasEditable }
+        let item = taskItems[index]
+        breakUndoCoalescing()
+        insertText(item.checked ? " " : "x", replacementRange: item.state)
+        breakUndoCoalescing()
+        renderedSource = nil; renderMarkdown()
+        didToggleTask?()
     }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard window?.firstResponder === self, isEditable else { return super.performKeyEquivalent(with: event) }
@@ -521,6 +579,28 @@ struct LiveMarkdownEditor: NSViewRepresentable {
             hide(block.opening, context: block.opening, force: collapsedBlocks.contains(block.id))
             highlightCode(in: block.body, language: block.language, source: string, storage: storage)
         }
+        taskItems = []
+        for match in matches("^([ \\t]*)[-+*][ \\t]+\\[([ xX])\\][ \\t]+(.+)$") where !inCode(match.range) {
+            let content = match.range(at: 3)
+            let marker = NSRange(location: match.range.location, length: content.location - match.range.location)
+            guard !visible(marker) else { continue }
+            let indentation = CGFloat(source.substring(with: match.range(at: 1)).replacingOccurrences(of: "\t", with: "    ").count) * 7
+            let style = NSMutableParagraphStyle(); style.lineSpacing = 4
+            style.firstLineHeadIndent = indentation + 24; style.headIndent = indentation + 24
+            storage.addAttribute(.paragraphStyle, value: style, range: match.range)
+            hide(marker, context: marker, force: true)
+            let checked = source.substring(with: match.range(at: 2)).lowercased() == "x"
+            if checked { storage.addAttributes([.strikethroughStyle: NSUnderlineStyle.single.rawValue, .foregroundColor: NSColor.secondaryLabelColor], range: content) }
+            taskItems.append(TaskItem(marker: marker, state: match.range(at: 2), content: content, indent: indentation, checked: checked))
+        }
+        let english = UserDefaults.standard.string(forKey: "notes.language") == "en"
+        setAccessibilityCustomActions(taskItems.enumerated().map { index, task in
+            let verb = english ? (task.checked ? "Uncheck" : "Check") : (task.checked ? "Desmarcar" : "Marcar")
+            return NSAccessibilityCustomAction(name: verb + " " + source.substring(with: task.content)) { [weak self] in
+                guard let self, self.taskItems.indices.contains(index) else { return false }
+                self.toggleTask(at: index); return true
+            }
+        })
         for match in matches("^(#{1,6})[ \\t]+(.+)$") where !inCode(match.range) {
             let level = match.range(at: 1).length
             let sizes: [CGFloat] = [32, 25, 21, 18, 17, 16]

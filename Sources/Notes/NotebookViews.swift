@@ -29,7 +29,7 @@ extension Workbench {
         return folders.filter { $0.hasPrefix(notebook.rootPrefix + "/") }
     }
     func openNote(_ name: String, heading: String? = nil) {
-        guard let workspace else { return }
+        guard let workspace, projects?.owner(of: name)?.archivedAt == nil else { return }
         do {
             let disk = try workspace.readNote(name)
             let dirty = drafts[name] != nil && drafts[name] != bases[name]
@@ -85,7 +85,7 @@ extension Workbench {
     func undoEditor() {
         guard let editor else { return }
         perform {
-            if isDirty || editor.history.last(where: { !$0.undone }).map({ hasDraft(for: $0.filename) }) == true {
+            if isDirty || editor.history.last(where: { !$0.undone && $0.superseded != true }).map({ hasDraft(for: $0.filename) }) == true {
                 throw ReplayError.invalidResponse("Guarda el borrador de la nota afectada antes de deshacer.")
             }
             let change = try editor.undo()
@@ -113,10 +113,10 @@ extension Workbench {
             var next = notebooks; next.append(created)
             try workspace.writeStorage("notebooks.json", data: JSONEncoder().encode(next))
             notebooks = next; selectedNotebookID = created.id
-            let filename = prefix + "/Inicio.md"
-            try workspace.createNote(filename, text: "# \(clean)\n\nCuaderno local del prototipo.\n")
-            notes = try workspace.noteNames(); openNote(filename)
+            try projects?.capture(created.id, summary: "Inicio")
+            openNotebook(created.id)
         } else {
+            guard activeNotebooks.contains(where: { $0.id == notebook.id }) else { throw ReplayError.invalidResponse("Crea o restaura un cuaderno primero.") }
             let relative = (notebook.rootPrefix.isEmpty ? "" : notebook.rootPrefix + "/") + clean
             if kind == "carpeta" { try workspace.createFolder(relative) }
             else {

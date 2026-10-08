@@ -17,8 +17,8 @@ struct NotesApp: App {
                     default: NSApp.appearance = nil
                     }
                 }
-                .onDisappear { model.ai?.stop(); if model.media?.isRecording == true { model.media?.stopMicrophone() } }
-                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in model.ai?.stop(); model.media?.shutdown() }
+                .onDisappear { model.assistant?.stop(); model.ai?.stop(); if model.media?.isRecording == true { model.media?.stopMicrophone() } }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in model.assistant?.stop(); model.ai?.stop(); model.media?.shutdown() }
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentMinSize)
@@ -67,8 +67,10 @@ final class Workbench: ObservableObject {
     @Published var creationKind: String?
     @Published var creationInitialName = ""
     @Published var layout = "preview"
+    @Published var hideStudyComposer = false
     @Published var inspectorHistoryMode = "session"
-    @Published var notebooks: [Notebook] = [.copiedCourse]
+    @Published var trash: [NotebookTrashEntry] = []
+    @Published var notebooks: [Notebook] = [.copiedCourse] { didSet { projects?.notebooks = notebooks } }
     @Published var selectedNotebookID = "derecho"
     @Published var selectedNote: String?
     @Published var draftText = ""
@@ -82,6 +84,10 @@ final class Workbench: ObservableObject {
     var workspace: SafeWorkspace?
     @Published var media: MediaController?
     @Published var ai: AIController?
+    var projects: NotebookProjectStore?
+    @Published var assistant: NotebookAssistantController?
+    @Published var showNotebookManagement = false
+    @Published var notebookCheckpointSelection: String?
     var engine: ReplayEngine?
 
     init(workspaceRoot: URL? = nil) {
@@ -123,28 +129,48 @@ final class Workbench: ObservableObject {
             if FileManager.default.fileExists(atPath: workspace.storageRoot.appendingPathComponent("notebooks.json").path) {
                 notebooks = try JSONDecoder().decode([Notebook].self, from: workspace.readStorage("notebooks.json"))
             }
+            let projects = try NotebookProjectStore(workspace: workspace, notebooks: notebooks)
+            self.projects = projects
+            notes = try workspace.noteNames(); folders = try workspace.folderNames()
+            assistant = try NotebookAssistantController(store: projects)
+            try loadTrash()
+            for notebook in notebooks { try projects.capture(notebook.id, summary: "Inicio") }
+            projects.installWriteTracking()
+            try reconcileProjectHistory()
+            media?.createNotebookTarget = { [weak self] notebook in
+                guard let self else { throw CancellationError() }
+                return try self.sessionNote(in: notebook)
+            }
             sessions = try workspace.loadSessions()
-            if sessions.isEmpty { try createSession() }
-            else { select(sessions[0].id) }
-            if let first = notes.first(where: { $0.hasPrefix("Tema 1") }) ?? notes.first { openNote(first) }
-        } catch { errorText = error.localizedDescription }
+            selectedNotebookID = activeNotebooks.first?.id ?? ""
+            if sessions.isEmpty { if !visibleNotes.isEmpty { try createSession() } }
+            else if let session = sessions.first(where: { visibleNotes.contains($0.targetNote) }) { select(session.id) }
+            if let first = visibleNotes.first(where: { $0.hasPrefix("Tema 1") }) ?? visibleNotes.first { openNote(first) }
+            else { selectedNote = nil; selectedNotebookID = activeNotebooks.first?.id ?? "" }
+        } catch {
+            errorText = error.localizedDescription
+            if projects == nil {
+                let reason = error.localizedDescription
+                workspace?.noteMutation = { _, _, _ in throw MediaError.invalid("No se puede editar hasta recuperar el cuaderno: " + reason) }
+            }
+        }
     }
 
     func importMedia() {
-        let notebook = notebooks.first { $0.id == selectedNotebookID } ?? .copiedCourse
+        let notebook = currentNotebook
         media?.chooseImport(notebook: notebook, note: selectedNote)
         selectedTab = "library"; showInspector = true
     }
     func toggleMicrophone() {
         guard let media else { return }
         if media.isRecording { media.stopMicrophone() }
-        else { media.startMicrophone(notebook: notebooks.first { $0.id == selectedNotebookID } ?? .copiedCourse, note: selectedNote) }
+        else { guard !activeNotebooks.isEmpty else { return }; media.startMicrophone(notebook: currentNotebook, note: selectedNote) }
         selectedTab = "library"; showInspector = true
     }
 
     func createSession() throws {
         guard let workspace else { throw ReplayError.missingWorkspace }
-        let notebook = notebooks.first { $0.id == selectedNotebookID } ?? .copiedCourse
+        let notebook = currentNotebook
         let candidates = noteNames(in: notebook)
         guard let note = selectedNote.flatMap({ candidates.contains($0) ? $0 : nil }) ?? candidates.first(where: { $0.hasPrefix("Provisional") }) ?? candidates.first else {
             throw ReplayError.invalidResponse("Crea una nota en este cuaderno antes de iniciar una sesión.")

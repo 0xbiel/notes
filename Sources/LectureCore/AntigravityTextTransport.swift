@@ -59,7 +59,7 @@ public struct AntigravityTextTransport: Sendable {
         return result
     }
 
-    func generate(_ prompt: String, checked: @escaping @Sendable () async -> Void = {}) async throws -> String {
+    func generate(_ prompt: String, images: [NotebookInputImage] = [], checked: @escaping @Sendable () async -> Void = {}) async throws -> String {
         try configuration.validateSending()
         let token = URL(fileURLWithPath: configuration.homePath).appendingPathComponent("antigravity-acp/acp_token.json")
         guard FileManager.default.fileExists(atPath: token.path) else { throw MediaError.invalid("Inicia sesión en Antigravity desde su cliente; Notes no abre login ni copia credenciales.") }
@@ -67,7 +67,13 @@ public struct AntigravityTextTransport: Sendable {
         return try await withTaskCancellationHandler {
             let prepared = try await Task.detached {
                 do {
-                    try connection.start(); _ = try connection.initialize()
+                    try connection.start()
+                    let initialization = try connection.initialize()
+                    if !images.isEmpty {
+                        let capabilities = initialization["agentCapabilities"] as? [String: Any]
+                        let promptCapabilities = capabilities?["promptCapabilities"] as? [String: Any]
+                        guard promptCapabilities?["image"] as? Bool == true else { throw MediaError.invalid("This provider does not advertise image support. Choose an image-capable provider to send these attachments.") }
+                    }
                     _ = try connection.request("authenticate", params: ["methodId": "oauth-personal"])
                     let session = try connection.request("session/new", params: ["cwd": connection.directory.path, "mcpServers": []])
                     guard let sessionID = session["sessionId"] as? String, UUID(uuidString: sessionID) != nil else { throw MediaError.invalid("Sesión Antigravity inválida.") }
@@ -82,7 +88,9 @@ public struct AntigravityTextTransport: Sendable {
             await checked()
             return try await Task.detached {
                 defer { connection.close() }
-                let finish = try connection.request("session/prompt", params: ["sessionId": prepared, "prompt": [["type": "text", "text": prompt]]])
+                var content: [[String: Any]] = [["type": "text", "text": prompt]]
+                content += images.map { ["type": "image", "mimeType": "image/png", "data": $0.data.base64EncodedString()] }
+                let finish = try connection.request("session/prompt", params: ["sessionId": prepared, "prompt": content])
                 guard finish["stopReason"] as? String == "end_turn" else { throw MediaError.invalid("Antigravity no completó el lote; no se aplica nada.") }
                 return connection.output
             }.value

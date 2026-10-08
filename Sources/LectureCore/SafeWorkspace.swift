@@ -6,6 +6,7 @@ public final class SafeWorkspace {
     public let storageRoot: URL
     public let originalRoot: URL
     private let fm = FileManager.default
+    public var noteMutation: ((String, String?, String?) throws -> Bool)?
 
     public init(root: URL, originalRoot: URL) throws {
         self.root = root.standardizedFileURL
@@ -93,7 +94,28 @@ public final class SafeWorkspace {
         try rejectLinks(url)
     }
 
+    /// Validate a folder before deletion. Never discard non-Markdown assets or links.
+    public func markdownFolderTree(_ relative: String) throws -> [String] {
+        let probe = try noteURL(relative + "/placeholder.md")
+        let directory = probe.deletingLastPathComponent()
+        guard fm.fileExists(atPath: directory.path), let iterator = fm.enumerator(at: directory, includingPropertiesForKeys: [.isDirectoryKey]) else { throw ReplayError.unsafePath(relative) }
+        var folders = [relative]
+        for case let url as URL in iterator {
+            try rejectLinks(url)
+            let name = String(url.path.dropFirst(courseRoot.path.count + 1))
+            if try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true { folders.append(name) }
+            else { guard url.pathExtension == "md" else { throw ReplayError.invalidResponse("La carpeta contiene archivos que no son Markdown; muévelos antes de eliminarla.") }; _ = try noteURL(name) }
+        }
+        return folders
+    }
+    public func removeEmptyFolder(_ relative: String) throws {
+        let directory = try noteURL(relative + "/placeholder.md").deletingLastPathComponent()
+        guard try fm.contentsOfDirectory(atPath: directory.path).isEmpty else { throw ReplayError.conflict }
+        try fm.removeItem(at: directory)
+    }
+
     public func createNote(_ relative: String, text: String) throws {
+        if try noteMutation?(relative, nil, text) == true { return }
         let url = try noteURL(relative)
         guard !fm.fileExists(atPath: url.path) else { throw ReplayError.invalidResponse("Ya existe una nota con ese nombre.") }
         if relative.contains("/") {
@@ -124,12 +146,20 @@ public final class SafeWorkspace {
     }
 
     public func writeNote(_ filename: String, expected: String, replacement: String) throws {
+        if try noteMutation?(filename, expected, replacement) == true { return }
         let url = try noteURL(filename)
         guard try String(contentsOf: url, encoding: .utf8) == expected else { throw ReplayError.conflict }
         // Check again immediately before an atomic replacement; no user-supplied
         // path, symlink or hard link is accepted.
         _ = try noteURL(filename)
         try Data(replacement.utf8).write(to: url, options: .atomic)
+    }
+
+    public func removeNote(_ filename: String, expected: String) throws {
+        if try noteMutation?(filename, expected, nil) == true { return }
+        let url = try noteURL(filename)
+        guard try readNote(filename) == expected else { throw ReplayError.conflict }
+        try fm.removeItem(at: url)
     }
 
     public func writeStorage(_ relative: String, data: Data) throws {

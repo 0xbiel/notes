@@ -112,6 +112,7 @@ struct NotebookPreferences: View {
     @ObservedObject var model: Workbench
     @Binding var section: NotebookPreferencesSection
     @AppStorage("notes.language") private var language = "es"
+    @AppStorage("notes.confirmChatDeletion") private var confirmChatDeletion = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -139,6 +140,15 @@ struct NotebookPreferences: View {
                             GeneralAIPreferences(ai: ai) { section = .providers }.id(ai.outbox.workspace.root.path)
                             Divider()
                         }
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(language == "en" ? "Chats" : "Chats").font(.headline)
+                            Toggle(language == "en" ? "Confirm before deleting chats" : "Confirmar antes de eliminar chats", isOn: $confirmChatDeletion)
+                                .toggleStyle(.switch)
+                                .accessibilityIdentifier("preferences.confirmChatDeletion")
+                            Text(language == "en" ? "Turn off to delete chats immediately. Documents and checkpoints are kept." : "Desactívalo para eliminar chats directamente. Se conservan los documentos y el historial.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Divider()
                         VStack(alignment: .leading, spacing: 16) {
                             Text("Idioma").font(.headline)
                             AIOptionSelector(title: "Idioma / Language", symbol: "globe", options: [
@@ -197,6 +207,8 @@ struct NotebookThemePreferences: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
+            NotebookAccentPicker()
+            Divider()
             VStack(alignment: .leading, spacing: 12) {
                 Text("Color del marco").font(.headline)
                 CustomThemePicker(palette: $palette)

@@ -1,3 +1,13 @@
+# Notebook workspace validation — October 8, 2026
+
+- Current offline suite: 126 discovered tests, 116 passed, 10 opt-in hardware/external-service tests skipped, zero failures.
+- Signed native app build and `git diff --check` pass.
+- New coverage includes notebook/chat/profile isolation, multi-file transactions, draft preservation, conflicts, rollback, interrupted-write recovery, historical restores and stale proposal invalidation; BOE exact/historical article fixtures; duplicate-context recovery; chat Markdown and localized saved errors; checkbox source preservation, undo, View-mode callbacks and accent round trips; recoverable file/folder/notebook deletion, restart recovery, preserved empty folders and collision refusal.
+- Native checks in a separate local demo workspace verified notebook home selection, persisted profile edits, live Codex multi-file creation/editing, exact BOE Art. 13 insertion, checkpoint restoration, checkbox rendering, unified bottom composer, hide/show in View/Edit, accessible View-mode checkbox toggling and immediate save, localized saved activity, and the single-color accent field, neutral chat/voice controls with a custom-colored Send button, and an idle-hidden status indicator. The original Art. 1 request was retried successfully after fixing redundant source retrieval, creating Unit 1 with a verified BOE citation. Light/dark wide/narrow offscreen renders pass visual inspection.
+- Live microphone capture and live Antigravity/OpenCode editing were not run for this feature. Provider transports currently emit execution stages, not token-by-token reply text. Earlier evidence below refers to earlier snapshots.
+
+Local logs: `/tmp/notes-final-tests.log`, `/tmp/notes-final-build.log`. Render output remains ignored under `qa/notebook-workspaces/`.
+
 # Merge validation — October 8, 2026
 
 The prepared UI and provider work are committed with both branch histories retained. The merge resolves overlapping settings files to the tested combined implementation; its source tree matches the pre-merge tested source.
@@ -92,3 +102,9 @@ The real connection probe passed with GPT-6 Luna, low reasoning and fast mode in
 The connection test now sends a fixed 46-byte acknowledgement prompt instead of the note fixture, with minimal instructions and a tiny JSON schema. The live GPT-6 Luna low/fast probe passed in 7.647 seconds; provider startup and inference still contribute latency. The suite completed with 92 tests, 9 skipped and no failures, and the Notes app build succeeded. No notes or outbox entries are created.
 
 Provider availability now defaults to enabled for new settings, preserves saved opt-outs, hides disabled providers from model choices and checks current provider enablement before queued sends. General exposes individual provider switches and places editing permissions to the right of the model. The offline suite passed with 92 tests, 10 skipped, zero failures after updating the opt-out regression tests.
+
+## Chat attachments — 2026-10-08
+
+- `scripts/test.sh`: 136 tests, 125 passed, 11 opt-in skipped, no failures. Coverage includes image/PDF preparation, exact text copies, unsupported/oversized inputs, notebook isolation, attachment-only sends, persisted drafts, pasted images/files, removal, ACP capability rejection and image payloads, and fenced JSON responses.
+- Live Antigravity image test: invented red-circle PNG correctly described as a red circle, with no edits; the live-enabled suite passed (135 tests, 10 skipped at that point).
+- Native app: paperclip imports an invented PNG, thumbnail opens a full image preview, and removal works. File-picker interaction exposed SwiftUI paste-command interference; replaced with a composer-focused AppKit paste handler. Clipboard data paths are regression-tested. Finder drag and drop, native PDF preview, and live Codex vision have not been separately exercised.

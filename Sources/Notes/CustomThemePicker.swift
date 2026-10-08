@@ -38,14 +38,26 @@ struct NotebookThemeStop: Codable, Equatable {
 
 struct CustomThemePicker: View {
     @Binding var palette: String
-    @AppStorage("notes.customThemeStops") private var storedStops = ""
+    var singleColor = false
+    @AppStorage("notes.customThemeStops") private var themeStops = ""
+    @AppStorage("notes.accent") private var accentStop = ""
+    private var storedStops: String {
+        get { singleColor ? accentStop : themeStops }
+        nonmutating set {
+            if singleColor { accentStop = NotebookThemeStop.encode(Array(NotebookThemeStop.decode(newValue).prefix(1))) }
+            else { themeStops = newValue }
+        }
+    }
     @AppStorage("notes.language") private var language = "es"
     @AppStorage("notes.appearance") private var appearance = "system"
     @Environment(\.colorScheme) private var colorScheme
     private var neutralColor: Color { colorScheme == .dark ? .black : .white }
     @State private var selected = 0
     @State private var dragging = false
-    private var stops: [NotebookThemeStop] { NotebookThemeStop.decode(storedStops) }
+    private var stops: [NotebookThemeStop] {
+        if singleColor { return [storedStops.isEmpty ? .init(color: Color(nsColor: .controlAccentColor)) : NotebookThemeStop.decode(storedStops).first ?? .initial] }
+        return NotebookThemeStop.decode(storedStops)
+    }
     private var index: Int { max(0, min(selected, stops.count - 1)) }
     private func label(_ es: String, _ en: String) -> String { language == "en" ? en : es }
 
@@ -78,22 +90,22 @@ struct CustomThemePicker: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(spacing: 8) {
-                HStack(spacing: 5) {
+                if !singleColor { HStack(spacing: 5) {
                     schemeButton("system", "circle.lefthalf.filled", label("Sistema", "System"))
                     schemeButton("light", "sun.max", label("Claro", "Light"))
                     schemeButton("dark", "moon", label("Oscuro", "Dark"))
-                }.padding(8)
+                }.padding(8) }
                 colorField
-                HStack(spacing: 5) {
+                if !singleColor { HStack(spacing: 5) {
                     Button(action: addColor) { Image(systemName: "plus").frame(width: 30, height: 30) }
                         .disabled(stops.count == 3).accessibilityLabel(label("Añadir color", "Add color"))
                     Button(action: removeColor) { Image(systemName: "minus").frame(width: 30, height: 30) }
                         .disabled(stops.isEmpty).accessibilityLabel(label("Quitar color", "Remove color"))
-                }.buttonStyle(.borderless).padding(8)
+                }.buttonStyle(.borderless).padding(8) }
             }
             HStack(spacing: 12) {
                 ForEach(NotebookPalette.allCases) { option in
-                    Button { palette = option.rawValue } label: {
+                    Button { if singleColor { storedStops = NotebookThemeStop.encode([.init(color: option.color)]) } else { palette = option.rawValue } } label: {
                         Circle().fill(option.color.gradient).frame(width: 26, height: 26)
                             .overlay(Circle().strokeBorder(palette == option.rawValue ? Color.primary : .clear, lineWidth: 2))
                     }.buttonStyle(.plain).help(LocalizedStringKey(option.title))
@@ -101,13 +113,15 @@ struct CustomThemePicker: View {
                         .accessibilityAddTraits(palette == option.rawValue ? .isSelected : [])
                 }
                 Spacer(minLength: 0)
-                Button { palette = "custom" } label: {
+                if singleColor {
+                    Button(label("Sistema", "System")) { accentStop = "" }.buttonStyle(.plain).foregroundStyle(.secondary)
+                } else { Button { palette = "custom" } label: {
                     Circle().fill(LinearGradient(colors: stops.isEmpty ? [neutralColor, neutralColor] : stops.map(\.color), startPoint: .topLeading, endPoint: .bottomTrailing))
                         .frame(width: 26, height: 26)
                         .overlay(Circle().strokeBorder(palette == "custom" ? Color.primary : .clear, lineWidth: 2))
                 }.buttonStyle(.plain).help(label("Personalizado", "Custom"))
                     .accessibilityLabel(label("Personalizado", "Custom"))
-                    .accessibilityAddTraits(palette == "custom" ? .isSelected : [])
+                    .accessibilityAddTraits(palette == "custom" ? .isSelected : []) }
             }.padding(.horizontal, 8)
             HStack {
                 Text(label("Luminosidad", "Brightness")).font(.callout)
@@ -177,7 +191,8 @@ struct CustomThemePicker: View {
                     $0.saturation = 1 - min(1, max(0, (value.location.y - inset) / max(1, geometry.size.height - 2 * inset)))
                 }
             }.onEnded { _ in dragging = false })
-            .accessibilityElement(children: .ignore).accessibilityLabel(label("Campo de color", "Color field"))
+            .accessibilityElement(children: .ignore).accessibilityLabel(singleColor ? label("Color de acento", "Accent color") : label("Campo de color", "Color field"))
+            .accessibilityIdentifier(singleColor ? "theme.accent" : "theme.colorField")
             .accessibilityHint(label("Usa Color exacto para seleccionar con el teclado.", "Use Exact color to select with the keyboard."))
             .accessibilityAction(named: Text(label("Siguiente color", "Next color"))) { if !stops.isEmpty { selected = (index + 1) % stops.count } }
             .accessibilityAdjustableAction { direction in

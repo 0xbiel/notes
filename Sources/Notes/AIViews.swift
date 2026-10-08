@@ -53,7 +53,7 @@ struct AIReviewInspector: View {
                         if batch.syntheticDemoProvenance != nil { Text(batch.providerConfiguration?.provider == .codexCLI || batch.providerConfiguration?.provider == .antigravity ? "Datos inventados · condiciones de la cuenta externa" : "Datos inventados · retención permitida · entrenamiento prohibido").font(.caption).foregroundStyle(.orange) }
                         Text("\(timestamp(batch.segments.first?.start ?? 0)) · \(batch.createdAt.formatted(date: .abbreviated, time: .shortened))").font(.caption2).foregroundStyle(.secondary)
                         if let error = batch.error { Text(error).font(.caption).foregroundStyle(.orange) }
-                        if [.failed, .interrupted, .cancelled].contains(batch.stage) { Button("Reintentar este lote") { ai.retry(batch.id) }.disabled(ai.running) }
+                        if [.failed, .interrupted, .cancelled].contains(batch.stage) { Button("Reintentar este lote") { ai.retry(batch.id) }.disabled(ai.running || batch.invalidatedByNotebook == true) }
                         ForEach(batch.decisions.filter { $0.resolution == nil }) { decision in AIProposalCard(ai: ai, model: model, batch: batch, decision: decision) }
                         let resolved = batch.decisions.filter { $0.resolution != nil }
                         if !resolved.isEmpty { DisclosureGroup("Revisadas (\(resolved.count))") { ForEach(resolved) { item in Text("\(item.resolution == "applied" ? "Aplicada" : "Fuera de apuntes"): \(item.reason)").font(.caption).foregroundStyle(.secondary) } } }
