@@ -10,8 +10,8 @@ struct AISendControls: View {
     private var context: String { AIOutbox.relevantContext(note: (try? ai.outbox.workspace.readNote(job.targetNote)) ?? "", selected: segments) }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(job.syntheticFixture ? "Demo inventada · retención permitida" : "OpenRouter gratuito · ZDR exigido").font(.subheadline.weight(.semibold))
-            Text(job.syntheticFixture ? "Solo envía los cuatro fragmentos y su nota inventada exacta. Permite retención del proveedor; prohíbe entrenamiento. No incluye apuntes reales." : "Envía el texto seleccionado y hasta 2.000 caracteres relevantes de la copia. El audio permanece local. Cada propuesta requiere revisión.").font(.caption).foregroundStyle(.secondary)
+            Text(ai.providerSettings.selectedProvider == .openCode ? (job.syntheticFixture ? "Demo inventada · retención permitida" : "OpenRouter gratuito · ZDR exigido") : ai.providerSettings.selectedProvider.title).font(.subheadline.weight(.semibold))
+            Text(ai.providerSettings.selectedProvider == .openCode ? (job.syntheticFixture ? "Solo envía los cuatro fragmentos y su nota inventada exacta. Permite retención del proveedor; prohíbe entrenamiento. No incluye apuntes reales." : "Envía el texto seleccionado y hasta 2.000 caracteres relevantes de la copia. El audio permanece local. Cada propuesta requiere revisión.") : "Envía los fragmentos y contexto limitado mediante tu cuenta. Se aplican sus costes y condiciones de retención. El audio permanece local; cada propuesta requiere revisión.").font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button(selected.count == job.transcript.count ? "Quitar selección" : "Seleccionar todos") { selected = selected.count == job.transcript.count ? [] : Set(job.transcript.map(\.id)) }.disabled(job.transcript.isEmpty)
                 Spacer()
@@ -44,12 +44,13 @@ struct AIReviewInspector: View {
                     if ai.running { ProgressView().controlSize(.small); Button("Parar envío") { ai.stop() } }
                     else if batches.contains(where: { $0.stage == .queued }) { Button("Continuar cola") { ai.continueQueue(notebookID: model.selectedNotebookID) } }
                 }
-                Text("Router gratuito · la selección del modelo varía. Sin herramientas, sin cambios automáticos en tus notas.").font(.caption).foregroundStyle(.secondary)
+                Text("Cada lote conserva su proveedor. Sin herramientas ni cambios automáticos en tus notas.").font(.caption).foregroundStyle(.secondary)
                 if batches.isEmpty { ContentUnavailableView("Sin propuestas", systemImage: "checkmark.bubble", description: Text("Selecciona fragmentos en Transcripción y pulsa Enviar selección.")) }
                 ForEach(batches.reversed()) { batch in
                     VStack(alignment: .leading, spacing: 10) {
                         HStack { Text(URL(fileURLWithPath: batch.targetNote).lastPathComponent).font(.subheadline.weight(.semibold)); Spacer(); Text(stage(batch.stage)).font(.caption).foregroundStyle(.secondary) }
-                        if batch.syntheticDemoProvenance != nil { Text("Datos inventados · retención permitida · entrenamiento prohibido").font(.caption).foregroundStyle(.orange) }
+                        Text("\(batch.providerConfiguration?.provider.title ?? NotesAIProvider.openCode.title) · \(batch.model)").font(.caption).foregroundStyle(.secondary)
+                        if batch.syntheticDemoProvenance != nil { Text(batch.providerConfiguration?.provider == .codexCLI || batch.providerConfiguration?.provider == .antigravity ? "Datos inventados · condiciones de la cuenta externa" : "Datos inventados · retención permitida · entrenamiento prohibido").font(.caption).foregroundStyle(.orange) }
                         Text("\(timestamp(batch.segments.first?.start ?? 0)) · \(batch.createdAt.formatted(date: .abbreviated, time: .shortened))").font(.caption2).foregroundStyle(.secondary)
                         if let error = batch.error { Text(error).font(.caption).foregroundStyle(.orange) }
                         if [.failed, .interrupted, .cancelled].contains(batch.stage) { Button("Reintentar este lote") { ai.retry(batch.id) }.disabled(ai.running) }

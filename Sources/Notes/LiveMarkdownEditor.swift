@@ -96,6 +96,9 @@ struct LiveMarkdownEditor: NSViewRepresentable {
     var savedScroll = NSPoint.zero
     var openLink: ((URL) -> Void)?
     private var styling = false
+    private var renderedSource: String?
+    private var renderedSelection = NSRange(location: NSNotFound, length: 0)
+    private var renderedEditing = false
     private let documentUndo = UndoManager()
     override var undoManager: UndoManager? { documentUndo }
 
@@ -113,7 +116,7 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         minSize = .zero
         maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         container.widthTracksTextView = true
-        textContainerInset = NSSize(width: 42, height: 36)
+        textContainerInset = NSSize(width: frame.width < 600 ? 22 : 40, height: 28)
         drawsBackground = false
         font = .systemFont(ofSize: 16)
         textColor = .labelColor
@@ -123,6 +126,46 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         isAutomaticLinkDetectionEnabled = false
         usesFindBar = true
         isIncrementalSearchingEnabled = true
+    }
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        textContainerInset = NSSize(width: newSize.width < 600 ? 22 : 40, height: 28)
+    }
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        renderedSource = nil
+        renderMarkdown()
+    }
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard window?.firstResponder === self, isEditable else { return super.performKeyEquivalent(with: event) }
+        let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        switch (event.charactersIgnoringModifiers?.lowercased(), flags) {
+        case ("b", [.command]): toggleMarkdownBold(nil); return true
+        case ("i", [.command]): toggleMarkdownItalic(nil); return true
+        case ("k", [.command, .shift]): toggleMarkdownCode(nil); return true
+        default: return super.performKeyEquivalent(with: event)
+        }
+    }
+    @objc func toggleMarkdownBold(_ sender: Any?) { toggleMarker("**") }
+    @objc func toggleMarkdownItalic(_ sender: Any?) { toggleMarker("*") }
+    @objc func toggleMarkdownCode(_ sender: Any?) { toggleMarker("`") }
+    private func toggleMarker(_ marker: String) {
+        guard isEditable, !hasMarkedText() else { return }
+        let selection = selectedRange()
+        let ns = string as NSString
+        let count = marker.utf16.count
+        guard selection.location != NSNotFound, NSMaxRange(selection) <= ns.length else { return }
+        breakUndoCoalescing()
+        if selection.location >= count, NSMaxRange(selection) + count <= ns.length,
+           ns.substring(with: NSRange(location: selection.location - count, length: count)) == marker,
+           ns.substring(with: NSRange(location: NSMaxRange(selection), length: count)) == marker {
+            insertText(ns.substring(with: selection), replacementRange: NSRange(location: selection.location - count, length: selection.length + count * 2))
+            setSelectedRange(NSRange(location: selection.location - count, length: selection.length))
+        } else {
+            insertText(marker + ns.substring(with: selection) + marker, replacementRange: selection)
+            setSelectedRange(NSRange(location: selection.location + count, length: selection.length))
+        }
+        breakUndoCoalescing()
     }
     @objc func undo(_ sender: Any?) { if isEditable { documentUndo.undo() } }
     @objc func redo(_ sender: Any?) { if isEditable { documentUndo.redo() } }
@@ -157,16 +200,20 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         defer { styling = false }
         let source = string as NSString
         let full = NSRange(location: 0, length: source.length)
+        let active = liveEditing ? selectedRange() : NSRange(location: NSNotFound, length: 0)
+        guard renderedSource != string || renderedSelection != active || renderedEditing != liveEditing else { return }
+        renderedSource = string; renderedSelection = active; renderedEditing = liveEditing
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 6
-        paragraph.paragraphSpacing = 5
-        let active = liveEditing ? source.lineRange(for: selectedRange()) : NSRange(location: NSNotFound, length: 0)
+        paragraph.lineSpacing = 4
+        paragraph.paragraphSpacing = 0
         // Attribute edits are presentation only and never enter the undo stack.
         documentUndo.disableUndoRegistration()
         storage.beginEditing()
         storage.setAttributes([.font: NSFont.systemFont(ofSize: 16), .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph], range: full)
         func visible(_ range: NSRange) -> Bool {
-            active.location != NSNotFound && NSIntersectionRange(active, range).length > 0
+            guard active.location != NSNotFound else { return false }
+            if active.length == 0 { return active.location >= range.location && active.location <= NSMaxRange(range) }
+            return NSIntersectionRange(active, range).length > 0
         }
         func hide(_ range: NSRange, context: NSRange) {
             guard range.length > 0, !visible(context) else { return }
@@ -219,7 +266,11 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         ]
         for (pattern, key, value, count) in formats {
             for match in matches(pattern) where !inCode(match.range) {
-                storage.addAttribute(key, value: value, range: match.range(at: 1))
+                if key == .font, let requested = value as? NSFont {
+                    let current = storage.attribute(.font, at: match.range(at: 1).location, effectiveRange: nil) as? NSFont ?? requested
+                    let traits = NSFontManager.shared.traits(of: requested)
+                    storage.addAttribute(.font, value: NSFontManager.shared.convert(current, toHaveTrait: traits), range: match.range(at: 1))
+                } else { storage.addAttribute(key, value: value, range: match.range(at: 1)) }
                 hide(NSRange(location: match.range.location, length: count), context: match.range)
                 hide(NSRange(location: NSMaxRange(match.range) - count, length: count), context: match.range)
             }

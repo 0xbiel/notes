@@ -80,6 +80,7 @@ public struct MediaJob: Codable, Identifiable, Sendable {
     public var completedChunks = 0
     public var live: LiveRecordingMetadata? = nil
     public var asrQualityWarning: String? = nil
+    public var whisperConfiguration: WhisperConfiguration? = nil
     public init(notebookID: String, subject: String, note: String, sourceName: String, microphone: Bool = false) {
         self.notebookID = notebookID; self.subject = subject; targetNote = note
         self.sourceName = sourceName; isMicrophone = microphone
@@ -213,9 +214,9 @@ public struct LocalMediaStore: Sendable {
                 try await handle.run(to: output.url)
                 try Task.checkCancellation()
             } onCancel: { handle.cancel() }
-            _ = try await validateAudio(output.relative)
+            let audioDuration = try await validateAudio(output.relative)
             await progress(1)
-            return (output.relative, duration)
+            return (output.relative, audioDuration)
         } catch {
             try? FileManager.default.removeItem(at: url(output.relative))
             throw error

@@ -9,25 +9,43 @@ final class AIController: ObservableObject {
     @Published var automaticMediaIDs: Set<String> = []
     let outbox: AIOutbox
     let harness: OpenRouterHarness
+    let transport: NotesProviderTransport
+    @Published var providerSettings: AIProviderSettings
     private var worker: Task<Void, Never>?
     private var latestMedia: [String: MediaJob] = [:]
     private var drainIDs: Set<String> = []
     init(workspace: SafeWorkspace, editor: NotebookEditor) throws {
         outbox = try AIOutbox(workspace: workspace)
         harness = OpenRouterHarness(store: LocalMediaStore(workspace: workspace))
+        transport = NotesProviderTransport(store: LocalMediaStore(workspace: workspace))
+        providerSettings = try AIProviderSettings.load(in: workspace)
         try outbox.recoverApplications(editor: editor); refresh()
     }
     func refresh() { batches = outbox.batches }
+    func saveProviderSettings(_ settings: AIProviderSettings) throws {
+        guard !running else { throw MediaError.invalid("Espera a que termine la petición antes de guardar preferencias.") }
+        try settings.save(in: outbox.workspace)
+        providerSettings = settings
+    }
+    private func configure(_ batch: inout AIBatch) throws {
+        guard batch.stage == .queued, batch.providerConfiguration == nil else { return }
+        try providerSettings.selected.validateSending()
+        batch.providerConfiguration = providerSettings.selected
+        batch.model = providerSettings.selected.model
+        try outbox.replace(batch)
+    }
     func send(media: MediaJob, ids: Set<String>) {
         do {
             let selected = media.transcript.filter { ids.contains($0.id) }
             guard !selected.isEmpty else { return }
+            try providerSettings.selected.validateSending()
             if media.syntheticFixture {
                 guard selected == SyntheticAIFixture.segments, media.notebookID == "synthetic", try outbox.workspace.readNote(media.targetNote) == SyntheticAIFixture.note else { throw MediaError.invalid("La demo con retención requiere los cuatro fragmentos y la nota inventada intacta. Crea otra demo si ya la editaste.") }
             }
             // Manual selection never sends adjacent unselected transcript.
             for group in AIOutbox.groups(selected, flush: true) {
                 var batch = try outbox.enqueue(media: media, selected: group)
+                try configure(&batch)
                 if media.syntheticFixture { batch.syntheticDemoProvenance = SyntheticAIFixture.version; try outbox.replace(batch) }
                 if batch.stage == .queued { drainIDs.insert(batch.id) }
             }
@@ -36,6 +54,10 @@ final class AIController: ObservableObject {
     }
     func setAutomatic(_ enabled: Bool, media: MediaJob) {
         guard !media.syntheticFixture else { return }
+        if enabled {
+            do { try providerSettings.selected.validateSending() }
+            catch { self.error = error.localizedDescription; return }
+        }
         if enabled, let warning = media.asrQualityWarning { error = warning; return }
         if enabled { automaticMediaIDs.insert(media.id); receive(media) }
         else { automaticMediaIDs.remove(media.id) }
@@ -49,12 +71,14 @@ final class AIController: ObservableObject {
             error = warning; return
         }
         do {
+            try providerSettings.selected.validateSending()
             let submitted = Set(outbox.batches.filter { $0.mediaID == media.id }.flatMap { $0.segments.map(\.id) })
             let fresh = media.transcript.filter { !submitted.contains($0.id) }
             let groups = AIOutbox.groups(fresh, flush: media.stage == .transcribed)
             for group in groups {
                 let prior = media.transcript.filter { $0.end <= (group.first?.start ?? 0) && !group.contains($0) }
-                let batch = try outbox.enqueue(media: media, selected: group, prior: prior)
+                var batch = try outbox.enqueue(media: media, selected: group, prior: prior)
+                try configure(&batch)
                 if batch.stage == .queued { drainIDs.insert(batch.id) }
             }
             refresh(); start()
@@ -78,10 +102,8 @@ final class AIController: ObservableObject {
                     batch.stage = .checking; batch.attempts += 1; batch.error = nil
                     try self.outbox.replace(batch); self.refresh()
                     let id = batch.id
-                    var result: AIBatch
-                    if batch.syntheticDemoProvenance == SyntheticAIFixture.version {
-                        result = try await self.harness.sendSyntheticDemo(batch, checked: { [weak self] in await self?.markSending(id) })
-                    } else { result = try await self.harness.send(batch) { [weak self] in await self?.markSending(id) } }
+                    let configuration = batch.providerConfiguration ?? AIProviderSettings().openCode
+                    var result = try await self.transport.send(batch, configuration: configuration, checked: { [weak self] in await self?.markSending(id) })
                     // Other approved edits may have changed the local snapshot
                     // while this request was in flight. Never overwrite it.
                     if let current = self.outbox.batches.first(where: { $0.id == id }) { result.expectedNote = current.expectedNote }

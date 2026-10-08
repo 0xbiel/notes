@@ -1,53 +1,82 @@
 import SwiftUI
 import LectureCore
+import UniformTypeIdentifiers
 
 struct WorkbenchView: View {
     @ObservedObject var model: Workbench
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     private var notebookName: String { model.notebooks.first { $0.id == model.selectedNotebookID }?.name ?? "Cuadernos" }
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @StateObject private var chrome = CompactChrome()
+    @AppStorage("notes.language") private var language = "es"
+    @AppStorage("notes.appearance") private var appearance = "system"
+
+    @State private var preferencesSection: NotebookPreferencesSection = .general
+
+    private let sidebarWidth: CGFloat = 260
+
     var body: some View {
-        NavigationSplitView {
-            CourseSidebar(model: model)
-                .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 320)
-        } detail: {
-            VStack(spacing: 0) {
-                HStack(spacing: 7) {
-                    Image(systemName: "book.closed").foregroundStyle(.secondary)
-                    Text(notebookName).lineLimit(1)
-                    if let name = model.selectedNote {
-                        Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
-                        Text(URL(fileURLWithPath: name).deletingPathExtension().lastPathComponent).lineLimit(1).foregroundStyle(.secondary)
+        ZStack(alignment: .topLeading) {
+            HStack(spacing: 0) {
+                Color.clear.frame(width: chrome.compact ? 0 : sidebarWidth)
+                VStack(spacing: 0) {
+                    HStack(spacing: 12) {
+                        noteLocation
+                        Spacer(minLength: 8)
+                        NoteToolbar(model: model)
                     }
-                    Spacer(minLength: 4)
-                    if model.isDirty { Circle().fill(Color.orange).frame(width: 6, height: 6).help("Sin guardar") }
-                    NoteToolbar(model: model)
-                }.font(.caption).padding(.horizontal, 24).padding(.vertical, 12)
-                Divider()
-                NoteWorkspace(model: model)
-                    .safeAreaInset(edge: .bottom, alignment: .trailing, spacing: 0) {
-                        HStack(alignment: .center) {
-                            HStack(spacing: 8) {
-                                Image(systemName: "lock.shield").help("Todos los cambios se guardan en la copia local")
-                                Text("Copia local")
-                                if !model.statusText.isEmpty && !model.isDirty { Text("· \(model.statusText)").lineLimit(1) }
-                            }.font(.caption).foregroundStyle(.secondary)
-                            Spacer(minLength: 12)
-                            ListeningDock(model: model)
-                        }.padding(.horizontal, 24).padding(.vertical, 16)
-                            .background(Color(nsColor: .textBackgroundColor))
+                    .padding(.horizontal, 18).frame(height: 58)
+                    .background(WindowDragRegion())
+                    Divider().opacity(0.4)
+                    HStack(spacing: 0) {
+                        NoteWorkspace(model: model)
+                        if model.showInspector {
+                            Divider()
+                            SessionInspector(model: model).frame(width: 320)
+                        }
                     }
-            }.background(Color(nsColor: .textBackgroundColor))
-        }
-        .navigationTitle("Notes")
-        .toolbar {
-            ToolbarItem(placement: .navigation) {
-                Button { model.showQuickOpen = true } label: { Label("Buscar notas", systemImage: "magnifyingglass") }
-                    .help("Abrir una nota · ⌘P")
+                    HStack {
+                        if let media = model.media { NoteRecordingStatus(model: model, media: media) }
+                        Spacer(minLength: 12)
+                        ListeningDock(model: model)
+                    }.padding(.horizontal, 18).padding(.vertical, 10)
+                }
+                .opacity(model.showPreferences ? 0 : 1)
+                .allowsHitTesting(!model.showPreferences)
+                .accessibilityHidden(model.showPreferences)
+                .overlay {
+                    if model.showPreferences { NotebookPreferences(model: model, section: $preferencesSection) }
+                }
+                .background(Color(nsColor: .textBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(.separator.opacity(0.25)))
+                .shadow(color: .black.opacity(0.12), radius: 5, y: 2)
+                .padding(8)
             }
+            library
+                .frame(width: sidebarWidth)
+                .frame(maxHeight: .infinity)
+                .background { if chrome.compact { NotebookThemeBackground() } }
+                .clipShape(RoundedRectangle(cornerRadius: chrome.compact ? 14 : 0))
+                .shadow(color: .black.opacity(chrome.compact ? 0.18 : 0), radius: 14, x: 4)
+                .padding(chrome.compact ? 12 : 0)
+                .opacity(chrome.sidebarVisible ? 1 : 0)
+                .offset(x: chrome.sidebarVisible ? 0 : -sidebarWidth)
+                .allowsHitTesting(chrome.sidebarVisible)
+                .accessibilityHidden(!chrome.sidebarVisible)
+
         }
-        .inspector(isPresented: $model.showInspector) {
-            SessionInspector(model: model).inspectorColumnWidth(min: 300, ideal: 340, max: 410)
+        .environment(\.locale, Locale(identifier: language))
+        .background(NotebookThemeBackground())
+        .preferredColorScheme(appearance == "system" ? nil : appearance == "dark" ? .dark : .light)
+        .background(CompactWindowBridge(chrome: chrome, modalPresented: model.showQuickOpen || model.creationKind != nil || model.errorText != nil))
+        .focusedSceneObject(chrome)
+        .ignoresSafeArea(.container, edges: .top)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: chrome.compact)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: chrome.sidebarVisible)
+        .onChange(of: model.showPreferences) { _, presented in
+            if presented { preferencesSection = .general }
         }
         .sheet(isPresented: $model.showQuickOpen) { QuickOpenSheet(model: model) }
         .sheet(isPresented: Binding(get: { model.creationKind != nil }, set: { if !$0 { model.creationKind = nil } })) {
@@ -57,30 +86,92 @@ struct WorkbenchView: View {
             Button("Cerrar", role: .cancel) { model.errorText = nil }
         } message: { Text(model.errorText ?? "") }
     }
+
+    private var library: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                NativeWindowControls(chrome: chrome).frame(width: 76, height: 34)
+                Spacer()
+                Button { chrome.toggleCompact() } label: {
+                    Image(systemName: "sidebar.left")
+                        .font(.system(size: 16, weight: .medium))
+                        .frame(width: 30, height: 34)
+                        .contentShape(Rectangle())
+                }
+                    .buttonStyle(.plain)
+                    .help(chrome.compact ? "Salir del modo compacto · ⌥⌘C" : "Modo compacto · ⌥⌘C")
+                    .accessibilityLabel(chrome.compact ? "Salir del modo compacto" : "Alternar modo compacto")
+            }.padding(.horizontal, 18).frame(height: chrome.compact ? 50 : 58)
+                .background(WindowDragRegion())
+            if model.showPreferences {
+                NotebookPreferencesSidebar(section: $preferencesSection) { model.showPreferences = false }
+            } else {
+                CourseSidebar(model: model)
+            }
+        }
+    }
+
+    private var noteLocation: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(model.selectedNote.map { URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent } ?? "Notes")
+                .font(.system(size: 13, weight: .medium)).lineLimit(1)
+            Text(notebookName).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+        }.frame(minWidth: 100, alignment: .leading)
+    }
+
 }
 
 struct NoteToolbar: View {
     @ObservedObject var model: Workbench
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var selectionAnimation
     var body: some View {
-        Group {
-            if #available(macOS 26.0, *), !reduceTransparency {
-                controls.glassEffect(.regular.interactive(), in: .capsule)
-            } else {
-                controls.background(Color(nsColor: .controlBackgroundColor), in: Capsule())
-                    .overlay(Capsule().stroke(.separator.opacity(0.6)))
-            }
-        }.fixedSize().accessibilityElement(children: .contain)
+        controls.fixedSize().accessibilityElement(children: .contain)
+    }
+    private var modeSelector: some View {
+        HStack(spacing: 2) {
+            modeButton("Editar", value: "edit")
+            modeButton("Ver", value: "preview")
+        }.padding(4)
+            .background(.primary.opacity(0.045), in: Capsule())
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Modo de la nota")
+            .help("Editar o ver la nota · ⌘E")
+    }
+    private func modeButton(_ title: String, value: String) -> some View {
+        Button { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { model.layout = value } } label: {
+            Text(LocalizedStringKey(title)).font(.system(size: 13, weight: model.layout == value ? .semibold : .regular))
+                .foregroundStyle(model.layout == value ? .primary : .secondary)
+                .frame(width: 64, height: 30)
+                .background {
+                    if model.layout == value {
+                        if #available(macOS 26.0, *), !reduceTransparency {
+                            Capsule().fill(.clear).glassEffect(.regular.interactive(), in: .capsule)
+                                .matchedGeometryEffect(id: "note-mode", in: selectionAnimation)
+                        } else {
+                            Capsule().fill(Color(nsColor: .controlBackgroundColor))
+                                .overlay(Capsule().stroke(.separator.opacity(0.5)))
+                        }
+                    }
+                }
+                .contentShape(Capsule())
+        }.buttonStyle(.plain)
+            .accessibilityLabel(title)
+            .accessibilityAddTraits(model.layout == value ? .isSelected : [])
     }
     private var controls: some View {
-        HStack(spacing: 12) {
-                Picker("Modo de la nota", selection: $model.layout) {
-                    Label("Editar", systemImage: "pencil").tag("edit")
-                    Label("Ver", systemImage: "doc.richtext").tag("preview")
-                }.pickerStyle(.segmented).labelsHidden().labelStyle(.titleAndIcon).frame(width: 150).help("Editar o ver la nota · ⌘E")
-                Button { model.saveDraft() } label: { Label("Guardar", systemImage: "square.and.arrow.down") }
+        HStack(spacing: 7) {
+                modeSelector
+                Button { model.saveDraft() } label: { Label(model.isDirty ? "Guardar cambios" : "Guardado", systemImage: model.isDirty ? "square.and.arrow.down" : "checkmark").frame(width: 26, height: 26) }
                     .disabled(!model.isDirty).help("Guardar la copia · ⌘S")
                 Menu {
+                    Section("Formato") {
+                        Button("Negrita") { NSApp.sendAction(#selector(MarkdownTextView.toggleMarkdownBold(_:)), to: nil, from: nil) }.keyboardShortcut("b")
+                        Button("Cursiva") { NSApp.sendAction(#selector(MarkdownTextView.toggleMarkdownItalic(_:)), to: nil, from: nil) }.keyboardShortcut("i")
+                        Button("Código en línea") { NSApp.sendAction(#selector(MarkdownTextView.toggleMarkdownCode(_:)), to: nil, from: nil) }.keyboardShortcut("k", modifiers: [.command, .shift])
+                    }.disabled(model.layout != "edit" || model.selectedNote == nil)
+                    Divider()
                     Button("Revisar edición") { model.inspectorHistoryMode = "editor"; model.selectedTab = "changes"; model.showInspector = true }
                         .disabled(!model.isDirty && model.editor?.history.isEmpty != false)
                     Button("Deshacer edición guardada") { model.undoEditor() }
@@ -89,8 +180,8 @@ struct NoteToolbar: View {
                     Button("Nueva nota") { model.creationInitialName = ""; model.creationKind = "nota" }
                     Button("Nueva carpeta") { model.creationInitialName = ""; model.creationKind = "carpeta" }
                     Button("Nuevo cuaderno") { model.creationInitialName = ""; model.creationKind = "cuaderno" }
-                } label: { Label("Opciones de la nota", systemImage: "ellipsis") }.help("Opciones de la nota")
-                Button { model.showInspector.toggle() } label: { Label("Inspector", systemImage: "sidebar.right") }
+                } label: { Label("Opciones de la nota", systemImage: "ellipsis").frame(width: 26, height: 26) }.help("Opciones de la nota")
+                Button { model.showInspector.toggle() } label: { Label("Inspector", systemImage: "sidebar.right").frame(width: 26, height: 26) }
                     .help("Mostrar u ocultar inspector · ⌥⌘I")
         }.labelStyle(.iconOnly).buttonStyle(.plain).padding(.horizontal, 12).padding(.vertical, 7)
     }
@@ -99,28 +190,33 @@ struct NoteToolbar: View {
 struct CourseSidebar: View {
     @ObservedObject var model: Workbench
     @State private var query = ""
+    @State private var section = LibraryContentFilter.notes
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var expanded: Set<String> = ["derecho"]
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Image(systemName: "square.stack.3d.up.fill")
-                    .font(.system(size: 20, weight: .medium)).foregroundStyle(Color.accentColor)
-                    .frame(width: 38, height: 38)
-                    .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Notes").font(.system(size: 21, weight: .semibold, design: .rounded))
-                    Text("Tus cuadernos").font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button { model.creationInitialName = ""; model.creationKind = "nota" } label: {
-                    Image(systemName: "square.and.pencil").font(.system(size: 17))
-                }.buttonStyle(.plain).help("Nueva nota · ⌘N").accessibilityLabel("Nueva nota")
-            }.padding(.horizontal, 16).padding(.top, 18).padding(.bottom, 8)
             HStack {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Buscar notas", text: $query).textFieldStyle(.plain).accessibilityLabel("Filtrar archivos")
-                if !query.isEmpty { Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).help("Limpiar búsqueda") }
-            }.padding(9).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8)).padding(12)
+                Text("Biblioteca").font(.system(size: 20, weight: .semibold, design: .rounded))
+                Spacer()
+            }.padding(.horizontal, 16).padding(.bottom, 10)
+            HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Buscar", text: $query).textFieldStyle(.plain).accessibilityLabel("Filtrar archivos")
+                    if !query.isEmpty {
+                        Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
+                            .buttonStyle(.plain).help("Limpiar búsqueda")
+                    }
+                }.padding(.horizontal, 11).frame(height: 34)
+                    .modifier(SidebarSearchGlass())
+                filterMenu
+                Button { model.creationInitialName = ""; model.creationKind = "nota" } label: {
+                    Image(systemName: "square.and.pencil").frame(width: 28, height: 34)
+                }.buttonStyle(.plain).help("Nueva nota · ⌘N").accessibilityLabel("Nueva nota")
+            }.padding(.horizontal, 12)
+            if section != .notes, let media = model.media {
+                RecordingSidebar(model: model, media: media, query: query, filter: section)
+            } else {
             List(selection: Binding(get: { model.selectedNote }, set: { value in if let value, model.notes.contains(value) { model.openNote(value) } })) {
                 ForEach(model.notebooks) { notebook in
                     DisclosureGroup(isExpanded: Binding(get: { expanded.contains(notebook.id) || !query.isEmpty }, set: { value in if value { expanded.insert(notebook.id) } else { expanded.remove(notebook.id) } })) {
@@ -143,17 +239,38 @@ struct CourseSidebar: View {
                             Button("Nueva carpeta") { prepareCreation("carpeta", folder: notebook.rootPrefix, notebook: notebook) }
                         }
                 }
-            }.listStyle(.sidebar)
+            }.listStyle(.sidebar).scrollContentBackground(.hidden)
+            }
             HStack {
                 Menu {
                     Button("Nueva nota") { model.creationInitialName = ""; model.creationKind = "nota" }
                     Button("Nueva carpeta") { model.creationInitialName = ""; model.creationKind = "carpeta" }
                     Button("Nuevo cuaderno") { model.creationInitialName = ""; model.creationKind = "cuaderno" }
                 } label: { Image(systemName: "plus") }.menuStyle(.borderlessButton).fixedSize().help("Añadir nota, carpeta o cuaderno").accessibilityLabel("Añadir")
+                Button { model.showPreferences = true } label: {
+                    Image(systemName: "gearshape").frame(width: 28, height: 28)
+                }.buttonStyle(.plain).help("Preferencias · ⌘,").accessibilityLabel("Preferencias")
                 Spacer()
-                Text("\(model.notes.count) notas").font(.caption).foregroundStyle(.secondary)
             }.padding(.horizontal, 16).padding(.vertical, 12)
         }.onChange(of: model.selectedNotebookID) { _, id in expanded.insert(id) }
+
+    }
+    private var filterMenu: some View {
+        Menu {
+            ForEach(LibraryContentFilter.allCases) { filter in
+                Button { section = filter } label: {
+                    Label(LocalizedStringKey(filter.title), systemImage: filter.symbol)
+                }
+                .accessibilityAddTraits(section == filter ? .isSelected : [])
+            }
+        } label: {
+            Image(systemName: section.symbol)
+        }.menuStyle(.borderlessButton).menuIndicator(.hidden)
+            .labelStyle(.iconOnly)
+            .font(.system(size: 14, weight: .medium))
+            .frame(width: 34, height: 34)
+            .accessibilityLabel("Filtrar por tipo: \(section.title)")
+            .help("Texto, audio o vídeos importados")
     }
     private func prepareCreation(_ kind: String, folder: String, notebook: Notebook) {
         model.selectedNotebookID = notebook.id
@@ -192,7 +309,7 @@ struct CourseTreeRow: View {
                     .contextMenu {
                         Button("Abrir") { model.openNote(node.path) }
                         Button("Editar") { model.openNote(node.path); model.layout = "edit" }
-                        Button("Leer") { model.openNote(node.path); model.layout = "preview" }
+                        Button("Ver") { model.openNote(node.path); model.layout = "preview" }
                         Divider()
                         Button("Sesiones de esta nota") { model.openNote(node.path); model.selectedTab = "library"; model.showInspector = true }
                     }
@@ -268,12 +385,17 @@ struct QuickOpenSheet: View {
     @State private var query = ""
     @State private var selection: String?
     @FocusState private var focused: Bool
-    private var matches: [String] { model.notes.filter { query.isEmpty || $0.localizedCaseInsensitiveContains(query) } }
+    private let preferencesAction = "notes-action://preferences"
+    private var matches: [String] {
+        let notes = model.notes.filter { query.isEmpty || $0.localizedCaseInsensitiveContains(query) }
+        let showPreferences = query.isEmpty || ["Preferences", "Settings", "Preferencias", "Ajustes", "Theme", "Tema"].contains { $0.localizedCaseInsensitiveContains(query) }
+        return notes + (showPreferences ? [preferencesAction] : [])
+    }
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Abrir una nota…", text: $query).textFieldStyle(.plain).font(.title3).focused($focused)
+                TextField("Abrir nota o preferencias…", text: $query).textFieldStyle(.plain).font(.title3).focused($focused)
                     .onSubmit { open(selection ?? matches.first) }
                     .onKeyPress(.downArrow) { moveSelection(1); return .handled }
                     .onKeyPress(.upArrow) { moveSelection(-1); return .handled }
@@ -287,10 +409,15 @@ struct QuickOpenSheet: View {
                     ForEach(matches, id: \.self) { name in
                         Button { open(name) } label: {
                             HStack(spacing: 12) {
-                                Image(systemName: "doc.text").foregroundStyle(.secondary)
+                                Image(systemName: name == preferencesAction ? "gearshape" : "doc.text").foregroundStyle(.secondary)
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text(URL(fileURLWithPath: name).deletingPathExtension().lastPathComponent).lineLimit(1)
-                                    Text(name).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                    if name == preferencesAction {
+                                        Text("Preferencias")
+                                        Text("General y tema").font(.caption).foregroundStyle(.secondary)
+                                    } else {
+                                        Text(URL(fileURLWithPath: name).deletingPathExtension().lastPathComponent).lineLimit(1)
+                                        Text(name).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                    }
                                 }
                                 Spacer()
                                 if name == model.selectedNote { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }
@@ -305,7 +432,12 @@ struct QuickOpenSheet: View {
             .onChange(of: query) { _, _ in selection = matches.first }
             .onExitCommand { model.showQuickOpen = false }
     }
-    private func open(_ name: String?) { if let name { model.openNote(name); model.showQuickOpen = false } }
+    private func open(_ name: String?) {
+        guard let name else { return }
+        model.showQuickOpen = false
+        if name == preferencesAction { model.showPreferences = true }
+        else { model.showPreferences = false; model.openNote(name) }
+    }
     private func moveSelection(_ offset: Int) {
         guard !matches.isEmpty else { return }
         let index = selection.flatMap { matches.firstIndex(of: $0) } ?? 0
@@ -344,6 +476,142 @@ struct MicrophoneButton: View {
     var body: some View {
         Button { model.toggleMicrophone() } label: {
             HStack(spacing: 8) { Image(systemName: media.isRecording ? "stop.fill" : "mic.fill"); Text(media.isRecording ? "Grabando · Detener" : "Grabar").font(.callout.weight(.medium)) }.padding(.horizontal, 12).padding(.vertical, 8)
-        }.buttonStyle(.plain).foregroundStyle(media.isRecording ? Color.red : Color.primary).disabled(media.busy || model.busy).help(media.isRecording ? "Detener grabación local" : "Iniciar micrófono · solo al pulsar este botón")
+        }.buttonStyle(.plain).foregroundStyle(media.isRecording ? Color.red : Color.primary).disabled(!media.isRecording && (media.busy || model.busy || model.selectedNote == nil)).help(media.isRecording ? "Detener grabación local" : "Iniciar micrófono · solo al pulsar este botón")
+    }
+}
+
+/// Status comes only from existing local job metadata; no quality score is inferred.
+struct RecordingPresentation {
+    let job: MediaJob
+    var needsReview: Bool { job.asrQualityWarning != nil || job.transcript.contains { $0.boundaryReview == true } }
+    var title: String {
+        if [.failed, .interrupted, .cancelled].contains(job.stage) { return job.stage.label }
+        if [.recording, .copying, .extracting, .transcribing].contains(job.stage) { return job.stage.label }
+        if needsReview { return "Por revisar" }
+        if job.transcript.isEmpty { return "Sin transcripción" }
+        return "Transcripción disponible"
+    }
+    var symbol: String {
+        if job.stage == .recording { return "record.circle" }
+        if [.failed, .interrupted, .cancelled].contains(job.stage) || needsReview { return "exclamationmark.circle" }
+        return job.transcript.isEmpty ? "waveform" : "text.alignleft"
+    }
+    var color: Color {
+        if job.stage == .recording || job.stage == .failed { return .red }
+        if needsReview || [.interrupted, .cancelled].contains(job.stage) { return .orange }
+        return .secondary
+    }
+    var detail: String { job.asrQualityWarning ?? job.error ?? title }
+}
+
+enum LibraryContentFilter: String, CaseIterable, Identifiable {
+    case notes, audio, video
+    var id: Self { self }
+    var title: String {
+        switch self { case .notes: "Texto"; case .audio: "Audio"; case .video: "Vídeo" }
+    }
+    var symbol: String {
+        switch self { case .notes: "doc.text"; case .audio: "waveform"; case .video: "film" }
+    }
+    func includes(_ job: MediaJob) -> Bool {
+        let ext = URL(fileURLWithPath: job.sourceName).pathExtension.lowercased()
+        let isVideo = !job.isMicrophone && (UTType(filenameExtension: ext)?.conforms(to: .movie) == true
+            || ["mp4", "mov", "m4v", "webm", "mkv", "avi"].contains(ext))
+        switch self {
+        case .notes: return false
+        case .audio: return !isVideo
+        case .video: return isVideo
+        }
+    }
+}
+
+private struct RecordingSidebar: View {
+    @ObservedObject var model: Workbench
+    @ObservedObject var media: MediaController
+    let query: String
+    let filter: LibraryContentFilter
+    private var jobs: [MediaJob] {
+        media.jobs.filter { filter.includes($0) && (query.isEmpty || ($0.sourceName + " " + $0.targetNote + " " + $0.subject).localizedCaseInsensitiveContains(query)) }
+            .sorted { $0.classDate > $1.classDate }
+    }
+    var body: some View {
+        Group {
+            if jobs.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: query.isEmpty ? filter.symbol : "magnifyingglass").font(.title2).foregroundStyle(.tertiary)
+                    Text(query.isEmpty ? (filter == .video ? "Sin vídeos" : "Sin audio") : "Sin resultados").font(.callout).foregroundStyle(.secondary)
+                    if query.isEmpty {
+                        Button(filter == .video ? "Importar vídeo…" : "Importar audio…") { model.importMedia() }.disabled(model.selectedNote == nil)
+                    }
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 6) {
+                        ForEach(jobs) { job in
+                            let status = RecordingPresentation(job: job)
+                            Button {
+                                model.openNote(job.targetNote)
+                                media.select(job.id)
+                                model.selectedTab = job.transcript.isEmpty ? "library" : "replay"
+                                model.showInspector = true
+                            } label: {
+                                VStack(alignment: .leading, spacing: 7) {
+                                    HStack(spacing: 7) {
+                                        Image(systemName: status.symbol).foregroundStyle(status.color)
+                                        Text(job.sourceName).font(.callout.weight(.medium)).lineLimit(1)
+                                    }
+                                    Text(URL(fileURLWithPath: job.targetNote).deletingPathExtension().lastPathComponent)
+                                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                    HStack(spacing: 5) {
+                                        Text(job.classDate, format: .dateTime.day().month(.abbreviated))
+                                        Text("·")
+                                        Text(timestamp(job.duration)).monospacedDigit()
+                                        Spacer(minLength: 0)
+                                        Text(status.title).foregroundStyle(status.color).lineLimit(1)
+                                    }.font(.system(size: 10))
+                                }.padding(11).frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(media.selectedID == job.id ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor).opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
+                                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(media.selectedID == job.id ? Color.accentColor.opacity(0.25) : .clear))
+                            }.buttonStyle(.plain).help(status.detail)
+                                .accessibilityLabel("\(job.sourceName), \(status.title), \(timestamp(job.duration))")
+                        }
+                    }.padding(.horizontal, 12).padding(.bottom, 12)
+                }
+            }
+        }
+    }
+}
+
+private struct NoteRecordingStatus: View {
+    @ObservedObject var model: Workbench
+    @ObservedObject var media: MediaController
+    private var linked: [MediaJob] { media.jobs.filter { $0.targetNote == model.selectedNote }.sorted { $0.importedAt > $1.importedAt } }
+    private var selected: MediaJob? { linked.first(where: { $0.id == media.selectedID }) ?? linked.first }
+    var body: some View {
+        if let job = selected {
+            let status = RecordingPresentation(job: job)
+            Button {
+                media.select(job.id)
+                model.selectedTab = job.transcript.isEmpty ? "library" : "replay"
+                model.showInspector = true
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: status.symbol).foregroundStyle(status.color)
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 5) {
+                            Text(status.title).foregroundStyle(status.color)
+                            Text("· \(timestamp(job.duration))").foregroundStyle(.secondary).monospacedDigit()
+                        }
+                        Text(status.title).foregroundStyle(status.color)
+                    }
+                    Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold)).foregroundStyle(.tertiary)
+                }.font(.caption).lineLimit(1)
+            }.buttonStyle(.plain).help(status.detail)
+                .accessibilityLabel("Abrir grabación de esta nota: \(status.title)")
+        } else if model.isDirty {
+            Label("Sin guardar", systemImage: "circle.fill").font(.caption2).foregroundStyle(.secondary)
+        } else if model.selectedNote != nil {
+            Label("Guardado", systemImage: "checkmark").font(.caption2).foregroundStyle(.secondary)
+        }
     }
 }

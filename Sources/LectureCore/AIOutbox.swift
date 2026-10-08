@@ -33,6 +33,7 @@ public struct AIBatch: Codable, Identifiable, Sendable {
     public var downstreamModel: String?
     public var syntheticDemoProvenance: String? = nil
     public var model: String = OpenRouterHarness.model
+    public var providerConfiguration: AIProviderConfiguration? = nil
 }
 public struct AIApplyJournal: Codable, Sendable {
     public var proposalID: String
@@ -57,7 +58,11 @@ public final class AIOutbox {
             for url in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) where url.pathExtension == "json" {
                 let data = try Data(contentsOf: workspace.validated(url, under: workspace.storageRoot))
                 var batch = try JSONDecoder().decode(AIBatch.self, from: data)
-                guard UUID(uuidString: batch.id) != nil, batch.model == OpenRouterHarness.model else { throw MediaError.invalid("Lote de IA inválido.") }
+                guard UUID(uuidString: batch.id) != nil else { throw MediaError.invalid("Lote de IA inválido.") }
+                if let configuration = batch.providerConfiguration {
+                    try configuration.validate()
+                    guard batch.model == configuration.model else { throw MediaError.invalid("Modelo del lote incoherente con su proveedor.") }
+                } else if batch.model != OpenRouterHarness.model { throw MediaError.invalid("Lote de IA antiguo con modelo inválido.") }
                 _ = try workspace.noteURL(batch.targetNote)
                 if [.sending, .checking].contains(batch.stage) { batch.stage = .interrupted; batch.error = "Petición interrumpida. Revisa o reintenta explícitamente; no se ha cambiado la nota." }
                 batches.append(batch)
