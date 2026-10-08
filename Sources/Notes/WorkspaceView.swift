@@ -10,7 +10,6 @@ struct WorkbenchView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var chrome = CompactChrome()
     @AppStorage("notes.language") private var language = "es"
-    @AppStorage("notes.appearance") private var appearance = "system"
 
     @State private var preferencesSection: NotebookPreferencesSection = .general
 
@@ -68,8 +67,7 @@ struct WorkbenchView: View {
 
         }
         .environment(\.locale, Locale(identifier: language))
-        .background(NotebookThemeBackground())
-        .preferredColorScheme(appearance == "system" ? nil : appearance == "dark" ? .dark : .light)
+        .background(NotebookThemeBackground(blendsBehindWindow: true))
         .background(CompactWindowBridge(chrome: chrome, modalPresented: model.showQuickOpen || model.creationKind != nil || model.errorText != nil))
         .focusedSceneObject(chrome)
         .ignoresSafeArea(.container, edges: .top)
