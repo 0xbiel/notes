@@ -13,7 +13,7 @@ struct WorkbenchView: View {
 
     @State private var preferencesSection: NotebookPreferencesSection = .general
 
-    private let sidebarWidth: CGFloat = 260
+    private let sidebarWidth = CompactLayout.sidebarWidth
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -54,12 +54,14 @@ struct WorkbenchView: View {
                 .padding(8)
             }
             library
+                .padding(.horizontal, chrome.compact ? 4 : 0)
                 .frame(width: sidebarWidth)
                 .frame(maxHeight: .infinity)
                 .background { if chrome.compact { NotebookThemeBackground() } }
-                .clipShape(RoundedRectangle(cornerRadius: chrome.compact ? 14 : 0))
+                .clipShape(RoundedRectangle(cornerRadius: chrome.compact ? CompactLayout.sidebarRadius : 0))
                 .shadow(color: .black.opacity(chrome.compact ? 0.18 : 0), radius: 14, x: 4)
-                .padding(chrome.compact ? 12 : 0)
+                .padding(.horizontal, chrome.compact ? CompactLayout.horizontalInset : 0)
+                .padding(.vertical, chrome.compact ? CompactLayout.verticalInset : 0)
                 .opacity(chrome.sidebarVisible ? 1 : 0)
                 .offset(x: chrome.sidebarVisible ? 0 : -sidebarWidth)
                 .allowsHitTesting(chrome.sidebarVisible)
@@ -70,6 +72,9 @@ struct WorkbenchView: View {
         .background(NotebookThemeBackground(blendsBehindWindow: true))
         .background(CompactWindowBridge(chrome: chrome, modalPresented: model.showQuickOpen || model.creationKind != nil || model.errorText != nil))
         .focusedSceneObject(chrome)
+        .onGeometryChange(for: Bool.self) { $0.size.width < 900 } action: { narrow in
+            if narrow && !chrome.compact { chrome.toggleCompact() }
+        }
         .ignoresSafeArea(.container, edges: .top)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: chrome.compact)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: chrome.sidebarVisible)
@@ -103,7 +108,7 @@ struct WorkbenchView: View {
             }.padding(.horizontal, 18).frame(height: chrome.compact ? 50 : 58)
                 .background(WindowDragRegion())
             if model.showPreferences {
-                NotebookPreferencesSidebar(section: $preferencesSection) { model.showPreferences = false }
+                NotebookPreferencesSidebar(section: $preferencesSection, compact: chrome.compact) { model.showPreferences = false }
             } else {
                 CourseSidebar(model: model)
             }

@@ -24,10 +24,16 @@ struct GeneralAIPreferences: View {
             Text(text("En uso: ", "In use: ") + ai.providerSettings.selectedProvider.title + " · " + ai.providerSettings.selected.model)
                 .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 8) {
-                    modelControl
-                    Spacer(minLength: 8)
-                    permissionsControl
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) {
+                        modelControl.fixedSize()
+                        Spacer(minLength: 8)
+                        permissionsControl.fixedSize()
+                    }
+                    VStack(alignment: .leading, spacing: 12) {
+                        modelControl
+                        permissionsControl
+                    }
                 }
                 HStack(spacing: 8) { thinkingControl; fastControl }
             }.padding(18).background(.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 12))

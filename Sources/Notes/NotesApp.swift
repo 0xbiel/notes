@@ -7,7 +7,7 @@ struct NotesApp: App {
     @AppStorage("notes.appearance") private var appearance = "system"
     var body: some Scene {
         WindowGroup("Notes Test") {
-            WorkbenchView(model: model).frame(minWidth: 940, minHeight: 620)
+            WorkbenchView(model: model).frame(minWidth: 600, minHeight: 500)
                 .onChange(of: appearance, initial: true) { _, value in
                     // Clear the native override immediately when returning to System.
                     // A nil SwiftUI color-scheme preference can retain the old window appearance.
@@ -21,6 +21,7 @@ struct NotesApp: App {
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in model.ai?.stop(); model.media?.shutdown() }
         }
         .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentMinSize)
         .defaultSize(width: 1280, height: 820)
         .commands {
             ChromeCommands()

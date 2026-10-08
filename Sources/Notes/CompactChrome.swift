@@ -1,6 +1,14 @@
 import AppKit
 import SwiftUI
 
+enum CompactLayout {
+    static let sidebarWidth: CGFloat = 260
+    static let horizontalInset: CGFloat = 16
+    static let verticalInset = horizontalInset
+    static let sidebarRadius: CGFloat = 12
+    static let rowRadius: CGFloat = 6
+}
+
 /// Presentation state only: never owns the document, its selection or its undo manager.
 @MainActor
 final class CompactChrome: ObservableObject {
@@ -134,7 +142,7 @@ final class ChromeWindowView: NSView {
         let inside = bounds.contains(point)
         // Flipped coordinates are normalized here; the view may be hosted either way.
         let yFromTop = isFlipped ? point.y : bounds.height - point.y
-        let sidebar = inside && point.x <= (chrome.sidebarVisible ? 284 : 12)
+        let sidebar = inside && point.x <= (chrome.sidebarVisible ? CompactLayout.sidebarWidth + 2 * CompactLayout.horizontalInset : 12)
         let toolbar = inside && yFromTop < (chrome.toolbarVisible ? 70 : 12)
         chrome.update(now: ProcessInfo.processInfo.systemUptime,
                       sidebarHit: sidebar, toolbarHit: toolbar,
