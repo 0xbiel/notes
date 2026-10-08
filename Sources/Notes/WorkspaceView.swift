@@ -12,7 +12,7 @@ struct WorkbenchView: View {
     @AppStorage("notes.language") private var language = "es"
     @AppStorage("notes.appearance") private var appearance = "system"
 
-    @State private var preferencesTheme = false
+    @State private var preferencesSection: NotebookPreferencesSection = .general
 
     private let sidebarWidth: CGFloat = 260
 
@@ -46,7 +46,7 @@ struct WorkbenchView: View {
                 .allowsHitTesting(!model.showPreferences)
                 .accessibilityHidden(model.showPreferences)
                 .overlay {
-                    if model.showPreferences { NotebookPreferences(showingTheme: $preferencesTheme) }
+                    if model.showPreferences { NotebookPreferences(model: model, section: $preferencesSection) }
                 }
                 .background(Color(nsColor: .textBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 14))
@@ -76,7 +76,7 @@ struct WorkbenchView: View {
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: chrome.compact)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: chrome.sidebarVisible)
         .onChange(of: model.showPreferences) { _, presented in
-            if presented { preferencesTheme = false }
+            if presented { preferencesSection = .general }
         }
         .sheet(isPresented: $model.showQuickOpen) { QuickOpenSheet(model: model) }
         .sheet(isPresented: Binding(get: { model.creationKind != nil }, set: { if !$0 { model.creationKind = nil } })) {
@@ -104,7 +104,7 @@ struct WorkbenchView: View {
             }.padding(.horizontal, 18).frame(height: chrome.compact ? 50 : 58)
                 .background(WindowDragRegion())
             if model.showPreferences {
-                NotebookPreferencesSidebar(showingTheme: $preferencesTheme) { model.showPreferences = false }
+                NotebookPreferencesSidebar(section: $preferencesSection) { model.showPreferences = false }
             } else {
                 CourseSidebar(model: model)
             }

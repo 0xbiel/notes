@@ -49,22 +49,39 @@ struct SidebarSearchGlass: ViewModifier {
     }
 }
 
+enum NotebookPreferencesSection: String, CaseIterable {
+    case general, theme, providers
+    var title: LocalizedStringKey {
+        switch self { case .general: "General"; case .theme: "Tema"; case .providers: "Proveedores IA" }
+    }
+    var symbol: String {
+        switch self { case .general: "slider.horizontal.3"; case .theme: "paintpalette"; case .providers: "sparkles" }
+    }
+}
+
 struct NotebookPreferences: View {
-    @Binding var showingTheme: Bool
+    @ObservedObject var model: Workbench
+    @Binding var section: NotebookPreferencesSection
     @AppStorage("notes.language") private var language = "es"
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text(showingTheme ? "Tema" : "General").font(.system(size: 13, weight: .medium))
+                Text(section.title).font(.system(size: 13, weight: .medium))
                 Spacer()
             }.padding(.horizontal, 18).frame(height: 58).background(WindowDragRegion())
             Divider().opacity(0.4)
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
-                    Text(showingTheme ? "Tema" : "Preferencias").font(.largeTitle.weight(.semibold))
-                    if showingTheme {
+                    Text(section == .general ? "Preferencias" : section.title).font(.largeTitle.weight(.semibold))
+                    if section == .theme {
                         NotebookThemePreferences().frame(maxWidth: 500)
+                    } else if section == .providers {
+                        if let ai = model.ai {
+                            ProviderPreferences(ai: ai).id(ai.outbox.workspace.root.path)
+                        } else {
+                            Text("Abre un espacio local para configurar los proveedores.").foregroundStyle(.secondary)
+                        }
                     } else {
                         VStack(alignment: .leading, spacing: 16) {
                             Text("Idioma").font(.headline)
@@ -83,15 +100,16 @@ struct NotebookPreferences: View {
 }
 
 struct NotebookPreferencesSidebar: View {
-    @Binding var showingTheme: Bool
+    @Binding var section: NotebookPreferencesSection
     let onBack: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Preferencias").font(.title2.weight(.semibold)).padding(.horizontal, 16)
             VStack(spacing: 6) {
-                sectionButton("General", symbol: "slider.horizontal.3", selected: !showingTheme) { showingTheme = false }
-                sectionButton("Tema", symbol: "paintpalette", selected: showingTheme) { showingTheme = true }
+                ForEach(NotebookPreferencesSection.allCases, id: \.self) { item in
+                    sectionButton(item.title, symbol: item.symbol, selected: section == item) { section = item }
+                }
             }.padding(.horizontal, 12)
             Spacer()
             Button(action: onBack) {

@@ -27,6 +27,7 @@ copy-*.json
 *.app
 *.zip
 *.png
+!Resources/ProviderIcons/*.png
 *.jpg
 .env*
 credentials*

@@ -214,9 +214,9 @@ public struct LocalMediaStore: Sendable {
                 try await handle.run(to: output.url)
                 try Task.checkCancellation()
             } onCancel: { handle.cancel() }
-            _ = try await validateAudio(output.relative)
+            let audioDuration = try await validateAudio(output.relative)
             await progress(1)
-            return (output.relative, duration)
+            return (output.relative, audioDuration)
         } catch {
             try? FileManager.default.removeItem(at: url(output.relative))
             throw error
