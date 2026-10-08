@@ -63,6 +63,160 @@ final class EditorTests: XCTestCase {
         coordinator.update(LiveMarkdownEditor(documentID: "a", text: "accepted proposal", editing: true, onChange: { _ in }, onLink: { _ in }), scroll: scroll)
         XCTAssertEqual(coordinator.editors["a"]?.string, "accepted proposal")
     }
+    @MainActor func testFencedTextAndCodePresentationKeepsMarkdownSource() throws {
+        _ = NSApplication.shared
+        let view = MarkdownTextView(frame: NSRect(x: 0, y: 0, width: 700, height: 460))
+        if ProcessInfo.processInfo.environment["NOTES_CODE_BLOCK_APPEARANCE"] == "light" {
+            view.appearance = NSAppearance(named: .aqua)
+        }
+        let source = "Intro\n\n```text\nlet plain = 42\n```\n\n```swift\nlet message = \"hello\" // note\n```\n\n```json\n{\"name\": 42}\n```\n"
+        view.string = source
+        view.liveEditing = false
+        view.renderMarkdown()
+        let ns = source as NSString
+        let storage = try XCTUnwrap(view.textStorage)
+        func color(_ text: String) -> NSColor? {
+            let range = ns.range(of: text)
+            return range.location == NSNotFound ? nil : storage.attribute(.foregroundColor, at: range.location, effectiveRange: nil) as? NSColor
+        }
+        XCTAssertEqual(color("let plain"), NSColor.labelColor)
+        XCTAssertEqual(color("let message"), NSColor.systemBlue)
+        XCTAssertEqual(color("\"hello\""), NSColor.systemRed)
+        XCTAssertEqual(color("// note"), NSColor.secondaryLabelColor)
+        XCTAssertEqual(color("\"name\""), NSColor.systemBlue)
+        let code = ns.range(of: "let message")
+        let paragraph = try XCTUnwrap(storage.attribute(.paragraphStyle, at: code.location, effectiveRange: nil) as? NSParagraphStyle)
+        XCTAssertEqual(paragraph.headIndent, 15)
+        XCTAssertNil(storage.attribute(.backgroundColor, at: code.location, effectiveRange: nil))
+        XCTAssertEqual(view.string, source)
+
+        view.liveEditing = true
+        let fence = ns.range(of: "```swift")
+        view.setSelectedRange(NSRange(location: fence.location + 3, length: 0))
+        view.renderMarkdown()
+        XCTAssertGreaterThan((storage.attribute(.font, at: fence.location, effectiveRange: nil) as! NSFont).pointSize, 1)
+        view.setSelectedRange(NSRange(location: code.location, length: 0))
+        view.renderMarkdown()
+        XCTAssertLessThan((storage.attribute(.font, at: fence.location, effectiveRange: nil) as! NSFont).pointSize, 1)
+        view.liveEditing = false
+        view.renderMarkdown()
+
+        if let output = ProcessInfo.processInfo.environment["NOTES_CODE_BLOCK_SCREENSHOT"] {
+            view.layoutManager?.ensureLayout(for: view.textContainer!)
+            let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: output))
+        }
+    }
+    @MainActor func testFencedBlockCanFoldWithoutChangingSource() throws {
+        _ = NSApplication.shared
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 700, height: 300))
+        let view = MarkdownTextView(frame: scroll.bounds)
+        scroll.documentView = view
+        let source = "Before\n\n```text\n" + (1...30).map { "Artículo \($0). Organización, dirección y relación jurídica.\n" }.joined() + "```\n\nAfter\n"
+        view.string = source
+        view.liveEditing = false
+        view.renderMarkdown()
+        let layout = try XCTUnwrap(view.layoutManager)
+        let container = try XCTUnwrap(view.textContainer)
+        func height() -> CGFloat {
+            layout.ensureLayout(for: container)
+            return layout.usedRect(for: container).height
+        }
+        let expanded = height()
+        let expandedFrame = view.frame.height
+        view.toggleCodeBlock(at: 0)
+        let folded = height()
+        XCTAssertLessThan(folded, expanded - 100)
+        XCTAssertLessThan(view.frame.height, expandedFrame - 100)
+        XCTAssertEqual(view.string, source)
+        view.toggleCodeBlock(at: 0)
+        XCTAssertEqual(height(), expanded, accuracy: 1)
+        XCTAssertEqual(view.string, source)
+        view.liveEditing = true
+        let fence = (source as NSString).range(of: "```text")
+        view.setSelectedRange(NSRange(location: fence.location + 3, length: 0))
+        view.renderMarkdown()
+        if let output = ProcessInfo.processInfo.environment["NOTES_EXPANDED_BLOCK_SCREENSHOT"] {
+            let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: output))
+        }
+        view.liveEditing = false
+        view.renderMarkdown()
+        view.toggleCodeBlock(at: 0)
+        view.liveEditing = true
+        view.setSelectedRange(NSRange(location: source.utf16.count, length: 0))
+        view.insertText("Tail", replacementRange: view.selectedRange())
+        view.renderMarkdown()
+        XCTAssertEqual(view.string, source + "Tail")
+        XCTAssertLessThan(height(), expanded - 100)
+        view.toggleCodeBlock(at: 0)
+        view.setSelectedRange(NSRange(location: fence.location + 3, length: 0))
+        view.renderMarkdown()
+        view.toggleCodeBlock(at: 0)
+        XCTAssertGreaterThan(view.selectedRange().location, (source as NSString).range(of: "```\n\nAfter").location + 3)
+        XCTAssertLessThan((view.textStorage!.attribute(.font, at: fence.location, effectiveRange: nil) as! NSFont).pointSize, 1)
+        XCTAssertEqual(view.string, source + "Tail")
+        if let output = ProcessInfo.processInfo.environment["NOTES_FOLDED_BLOCK_SCREENSHOT"] {
+            let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: output))
+        }
+    }
+    @MainActor func testEditingFenceRegeneratesGlyphsForNewFonts() throws {
+        _ = NSApplication.shared
+        let source = "Before\n\n```\nArtículo 3. Fuentes de la relación laboral.\n\nLos derechos y obligaciones: organización, dirección, jurídica.\n```\n\nAfter"
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 900, height: 500))
+        let coordinator = LiveMarkdownEditor.Coordinator()
+        coordinator.update(LiveMarkdownEditor(documentID: "glyphs", text: source, editing: true, onChange: { _ in }, onLink: { _ in }), scroll: scroll)
+        let view = try XCTUnwrap(coordinator.editors["glyphs"])
+        let layout = try XCTUnwrap(view.layoutManager)
+        layout.ensureLayout(for: view.textContainer!)
+        let opening = (source as NSString).range(of: "```\n")
+        view.insertText("``", replacementRange: opening)
+        view.renderMarkdown()
+        layout.ensureLayout(for: view.textContainer!)
+
+        let fresh = MarkdownTextView(frame: view.frame)
+        fresh.string = view.string
+        fresh.setSelectedRange(view.selectedRange())
+        fresh.renderMarkdown()
+        let freshLayout = try XCTUnwrap(fresh.layoutManager)
+        freshLayout.ensureLayout(for: fresh.textContainer!)
+        XCTAssertEqual(view.string, (source as NSString).replacingCharacters(in: opening, with: "``"))
+        XCTAssertEqual(layout.numberOfGlyphs, freshLayout.numberOfGlyphs)
+        for index in 0..<min(layout.numberOfGlyphs, freshLayout.numberOfGlyphs) {
+            XCTAssertEqual(layout.glyph(at: index), freshLayout.glyph(at: index), "Stale glyph at \(index)")
+        }
+        if let output = ProcessInfo.processInfo.environment["NOTES_EDITED_FENCE_SCREENSHOT"] {
+            let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: output))
+        }
+    }
+    @MainActor func testSingleLineFoldKeepsPreviewAndSource() throws {
+        _ = NSApplication.shared
+        let view = MarkdownTextView(frame: NSRect(x: 0, y: 0, width: 940, height: 220))
+        view.appearance = NSAppearance(named: ProcessInfo.processInfo.environment["NOTES_FOLD_APPEARANCE"] == "dark" ? .darkAqua : .aqua)
+        let source = "```text\nArtículo 1.1. Esta ley será de aplicación a los trabajadores que voluntariamente presten sus servicios retribuidos por cuenta ajena.\n```\n"
+        view.string = source
+        view.liveEditing = false
+        view.renderMarkdown()
+        let layout = try XCTUnwrap(view.layoutManager)
+        let container = try XCTUnwrap(view.textContainer)
+        layout.ensureLayout(for: container)
+        let expanded = layout.usedRect(for: container).height
+        view.toggleCodeBlock(at: 0)
+        layout.ensureLayout(for: container)
+        XCTAssertLessThan(layout.usedRect(for: container).height, expanded)
+        XCTAssertEqual(view.string, source)
+        if let output = ProcessInfo.processInfo.environment["NOTES_SINGLE_LINE_FOLD_SCREENSHOT"] {
+            let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: output))
+        }
+    }
     @MainActor func testListsAndComposition() throws {
         _ = NSApplication.shared
         let view = MarkdownTextView(frame: .zero)
