@@ -1,10 +1,24 @@
 import Foundation
+import Darwin
 
-private final class NotesProcess: @unchecked Sendable {
+extension Process {
+    func stopProviderHelper() {
+        guard isRunning else { return }
+        let identifier = processIdentifier
+        let target = getpgid(identifier) == identifier ? -identifier : identifier
+        kill(target, SIGTERM)
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { [self] in
+            guard isRunning, processIdentifier == identifier else { return }
+            kill(target, SIGKILL)
+        }
+    }
+}
+
+final class NotesProcess: @unchecked Sendable {
     let process = Process()
     private let lock = NSLock()
     private var cancelled = false
-    func cancel() { lock.lock(); cancelled = true; if process.isRunning { process.terminate() }; lock.unlock() }
+    func cancel() { lock.lock(); cancelled = true; process.stopProviderHelper(); lock.unlock() }
     func run() throws -> Data {
         let output = Pipe(); process.standardOutput = output; process.standardError = FileHandle.nullDevice
         lock.lock()
@@ -13,7 +27,10 @@ private final class NotesProcess: @unchecked Sendable {
         lock.unlock()
         let timer = DispatchSource.makeTimerSource(queue: .global())
         timer.schedule(deadline: .now() + 90); timer.setEventHandler { [self] in cancel() }; timer.resume()
-        defer { timer.cancel() }
+        defer {
+            timer.cancel()
+            if process.isRunning { process.stopProviderHelper(); process.waitUntilExit() }
+        }
         var data = Data()
         while let chunk = try output.fileHandleForReading.read(upToCount: 16_384), !chunk.isEmpty {
             guard data.count + chunk.count <= 2_000_000 else { cancel(); throw MediaError.invalid("Salida del proveedor demasiado grande.") }
@@ -22,7 +39,7 @@ private final class NotesProcess: @unchecked Sendable {
         process.waitUntilExit()
         lock.lock(); let stopped = cancelled; lock.unlock()
         if stopped { throw MediaError.invalid("Petición cancelada o agotó 90 segundos; el lote sigue guardado. Reintenta explícitamente.") }
-        guard process.terminationStatus == 0 else { throw MediaError.invalid("OpenCode no pudo completar la petición. No se ha cambiado la nota.") }
+        guard process.terminationStatus == 0 else { throw MediaError.invalid("El proveedor no pudo completar la petición. No se ha cambiado la nota.") }
         return data
     }
 }
@@ -32,7 +49,9 @@ public struct OpenRouterHarness: Sendable {
     public static let agent = "derecho-notes"
     public static let auxiliaries = ["build", "plan", "general", "explore", "title", "summary", "compaction"]
     public let store: LocalMediaStore
-    public init(store: LocalMediaStore) { self.store = store }
+    public let executablePath: String
+    public static let supportedVersions = ["1.3.13", "1.18.35"]
+    public init(store: LocalMediaStore, executablePath: String = "/opt/homebrew/bin/opencode") { self.store = store; self.executablePath = executablePath }
     public static var policy: [String: Any] { ["data_collection": "deny", "zdr": true, "allow_fallbacks": false, "max_price": ["prompt": 0, "completion": 0]] }
     public static var syntheticDemoPolicy: [String: Any] { ["data_collection": "deny", "zdr": false, "allow_fallbacks": false, "max_price": ["prompt": 0, "completion": 0]] }
     public static var systemPrompt: String { """
@@ -74,6 +93,7 @@ public struct OpenRouterHarness: Sendable {
         }
         let providerOptions = provider["options"] as? [String: Any] ?? [:]
         guard providerOptions["baseURL"] == nil, providerOptions["headers"] == nil,
+              (config["plugin"] as? [String] ?? []).isEmpty,
               (config["instructions"] as? [String] ?? []).isEmpty else { throw MediaError.invalid("La ruta efectiva añade endpoint/instrucciones externos; envío bloqueado.") }
     }
     public static func payload(_ batch: AIBatch) throws -> Data {
@@ -103,7 +123,7 @@ public struct OpenRouterHarness: Sendable {
     }
     private func invoke(_ args: [String], input: URL? = nil, syntheticDemo: Bool = false) async throws -> Data {
         let context = try environment(syntheticDemo: syntheticDemo); let command = NotesProcess()
-        command.process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/opencode")
+        command.process.executableURL = URL(fileURLWithPath: executablePath)
         command.process.arguments = ["--pure"] + args; command.process.environment = context.variables
         command.process.currentDirectoryURL = context.directory
         let reader = try input.map { try FileHandle(forReadingFrom: $0) }; command.process.standardInput = reader ?? FileHandle.nullDevice
@@ -116,7 +136,7 @@ public struct OpenRouterHarness: Sendable {
     public func prepare() async throws { try await prepare(syntheticDemo: false) }
     private func prepare(syntheticDemo: Bool) async throws {
         let version = String(decoding: try await invoke(["--version"], syntheticDemo: syntheticDemo), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard version == "1.3.13" else { throw MediaError.invalid("La versión de OpenCode cambió; vuelve a verificar el transporte antes de enviar contenido.") }
+        guard Self.supportedVersions.contains(version) else { throw MediaError.invalid("Versión de OpenCode no verificada (\(version)); comprueba el transporte antes de enviar contenido.") }
         let data = try await invoke(["debug", "config"], syntheticDemo: syntheticDemo)
         do { try Self.verifyConfig(data, syntheticDemo: syntheticDemo) }
         catch let error as MediaError { throw error }

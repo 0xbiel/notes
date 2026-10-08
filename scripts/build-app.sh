@@ -16,6 +16,7 @@ try:
     app=stage/'Notes.app'; executable=app/'Contents/MacOS/Notes'
     executable.parent.mkdir(parents=True)
     shutil.copyfile(root/'.build-native/debug/Notes',executable);executable.chmod(0o755)
+    shutil.copytree(root/'Resources', app/'Contents/Resources', dirs_exist_ok=True)
     info={"CFBundleExecutable":"Notes","CFBundleIdentifier":"local.biel.DerechoReplayPrototype","CFBundleName":"Notes","CFBundleDisplayName":"Notes","CFBundlePackageType":"APPL","CFBundleShortVersionString":"0.3.0","CFBundleVersion":"3","LSMinimumSystemVersion":"14.0","NSHighResolutionCapable":True,"NSMicrophoneUsageDescription":"Grabar la clase únicamente cuando pulses Grabar; el audio permanece en este Mac.","PrototypeWorkspace":str(workspace)}
     (app/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
     subprocess.run(['xattr','-cr',str(app)],check=True)

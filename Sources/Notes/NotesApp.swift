@@ -10,9 +10,13 @@ struct NotesApp: App {
                 .onDisappear { model.ai?.stop(); if model.media?.isRecording == true { model.media?.stopMicrophone() } }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in model.ai?.stop(); model.media?.shutdown() }
         }
-        .windowStyle(.titleBar)
+        .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1280, height: 820)
         .commands {
+            ChromeCommands()
+            CommandGroup(replacing: .appSettings) {
+                Button("Preferencias…") { model.showPreferences = true }.keyboardShortcut(",")
+            }
             CommandGroup(replacing: .newItem) {
                 Button("Nueva nota") { model.creationInitialName = ""; model.creationKind = "nota" }.keyboardShortcut("n")
                 Button("Nueva sesión sintética") { model.perform { try model.createSession() } }.keyboardShortcut("n", modifiers: [.command, .shift]).disabled(model.busy)
@@ -27,6 +31,7 @@ struct NotesApp: App {
             }
             CommandMenu("Notas") {
                 Button("Abrir nota…") { model.showQuickOpen = true }.keyboardShortcut("p")
+                Button("Buscar nota…") { model.showQuickOpen = true }.keyboardShortcut("t")
                 Button("Mostrar inspector") { model.showInspector.toggle() }.keyboardShortcut("i", modifiers: [.command, .option])
                 Button("Revisar edición") { model.inspectorHistoryMode = "editor"; model.selectedTab = "changes"; model.showInspector = true }.keyboardShortcut("d", modifiers: [.command, .shift])
             }
@@ -47,6 +52,7 @@ final class Workbench: ObservableObject {
     @Published var selectedTab = "library"
     @Published var showInspector = false
     @Published var showQuickOpen = false
+    @Published var showPreferences = false
     @Published var creationKind: String?
     @Published var creationInitialName = ""
     @Published var layout = "preview"

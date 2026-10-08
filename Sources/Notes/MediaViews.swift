@@ -81,7 +81,7 @@ struct MediaDetail: View {
                 if let configuration = media.whisperConfiguration(for: job) {
                     Text("\(configuration.model.displayName) · local · \(job.live == nil ? "audio importado" : "grabación en directo")").font(.caption).foregroundStyle(.secondary)
                 }
-                Text("En Transcripción puedes enviar fragmentos a OpenRouter gratuito y revisar sus propuestas antes de aplicarlas.").font(.caption).foregroundStyle(.secondary)
+                Text("En Transcripción puedes enviar fragmentos al proveedor elegido en Preferencias y revisar sus propuestas antes de aplicarlas.").font(.caption).foregroundStyle(.secondary)
             }
             if [.interrupted, .failed, .cancelled].contains(job.stage), job.sourceCopyComplete { Button("Reanudar preparación") { media.resume() }.disabled(media.busy || media.isRecording) }
             if let error = job.error { Text(error).font(.caption).foregroundStyle(.orange) }
