@@ -1,4 +1,17 @@
-# Testing continuation — October 8, 2026
+# Merge validation — October 8, 2026
+
+The prepared UI and provider work are committed with both branch histories retained. The merge resolves overlapping settings files to the tested combined implementation; its source tree matches the pre-merge tested source.
+
+- Offline suite: 73 passed, 7 opt-in tests skipped, zero failures.
+- Integration suite: 79 passed, one OpenCode live-generation canary skipped, zero failures (80 discovered, 47.917 seconds).
+- Enabled integrations: real WAV/MP4 Whisper extraction/transcription and checkpoint resume; all three installed provider diagnostics; model catalogs; invented Codex `gpt-6-sol` and Antigravity generation, reviewed correction application, and undo.
+- `gpt-6.1-sol` remains available in settings with low, medium, high, xhigh, max, and ultra. Its live canary fails because the installed Codex service explicitly rejects this model with the current ChatGPT account (HTTP 400). This is not a successful generation result; `gpt-6-sol` passes with the same transport.
+- Native app packaging and code-signature verification pass. `git diff --check` passes.
+- No new native interactive UI or physical microphone pass was performed during this merge. OpenCode live generation remains unverified; prior failures are recorded below.
+
+Logs are local: `/tmp/notes-final-integration.log` and `/tmp/notes-final-build.log`. The following sections preserve earlier evidence and describe earlier snapshots, not the current integration state.
+
+# Historical testing continuation — October 8, 2026
 
 ## Branch and scope
 

@@ -29,6 +29,10 @@ This explicitly enables an external request using only `SyntheticAIFixture`'s ex
 
 Run `NOTES_PROVIDER_PROBES=1 zsh scripts/test.sh` to check the existing OpenCode, Codex CLI, and Antigravity ACP installations without prompts or login. No installation occurs. All three must be present and compatible; missing or incompatible runtimes fail rather than count as passes. Ordinary tests use mock ACP processes and synthetic Codex events. See `PROVIDERS.md` for the settings contract and UI-worker handoff.
 
-## Isolation from UI work
+## Account generation and model catalogs
 
-This testing work lives on `testing/audio-video-notebooks` in a separate Git worktree. Its patch excludes UI-worker files and shared README edits; only the nonvisual AI controller connects the new core transports to the app. Latest uncommitted UI sources are snapshotted and tested together with this patch in an ignored disposable directory, never written back to the other checkout. See `PROVIDERS.md` for the compatibility-check layout. The focused importer fix in `LocalMedia.swift` uses extracted audio duration rather than a potentially longer video duration. Native interaction observations must identify the app build used; compile/offline tests do not establish a new native interactive UI pass.
+`NOTES_MODEL_PROBES=1 zsh scripts/test.sh` queries installed provider catalogs. `NOTES_ACCOUNT_AI_DEMO=codexCLI,antigravity zsh scripts/test.sh` sends only invented fixture text through existing accounts and checks generation, review/apply, and undo. Set `NOTES_CODEX_DEMO_MODEL=gpt-6.1-sol` to check that model explicitly.
+
+## Integration scope
+
+The prepared zen-ui interface and provider settings are integrated in the same source tree. Tests use isolated invented workspaces. The importer uses extracted audio duration rather than a potentially longer video duration. Compile and automated checks do not establish physical microphone or native interactive UI coverage.

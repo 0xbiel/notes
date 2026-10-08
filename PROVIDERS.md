@@ -1,6 +1,6 @@
 # Provider integration and UI handoff
 
-This work prepares native text transports, not T3 Code's interface. No T3 top bar, navigation, or preferences components are imported. Provider controls are deliberately left to the separate UI worker.
+Notes includes native provider setup, provider logos, live model catalogs, favorites, visibility controls, and reasoning selection within its existing preferences layout. The Notes sidebar, top bar, themes, and navigation retain their own styling.
 
 ## Reference reviewed
 
@@ -36,12 +36,10 @@ Selected spans plus bounded note context are sent; audio and full local note sna
 
 ## zen-ui integration status
 
-`zen-ui` and this worktree still share committed base `5dcd757`; the UI worker's latest changes remain uncommitted, so there is no new branch commit to merge. Following the user's merge-isolation request, all earlier imported UI files and shared README edits were removed from this branch's patch. Existing UI source and UI-worker tests remain at the committed base. The only changed existing file under `Sources/Notes` is the nonvisual `AIController.swift`, which the UI worker has not changed.
-
-The latest preferences, custom theme picker, resources, layout, build script and UI tests were captured read-only in ignored `qa/latest-zen-ui-snapshot/`, with source hashes. A separate ignored `qa/latest-ui-provider-merge-check/` directory combines that snapshot with the provider/backend changes for compile and test verification. This is compatibility testing, not a merge or a write to the UI worker's checkout. Later concurrent UI edits require a fresh snapshot/check.
+The prepared UI and provider work are committed together through a merge of both branch histories. Provider preferences extend the prepared settings layout. Codex includes `gpt-6.1-sol` with the same reasoning levels as `gpt-6-sol`.
 
 ## Verification boundaries
 
 Installed-runtime diagnostics pass for OpenCode 1.18.35, Codex CLI 0.156.1, and Antigravity ACP `agy_acp_server_1.1.1`. Mock ACP and Codex-event tests verify protocol/response handling, rejected tools, cancellation and note preservation. Controller tests verify settings reload, consent before enqueue, and saved-batch isolation.
 
-The OpenCode 1.18.35 live invented canaries reached sending but failed with incomplete output and a 90-second timeout. Successful live generation on this version is not established. No live Codex or Antigravity account prompt was sent. See `TESTING.md` and `TEST_RESULTS.md` for transcription and notebook coverage.
+The OpenCode 1.18.35 live invented canaries reached sending but failed with incomplete output and a 90-second timeout. Successful live generation on this version is not established. Historical account-generation results and current merge validation are distinguished in `TEST_RESULTS.md`. See `TESTING.md` and `TEST_RESULTS.md` for transcription and notebook coverage.
