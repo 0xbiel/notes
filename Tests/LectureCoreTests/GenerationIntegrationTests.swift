@@ -2,6 +2,26 @@ import XCTest
 @testable import LectureCore
 
 final class GenerationIntegrationTests: XCTestCase {
+    func testLiveInventedImageAttachment() async throws {
+        guard let providerName = ProcessInfo.processInfo.environment["NOTES_ATTACHMENT_DEMO"], let provider = NotesAIProvider(rawValue: providerName) else { throw XCTSkip("Set NOTES_ATTACHMENT_DEMO to test the invented image fixture with an existing provider account.") }
+        let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cache/notes-provider-tests/Image-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("copied-course"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = try SafeWorkspace(root: root, originalRoot: root.appendingPathComponent("original"))
+        var configuration = AIProviderSettings().configuration(for: provider)
+        configuration.accountSendingAllowed = true
+        if provider == .codexCLI { configuration.model = "gpt-6-luna"; configuration.reasoningEffort = "low" }
+        let path = try XCTUnwrap(ProcessInfo.processInfo.environment["NOTES_ATTACHMENT_FIXTURE"])
+        let attachment = try NotebookAttachmentImport.prepare(url: URL(fileURLWithPath: path), notebookID: "fixture", workspace: workspace)
+        var message = NotebookMessage(role: "user", text: "Describe the shape and color in the attached image in English. Do not edit or create any files.")
+        message.attachments = [attachment]
+        let request = NotebookTextRequest(notebook: Notebook(id: "fixture", name: "Invented fixture", rootPrefix: ""), profile: NotebookProfile(), messages: [message], currentDocument: nil, texts: [:])
+        let result = try await NotesProviderTransport(store: LocalMediaStore(workspace: workspace)).sendNotebook(request, configuration: configuration, images: NotebookAttachmentImport.images([attachment], notebookID: "fixture", workspace: workspace))
+        XCTAssertTrue(result.reply.lowercased().contains("red"))
+        XCTAssertTrue(result.reply.lowercased().contains("circle"))
+        XCTAssertTrue(result.edits.isEmpty)
+    }
+
     func testLiveConnectionProbeWithSelectedModel() async throws {
         guard ProcessInfo.processInfo.environment["NOTES_CONNECTION_PROBE"] == "1" else {
             throw XCTSkip("Set NOTES_CONNECTION_PROBE=1 to send an invented Codex connection probe.")

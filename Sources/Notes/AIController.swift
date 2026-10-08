@@ -110,6 +110,8 @@ final class AIController: ObservableObject {
                     let configuration = batch.providerConfiguration ?? AIProviderSettings().openCode
                     try self.providerSettings.configuration(for: configuration.provider).validateSending()
                     var result = try await self.transport.send(batch, configuration: configuration, checked: { [weak self] in await self?.markSending(id) })
+                    try Task.checkCancellation()
+                    guard self.outbox.batches.first(where: { $0.id == batch.id })?.invalidatedByNotebook != true else { throw CancellationError() }
                     // Other approved edits may have changed the local snapshot
                     // while this request was in flight. Never overwrite it.
                     if let current = self.outbox.batches.first(where: { $0.id == id }) { result.expectedNote = current.expectedNote }
@@ -131,7 +133,7 @@ final class AIController: ObservableObject {
         }
     }
     func applyAutomatic(_ batch: AIBatch) throws {
-        guard batch.stage == .ready, batch.syntheticDemoProvenance == nil else { return }
+        guard batch.stage == .ready, batch.syntheticDemoProvenance == nil, batch.invalidatedByNotebook != true else { return }
         let queuedPolicy = batch.editAutonomy ?? .review
         let currentPolicy = providerSettings.editAutonomy ?? .review
         for decision in batch.decisions where decision.resolution == nil && queuedPolicy.allows(decision.action) && currentPolicy.allows(decision.action) {
@@ -150,7 +152,7 @@ final class AIController: ObservableObject {
         do { try outbox.replace(batch); refresh() } catch { self.error = error.localizedDescription }
     }
     func retry(_ id: String) {
-        guard !running, var batch = outbox.batches.first(where: { $0.id == id }), [.failed, .interrupted, .cancelled].contains(batch.stage) else { return }
+        guard !running, var batch = outbox.batches.first(where: { $0.id == id }), batch.invalidatedByNotebook != true, [.failed, .interrupted, .cancelled].contains(batch.stage) else { return }
         batch.stage = .queued; batch.error = nil
         do { try outbox.replace(batch); drainIDs.insert(batch.id); refresh(); start() } catch { self.error = error.localizedDescription }
     }

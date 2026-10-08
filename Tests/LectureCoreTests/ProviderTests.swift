@@ -219,7 +219,7 @@ final class ProviderTests: XCTestCase {
         XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path).contains { $0.hasPrefix(".provider-helper-") })
     }
 
-    private func mockACP(_ root: URL, toolRequest: Bool = false, unresponsive: Bool = false) throws -> AIProviderConfiguration {
+    private func mockACP(_ root: URL, toolRequest: Bool = false, unresponsive: Bool = false, images: Bool = false) throws -> AIProviderConfiguration {
         let script = root.appendingPathComponent("mock-acp.py")
         let content = """
         #!/usr/bin/python3
@@ -237,13 +237,19 @@ final class ProviderTests: XCTestCase {
             if method=='initialize':
                 assert request['params']['clientCapabilities']['terminal'] is False
                 assert request['params']['clientCapabilities']['fs']['readTextFile'] is False
-                result={'protocolVersion':2,'agentInfo':{'name':'antigravity-acp','version':'mock'}}
+                result={'protocolVersion':2,'agentInfo':{'name':'antigravity-acp','version':'mock'},'agentCapabilities':{'promptCapabilities':{'image':\(images ? "True" : "False")}}}
             if method=='session/new':
                 assert request['params']['mcpServers']==[]
                 result={'sessionId':session}
             if method=='session/prompt':
                 if \(toolRequest ? "True" : "False"):
                     emit({'jsonrpc':'2.0','id':900,'method':'fs/read_text_file','params':{'path':'/private'}})
+                    continue
+                if \(images ? "True" : "False"):
+                    image=request['params']['prompt'][1]
+                    assert image['type']=='image' and image['mimeType']=='image/png' and image['data']=='aW1hZ2U='
+                    emit({'jsonrpc':'2.0','method':'session/update','params':{'sessionId':session,'update':{'sessionUpdate':'agent_message_chunk','content':{'type':'text','text':'Image received'}}}})
+                    emit({'jsonrpc':'2.0','id':request['id'],'result':{'stopReason':'end_turn'}})
                     continue
                 payload=json.loads(request['params']['prompt'][0]['text'].splitlines()[-1])
                 text=json.dumps({'version':1,'batch_id':payload['batch_id'],'decisions':[{'source_ids':['s1'],'action':'correct','text':'Dos pasos.','reason':'Inventado','target_quote':'Tres pasos.'}]})
@@ -257,6 +263,20 @@ final class ProviderTests: XCTestCase {
         try FileManager.default.createDirectory(at: profile.appendingPathComponent("antigravity-acp"), withIntermediateDirectories: true)
         try Data("{}".utf8).write(to: profile.appendingPathComponent("antigravity-acp/acp_token.json"))
         return .init(provider: .antigravity, executablePath: script.path, homePath: profile.path, harnessPath: script.path, accountSendingAllowed: true)
+    }
+
+    func testAntigravityImagePayloadAndCapabilityGuard() async throws {
+        let (workspace, root) = try environment()
+        let image = NotebookInputImage(name: "fixture.png", data: Data("image".utf8))
+        let configuration = try mockACP(root, images: true)
+        let transport = AntigravityTextTransport(store: LocalMediaStore(workspace: workspace), configuration: configuration)
+        let reply = try await transport.generate("Inspect fixture", images: [image])
+        XCTAssertEqual(reply, "Image received")
+        let unsupported = try mockACP(root)
+        do {
+            _ = try await AntigravityTextTransport(store: LocalMediaStore(workspace: workspace), configuration: unsupported).generate("Inspect fixture", images: [image])
+            XCTFail("Must reject missing image capability")
+        } catch { XCTAssertTrue(error.localizedDescription.contains("image support")) }
     }
 
     func testAntigravityACPHandshakeTextOnlyCompletionAndNoNoteMutation() async throws {

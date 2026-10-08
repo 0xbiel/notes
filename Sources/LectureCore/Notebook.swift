@@ -4,6 +4,7 @@ public struct Notebook: Codable, Identifiable, Equatable, Sendable {
     public var id: String
     public var name: String
     public var rootPrefix: String
+    public var archivedAt: Date? = nil
     public init(id: String = UUID().uuidString, name: String, rootPrefix: String) {
         self.id = id; self.name = name; self.rootPrefix = rootPrefix
     }
@@ -44,6 +45,8 @@ public struct EditorChange: Codable, Identifiable, Equatable, Sendable {
     public var before: String
     public var after: String
     public var undone: Bool
+    public var savedAt: Date? = nil
+    public var superseded: Bool? = nil
 }
 
 public struct DraftArchive: Codable, Sendable {
@@ -66,7 +69,7 @@ public final class NotebookEditor {
 
     @discardableResult
     public func save(filename: String, expected: String, replacement: String) throws -> EditorChange {
-        let change = EditorChange(id: UUID().uuidString, filename: filename, before: expected, after: replacement, undone: false)
+        let change = EditorChange(id: UUID().uuidString, filename: filename, before: expected, after: replacement, undone: false, savedAt: Date())
         try workspace.writeNote(filename, expected: expected, replacement: replacement)
         var next = history; next.append(change)
         do { try persist(next) }
@@ -77,7 +80,7 @@ public final class NotebookEditor {
 
     @discardableResult
     public func undo() throws -> EditorChange {
-        guard let i = history.lastIndex(where: { !$0.undone }) else { throw ReplayError.noUndo }
+        guard let i = history.lastIndex(where: { !$0.undone && $0.superseded != true }) else { throw ReplayError.noUndo }
         let change = history[i]
         try workspace.writeNote(change.filename, expected: change.after, replacement: change.before)
         var next = history; next[i].undone = true
@@ -85,6 +88,12 @@ public final class NotebookEditor {
         catch { try workspace.writeNote(change.filename, expected: change.before, replacement: change.after); throw error }
         history = next
         return change
+    }
+
+    public func invalidateUndo(paths: Set<String>, before date: Date) throws {
+        var next = history
+        for i in next.indices where paths.contains(next[i].filename) && (next[i].savedAt ?? .distantPast) <= date { next[i].superseded = true }
+        if next != history { try persist(next); history = next }
     }
 
     private func persist(_ changes: [EditorChange]) throws {

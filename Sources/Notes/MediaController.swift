@@ -68,12 +68,17 @@ final class MediaController: ObservableObject {
         job.classDate = date; job.inputMode = mode; job.unitTags = split(units); job.examTags = split(exams); update(job)
     }
     private func split(_ text: String) -> [String] { Array(Set(text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })).sorted() }
+    var createNotebookTarget: ((Notebook) throws -> String)?
+
     func chooseImport(notebook: Notebook, note: String?) {
-        guard !busy, !isRecording, let note else { error = "Abre una nota antes de importar."; return }
+        guard !busy, !isRecording else { return }
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.audio, .movie]; panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
         panel.message = "Se conservará la fuente y se guardará una copia local para esta clase."
         guard panel.runModal() == .OK, let source = panel.url else { return }
-        importMedia(source, notebook: notebook, note: note)
+        do {
+            guard let target = try note ?? createNotebookTarget?(notebook) else { throw MediaError.invalid("Crea una nota para importar.") }
+            importMedia(source, notebook: notebook, note: target)
+        } catch { self.error = error.localizedDescription }
     }
     func importMedia(_ source: URL, notebook: Notebook, note: String) {
         guard !busy, !isRecording else { return }
@@ -130,14 +135,15 @@ final class MediaController: ObservableObject {
     /// Called exclusively by the user's Start button. No startup, test or
     /// automatic recovery path requests microphone access or starts capture.
     func startMicrophone(notebook: Notebook, note: String?) {
-        guard !busy, !isRecording, let note else { error = "Abre una nota antes de grabar."; return }
+        guard !busy, !isRecording else { return }
         busy = true
         worker = Task { [self] in
             defer { busy = false }
             guard await AVCaptureDevice.requestAccess(for: .audio) else { error = "El permiso del micrófono no está concedido. Puedes importar un archivo o cambiarlo en Ajustes del Sistema."; return }
             guard !Task.isCancelled else { return }
             do {
-                var job = MediaJob(notebookID: notebook.id, subject: notebook.name, note: note, sourceName: "Micrófono", microphone: true)
+                // No note is created until the capture device actually starts.
+                var job = MediaJob(notebookID: notebook.id, subject: notebook.name, note: note ?? "", sourceName: "Micrófono", microphone: true)
                 job.whisperConfiguration = WhisperTranscriber(store: store).preferredConfiguration
                 let rolling = try RollingPCMRecorder(store: store, job: job)
                 let stream = MicrophoneStream(recorder: rolling, changed: { [weak self, id = job.id] state in
@@ -146,7 +152,13 @@ final class MediaController: ObservableObject {
                     Task { @MainActor in self?.error = reason; self?.stopMicrophone() }
                 })
                 job.sourceRelativePath = rolling.sourcePath; job.live = LiveRecordingMetadata()
-                do { try stream.start() } catch { _ = try? rolling.finish(); throw error }
+                do {
+                    try stream.start()
+                    if note == nil {
+                        guard let target = try createNotebookTarget?(notebook) else { throw MediaError.invalid("Crea una nota antes de grabar.") }
+                        job.targetNote = target
+                    }
+                } catch { _ = try? stream.stop(); _ = try? rolling.finish(); throw error }
                 self.recorder = stream; recordingID = job.id; isRecording = true; error = nil; update(job); select(job.id)
                 if whisperAvailable { startLive(job.id) }
 

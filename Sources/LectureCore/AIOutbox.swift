@@ -35,6 +35,7 @@ public struct AIBatch: Codable, Identifiable, Sendable {
     public var model: String = OpenRouterHarness.model
     public var providerConfiguration: AIProviderConfiguration? = nil
     public var editAutonomy: AIEditAutonomy? = nil
+    public var invalidatedByNotebook: Bool? = nil
 }
 public struct AIApplyJournal: Codable, Sendable {
     public var proposalID: String
@@ -138,7 +139,7 @@ public final class AIOutbox {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(selected + previous)
         let key = Self.digest(media.id + media.targetNote + String(decoding: data, as: UTF8.self) + Self.digest(note) + context + OpenRouterHarness.model + "privacy-v1")
-        if let existing = batches.first(where: { $0.requestKey == key }) { return existing }
+        if let existing = batches.first(where: { $0.requestKey == key && $0.invalidatedByNotebook != true }) { return existing }
         guard batches.filter({ [.queued, .checking, .sending].contains($0.stage) }).count < maximumQueued else { throw MediaError.invalid("La cola tiene 20 lotes. Se pausa el envío; los fragmentos siguen guardados en local.") }
         let batch = AIBatch(id: UUID().uuidString, requestKey: key, mediaID: media.id, notebookID: media.notebookID, targetNote: media.targetNote, createdAt: Date(), stage: .queued, segments: selected, priorSegments: previous, context: context, expectedNote: note, mode: media.inputMode ?? .lecture, decisions: [], error: nil, attempts: 0)
         try persist(batch); batches.append(batch); return batch
@@ -179,6 +180,7 @@ public final class AIOutbox {
         try recoverApplications(editor: editor)
         guard !hasDraft, let i = batches.firstIndex(where: { $0.id == batchID }), let j = batches[i].decisions.firstIndex(where: { $0.id == proposalID }), batches[i].decisions[j].resolution == nil else { throw MediaError.invalid("Guarda el borrador o revisa el estado de esta propuesta antes de aplicar.") }
         let batch = batches[i]; let decision = batch.decisions[j]
+        guard batch.invalidatedByNotebook != true else { throw MediaError.invalid("La nota cambió de versión. Envía una propuesta nueva.") }
         guard try workspace.readNote(batch.targetNote) == batch.expectedNote else { throw ReplayError.conflict }
         let after = try Self.candidate(batch: batch, decision: decision, text: text, quote: quote)
         var journal = AIApplyJournal(proposalID: decision.id, batchID: batch.id, filename: batch.targetNote, before: batch.expectedNote, after: after, state: "pending")
@@ -193,6 +195,15 @@ public final class AIOutbox {
         guard let i = batches.firstIndex(where: { $0.id == batchID }), let j = batches[i].decisions.firstIndex(where: { $0.id == proposalID }), batches[i].decisions[j].resolution == nil else { return }
         batches[i].decisions[j].resolution = "excluded"; try persist(batches[i])
     }
+    public func invalidate(paths: Set<String>, before date: Date) throws {
+        for i in batches.indices where paths.contains(batches[i].targetNote) && batches[i].createdAt <= date && batches[i].invalidatedByNotebook != true {
+            batches[i].invalidatedByNotebook = true
+            batches[i].stage = .cancelled
+            batches[i].error = "La nota cambió de versión. Envía una propuesta nueva."
+            try persist(batches[i])
+        }
+    }
+
     public func acknowledgeAppEdit(filename: String, before: String, after: String) throws {
         for i in batches.indices where batches[i].targetNote == filename && batches[i].expectedNote == before {
             batches[i].expectedNote = after; try persist(batches[i])
