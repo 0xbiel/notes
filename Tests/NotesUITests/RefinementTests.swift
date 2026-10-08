@@ -1,0 +1,85 @@
+import XCTest
+import AppKit
+import LectureCore
+@testable import Notes
+
+final class RefinementTests: XCTestCase {
+    @MainActor func testFormattingRoundTripUndoAndSelection() async throws {
+        _ = NSApplication.shared
+        let view = MarkdownTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        let original = "# Acción\n\nniño 👩🏽‍💻 y café"
+        view.string = original
+        let selected = (original as NSString).range(of: "niño 👩🏽‍💻")
+        view.setSelectedRange(selected)
+        view.toggleMarkdownBold(nil)
+        try await Task.sleep(for: .milliseconds(10)) // Separate native input events.
+        XCTAssertEqual(view.string, "# Acción\n\n**niño 👩🏽‍💻** y café")
+        XCTAssertEqual((view.string as NSString).substring(with: view.selectedRange()), "niño 👩🏽‍💻")
+        view.undo(nil)
+        XCTAssertEqual(view.string, original)
+        view.redo(nil)
+        view.setSelectedRange(NSRange(location: selected.location + 2, length: selected.length))
+        view.toggleMarkdownBold(nil)
+        try await Task.sleep(for: .milliseconds(10)) // Separate native input events.
+        XCTAssertEqual(view.string, original)
+        view.toggleMarkdownItalic(nil)
+        try await Task.sleep(for: .milliseconds(10))
+        XCTAssertEqual(view.string, "# Acción\n\n*niño 👩🏽‍💻* y café")
+        view.undo(nil)
+        XCTAssertEqual(view.string, original)
+        view.setSelectedRange(NSRange(location: original.utf16.count, length: 0))
+        view.toggleMarkdownCode(nil)
+        XCTAssertTrue(view.string.hasSuffix("``"))
+        XCTAssertEqual(view.selectedRange().location, original.utf16.count + 1)
+    }
+    @MainActor func testSyntaxRevealIsLocalAndHeadingSizeIsPreserved() throws {
+        _ = NSApplication.shared
+        let view = MarkdownTextView(frame: .zero)
+        let source = "# Un **título**\n\n**uno** y *dos*"
+        view.string = source
+        view.setSelectedRange((source as NSString).range(of: "uno"))
+        view.renderMarkdown()
+        let strong = (source as NSString).range(of: "**uno**").location
+        let italic = (source as NSString).range(of: "*dos*").location
+        XCTAssertGreaterThan((view.textStorage!.attribute(.font, at: strong, effectiveRange: nil) as! NSFont).pointSize, 1)
+        XCTAssertLessThan((view.textStorage!.attribute(.font, at: italic, effectiveRange: nil) as! NSFont).pointSize, 1)
+        let title = (source as NSString).range(of: "título").location
+        XCTAssertEqual((view.textStorage!.attribute(.font, at: title, effectiveRange: nil) as! NSFont).pointSize, 32)
+        for _ in 0..<50 { view.renderMarkdown() }
+        XCTAssertEqual(view.string, source)
+        view.setFrameSize(NSSize(width: 350, height: 600))
+        XCTAssertEqual(view.textContainerInset.width, 22)
+        view.setFrameSize(NSSize(width: 900, height: 600))
+        XCTAssertEqual(view.textContainerInset.width, 40)
+    }
+    @MainActor func testFormattingDuringCompositionAndReadingDoesNothing() async throws {
+        _ = NSApplication.shared
+        let view = MarkdownTextView(frame: .zero)
+        view.string = "acción"
+        view.setSelectedRange(NSRange(location: 0, length: 6))
+        view.isEditable = false
+        view.toggleMarkdownBold(nil)
+        try await Task.sleep(for: .milliseconds(10)) // Separate native input events.
+        XCTAssertEqual(view.string, "acción")
+        view.isEditable = true
+        view.setMarkedText("accio\u{301}n", selectedRange: NSRange(location: 7, length: 0), replacementRange: NSRange(location: 0, length: 6))
+        let marked = view.string
+        view.toggleMarkdownItalic(nil)
+        XCTAssertEqual(view.string, marked)
+        XCTAssertTrue(view.hasMarkedText())
+        view.unmarkText()
+    }
+    func testStatusDoesNotClaimTranscriptExistsOrQualityIsVerified() {
+        var job = MediaJob(notebookID: "test", subject: "Inventado", note: "Test.md", sourceName: "Prueba.m4a")
+        job.stage = .transcribed
+        XCTAssertEqual(RecordingPresentation(job: job).title, "Sin transcripción")
+        job.transcript = [.init(id: "one", start: 0, end: 1, text: "Texto inventado")]
+        XCTAssertEqual(RecordingPresentation(job: job).title, "Transcripción disponible")
+        job.asrQualityWarning = "Revisar repetición"
+        XCTAssertEqual(RecordingPresentation(job: job).title, "Por revisar")
+        job.stage = .interrupted
+        XCTAssertEqual(RecordingPresentation(job: job).title, "Interrumpido")
+        job.stage = .recording
+        XCTAssertEqual(RecordingPresentation(job: job).title, "Grabando")
+    }
+}

@@ -2,6 +2,14 @@
 
 Native macOS notebooks with a source-preserving Markdown editor, local Spanish transcription, and reviewable AI note proposals. This repository contains app source and invented test fixtures only.
 
+## Zen interface branch
+
+The `zen-ui` branch carries the compact interface and the editor/transcription refinements from the local prototype. The library floats on the right and can be pinned. Command-Backslash toggles the library; Command-Shift-Backslash toggles compact mode. In compact mode, the toolbar and native window buttons appear near the top edge. Reveals stay open during menus, editing, dragging and modal interactions, with reduced-motion and reduced-transparency accommodations.
+
+This is an independently authored Swift interface inspired by Zen Browser's compact behavior. Native visual, keyboard, resize and VoiceOver validation remains pending; automated state tests do not establish that coverage.
+
+Use the repository checkout as the ongoing development folder. Keep `models/`, `runtime/`, `copied-course/`, `session-storage/` and the workspace manifest local and ignored by Git. With an existing workspace at the checkout root, run `zsh scripts/build-app.sh` and `zsh scripts/run.sh`; for a fresh invented workspace, use the demo instructions below.
+
 ## Editing
 
 Choose **Editar** for inline Markdown formatting with syntax revealed around the cursor; choose **Ver** to read. Each note retains its selection, scroll position and undo history. Create notebooks, folders and notes from the sidebar; use Command-P to open a note and Command-S to save. The editor supports a Markdown subset: headings, emphasis, code, links and wiki aliases. Unsupported constructs retain their exact source. No remote embeds load.
@@ -12,7 +20,7 @@ Notes saves only inside its independent workspace. Existing drafts and concurren
 
 Import playable audio or MP4/MOV; the source is copied and checked without modification. The app stores audio, transcript checkpoints, class date, unit/exam tags and review history locally. Playback and transcript timestamps support reviewing a passage before using it in notes.
 
-The **Grabar** button is the only path that requests microphone permission and starts capture. Whisper recognizes Spanish locally during capture using sealed 30-second clips with two-second overlap. A continuous PCM WAV preserves the complete recording independently of recognition. Stopping capture drains the converter and processes remaining clips; explicit resume restores interrupted local work. Inputs are bounded to eight hours/8 GiB and recognition has one worker with a bounded pending window. Imported media uses five-minute checkpoints. No microphone is started by tests or app startup.
+The **Grabar** button is the only path that requests microphone permission and starts capture. Whisper recognizes Spanish locally during capture using sealed 30-second clips with two-second overlap. A continuous PCM WAV preserves the complete recording independently of recognition. Stopping capture drains the converter and processes remaining clips; explicit resume restores interrupted local work. Inputs are bounded to eight hours/8 GiB and recognition has one worker with a bounded pending window. New imports use independent 30-second windows with two-second overlap; resumed legacy imports retain their saved checkpoint layout. Decoder history is disabled by default, and each recording persists its model and decoding configuration. No microphone is started by tests or app startup.
 
 Conflicting overlap hypotheses remain visible for review. Repeated decoder output is preserved and pauses automatic AI batching. Recognition is not a correctness guarantee: the tested real lecture was fast to process but had extensive repetition and garbled speech. Names, numbers, negations and corrections need human review. Physical microphone behavior and large-file editor performance have not been exhaustively tested.
 
@@ -41,7 +49,7 @@ zsh scripts/test.sh
 
 The initializer refuses to replace existing workspace files. `build/Notes.app` and `build/Notes-local.zip` are local ad-hoc signed builds, not notarized distributions. The generated bundle embeds its workspace path; the ZIP requires that workspace and is not a standalone portable data bundle. To launch your local build, use `zsh scripts/run.sh`. Do not run an investigative test against a real workspace unless you intend that local operation.
 
-For ASR, provide a compatible locally built whisper.cpp v1.8.2 executable at the workspace's `runtime/whisper-build/bin/whisper-cli` and the official multilingual Whisper small weights at `models/ggml-small.bin`. Verified small-model size: 487,601,967 bytes; SHA-256: `1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b`. Runtime and weights are excluded from this repository. The adapter currently validates OpenCode 1.3.13; it rejects incompatible/effectively overridden configurations. No account setup is performed by building or testing.
+For ASR, provide a compatible locally built whisper.cpp v1.8.2 executable at the workspace's `runtime/whisper-build/bin/whisper-cli` and the official multilingual Whisper small weights at `models/ggml-small.bin`. An already installed `models/ggml-large-v3-turbo.bin` is preferred for new recordings; existing recordings retain their saved configuration. Verified small-model size: 487,601,967 bytes; SHA-256: `1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b`. Runtime and weights are excluded from this repository. The adapter currently validates OpenCode 1.3.13; it rejects incompatible/effectively overridden configurations. No account setup is performed by building or testing.
 
 ## Verification and repository boundaries
 

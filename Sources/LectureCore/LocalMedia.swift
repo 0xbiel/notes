@@ -80,6 +80,7 @@ public struct MediaJob: Codable, Identifiable, Sendable {
     public var completedChunks = 0
     public var live: LiveRecordingMetadata? = nil
     public var asrQualityWarning: String? = nil
+    public var whisperConfiguration: WhisperConfiguration? = nil
     public init(notebookID: String, subject: String, note: String, sourceName: String, microphone: Bool = false) {
         self.notebookID = notebookID; self.subject = subject; targetNote = note
         self.sourceName = sourceName; isMicrophone = microphone

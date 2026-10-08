@@ -23,19 +23,31 @@ public struct WhisperTranscriber: Sendable {
     public var binary: URL { runtimeRoot.appendingPathComponent("runtime/whisper-build/bin/whisper-cli") }
     public var model: URL { runtimeRoot.appendingPathComponent("models/ggml-small.bin") }
     public var available: Bool { FileManager.default.isExecutableFile(atPath: binary.path) && FileManager.default.fileExists(atPath: model.path) }
+    public func model(for configuration: WhisperConfiguration) -> URL { runtimeRoot.appendingPathComponent("models/" + configuration.model.filename) }
+    public func available(for configuration: WhisperConfiguration) -> Bool { FileManager.default.isExecutableFile(atPath: binary.path) && FileManager.default.fileExists(atPath: model(for: configuration).path) }
+    /// Choose only an already installed model. Existing jobs keep their saved
+    /// policy; no startup/model choice performs a download or provider request.
+    public var preferredConfiguration: WhisperConfiguration {
+        let turbo = WhisperConfiguration(model: .largeV3Turbo)
+        return available(for: turbo) ? turbo : WhisperConfiguration()
+    }
 
-    /// A bounded five-minute PCM chunk keeps long lectures out of RAM. The two
-    /// second overlap supplies context; completed chunks are checkpointed.
+    /// New imports use independent 30s windows and 2s audio overlap. Persisted
+    /// legacy checkpoints retain their original layout when explicitly resumed.
     public func transcribe(_ original: MediaJob, checkpoint: @escaping @Sendable (MediaJob) async throws -> Void) async throws -> MediaJob {
-        guard available, let audio = original.audioRelativePath else { throw MediaError.invalid("Falta el motor local o el audio preparado.") }
+        let configuration = try WhisperConfiguration.resolved(for: original)
+        guard available(for: configuration), let audio = original.audioRelativePath else { throw MediaError.invalid("Falta el modelo local seleccionado o el audio preparado. No se descarga ni envía nada automáticamente.") }
         var job = original; job.stage = .transcribing; job.error = nil
-        let count = Int(ceil(job.duration / 300))
-        guard count > 0, count <= Int(ceil(store.maximumDuration / 300)), job.completedChunks >= 0, job.completedChunks <= count else { throw MediaError.invalid("Duración de grabación inválida.") }
+        job.whisperConfiguration = configuration
+        let seconds = configuration.importChunkSeconds
+        guard job.duration.isFinite, job.duration > 0, job.duration <= store.maximumDuration else { throw MediaError.invalid("Duración de grabación inválida.") }
+        let count = Int(ceil(job.duration / seconds))
+        guard count > 0, count <= Int(ceil(store.maximumDuration / seconds)), job.completedChunks >= 0, job.completedChunks <= count else { throw MediaError.invalid("Duración de grabación inválida.") }
         for index in job.completedChunks..<count {
             try Task.checkCancellation()
-            let boundary = Double(index) * 300
+            let boundary = Double(index) * seconds
             let offset = max(0, boundary - (index == 0 ? 0 : 2))
-            let duration = min(job.duration - offset, 300 + (index == 0 ? 0 : 2))
+            let duration = min(job.duration - offset, seconds + (index == 0 ? 0 : 2))
             let wav = try store.destination(for: job, name: "chunk-\(index).wav")
             if FileManager.default.fileExists(atPath: wav.url.path) { try store.removeTemporary(wav.relative) }
             try Self.convertPCM(source: store.url(audio), output: wav.url, offset: offset, duration: duration)
@@ -47,7 +59,7 @@ public struct WhisperTranscriber: Sendable {
             let logHandle = try FileHandle(forWritingTo: log.url)
             let command = LocalProcess()
             command.process.executableURL = binary
-            command.process.arguments = ["-m", model.path, "-f", wav.url.path, "-l", "es", "-t", "6", "-oj", "-of", base.url.path, "-sns"]
+            command.process.arguments = configuration.arguments(model: model(for: configuration), audio: wav.url, output: base.url)
             command.process.currentDirectoryURL = store.root
             command.process.standardOutput = logHandle; command.process.standardError = logHandle
             do {
@@ -72,14 +84,15 @@ public struct WhisperTranscriber: Sendable {
     }
 
     public func transcribeLiveChunk(_ chunk: LiveAudioChunk, job: MediaJob) async throws -> [MediaTranscriptSegment] {
-        guard available, chunk.index >= 0, chunk.index <= 960, chunk.start >= 0, chunk.end > chunk.start, chunk.end - chunk.start <= 32.01,
+        let configuration = try WhisperConfiguration.resolved(for: job)
+        guard available(for: configuration), chunk.index >= 0, chunk.index <= 960, chunk.start >= 0, chunk.end > chunk.start, chunk.end - chunk.start <= 32.01,
               try store.fingerprint(chunk.path) == chunk.digest else { throw MediaError.invalid("Fragmento en directo inválido o modificado.") }
         let base = try store.destination(for: job, name: "live-asr-\(chunk.index)-\(UUID().uuidString)")
         let log = try store.destination(for: job, name: "live-asr-\(chunk.index)-\(UUID().uuidString).log")
         try Data().write(to: log.url, options: .withoutOverwriting)
         let handle = try FileHandle(forWritingTo: log.url); defer { try? handle.close() }
         let command = LocalProcess(); command.process.executableURL = binary
-        command.process.arguments = ["-m", model.path, "-f", try store.url(chunk.path).path, "-l", "es", "-t", "6", "-oj", "-of", base.url.path, "-sns"]
+        command.process.arguments = configuration.arguments(model: model(for: configuration), audio: try store.url(chunk.path), output: base.url)
         command.process.currentDirectoryURL = store.root; command.process.standardOutput = handle; command.process.standardError = handle
         try await withTaskCancellationHandler {
             try await Task.detached { try command.run() }.value; try Task.checkCancellation()

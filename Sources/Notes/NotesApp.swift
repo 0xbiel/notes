@@ -5,7 +5,7 @@ import LectureCore
 struct NotesApp: App {
     @StateObject private var model = Workbench()
     var body: some Scene {
-        WindowGroup("Notes") {
+        WindowGroup("Notes Test") {
             WorkbenchView(model: model).frame(minWidth: 940, minHeight: 620)
                 .onDisappear { model.ai?.stop(); if model.media?.isRecording == true { model.media?.stopMicrophone() } }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in model.ai?.stop(); model.media?.shutdown() }

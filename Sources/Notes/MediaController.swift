@@ -23,7 +23,20 @@ final class MediaController: ObservableObject {
     private var timer: Task<Void, Never>?
     private var recordingID: String?
     var selected: MediaJob? { jobs.first { $0.id == selectedID } }
-    var whisperAvailable: Bool { WhisperTranscriber(store: store).available }
+    func whisperConfiguration(for job: MediaJob) -> WhisperConfiguration? {
+        if job.whisperConfiguration == nil, job.completedChunks == 0 {
+            return WhisperTranscriber(store: store).preferredConfiguration
+        }
+        return try? WhisperConfiguration.resolved(for: job)
+    }
+    var whisperAvailable: Bool {
+        let transcriber = WhisperTranscriber(store: store)
+        if let selected {
+            guard let configuration = whisperConfiguration(for: selected) else { return false }
+            return transcriber.available(for: configuration)
+        }
+        return transcriber.available(for: transcriber.preferredConfiguration)
+    }
     init(workspace: SafeWorkspace) throws {
         store = LocalMediaStore(workspace: workspace); jobs = try store.recoverJobs(); selectedID = jobs.first?.id
         timer = Task { [weak self] in
@@ -65,6 +78,7 @@ final class MediaController: ObservableObject {
     func importMedia(_ source: URL, notebook: Notebook, note: String) {
         guard !busy, !isRecording else { return }
         var job = MediaJob(notebookID: notebook.id, subject: notebook.name, note: note, sourceName: source.lastPathComponent)
+        job.whisperConfiguration = WhisperTranscriber(store: store).preferredConfiguration
         update(job); select(job.id); busy = true; error = nil
         worker = Task { [self] in
             let scoped = source.startAccessingSecurityScopedResource(); defer { if scoped { source.stopAccessingSecurityScopedResource() }; busy = false }
@@ -75,8 +89,12 @@ final class MediaController: ObservableObject {
                 job.sourceRelativePath = copied.path; job.sourceDigest = copied.hash; job.sourceCopyComplete = true
                 if let duplicate = jobs.first(where: { $0.id != job.id && $0.sourceDigest == copied.hash && $0.audioRelativePath != nil }) {
                     job.duplicateOf = duplicate.id; job.audioRelativePath = duplicate.audioRelativePath; job.duration = duplicate.duration
-                    job.transcript = duplicate.transcript; job.completedChunks = duplicate.completedChunks
-                    job.stage = duplicate.stage == .transcribed ? .transcribed : .ready; job.progress = 1; update(job)
+                    if WhisperConfiguration.canReuseTranscript(from: duplicate, for: job) {
+                        job.transcript = duplicate.transcript; job.completedChunks = duplicate.completedChunks
+                        job.asrQualityWarning = duplicate.asrQualityWarning
+                        job.stage = duplicate.stage == .transcribed ? .transcribed : .ready
+                    } else { job.stage = .ready }
+                    job.progress = 1; update(job)
                     // Keep the separately dated import's source copy; references
                     // remain durable if other session records are later removed.
                 } else { try await prepare(job) }
@@ -120,6 +138,7 @@ final class MediaController: ObservableObject {
             guard !Task.isCancelled else { return }
             do {
                 var job = MediaJob(notebookID: notebook.id, subject: notebook.name, note: note, sourceName: "Micrófono", microphone: true)
+                job.whisperConfiguration = WhisperTranscriber(store: store).preferredConfiguration
                 let rolling = try RollingPCMRecorder(store: store, job: job)
                 let stream = MicrophoneStream(recorder: rolling, changed: { [weak self, id = job.id] state in
                     Task { @MainActor in self?.captureChanged(id, state: state) }
@@ -238,6 +257,9 @@ final class MediaController: ObservableObject {
     func transcribe() {
         if selected?.live != nil { resumeLive(); return }
         guard !busy, !isRecording, var job = selected, job.audioRelativePath != nil else { return }
+        if job.whisperConfiguration == nil, job.completedChunks == 0 {
+            job.whisperConfiguration = WhisperTranscriber(store: store).preferredConfiguration
+        }
         job.stage = .transcribing; job.error = nil; update(job); busy = true; error = nil
         worker = Task { [self] in
             defer { busy = false }

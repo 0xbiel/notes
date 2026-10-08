@@ -78,7 +78,9 @@ struct MediaDetail: View {
                 Slider(value: Binding(get: { min(media.position, max(job.duration, 1)) }, set: { media.seek($0) }), in: 0...max(job.duration, 1)).disabled(media.isRecording)
                 Button(job.completedChunks > 0 && job.stage != .transcribed ? "Reanudar transcripción" : "Transcribir en español") { media.transcribe() }
                     .disabled(media.busy || media.isRecording || !media.whisperAvailable || job.stage == .transcribed)
-                Text(job.live == nil ? "Whisper small · local · audio importado" : "Whisper small · local · grabación en directo").font(.caption).foregroundStyle(.secondary)
+                if let configuration = media.whisperConfiguration(for: job) {
+                    Text("\(configuration.model.displayName) · local · \(job.live == nil ? "audio importado" : "grabación en directo")").font(.caption).foregroundStyle(.secondary)
+                }
                 Text("En Transcripción puedes enviar fragmentos a OpenRouter gratuito y revisar sus propuestas antes de aplicarlas.").font(.caption).foregroundStyle(.secondary)
             }
             if [.interrupted, .failed, .cancelled].contains(job.stage), job.sourceCopyComplete { Button("Reanudar preparación") { media.resume() }.disabled(media.busy || media.isRecording) }
