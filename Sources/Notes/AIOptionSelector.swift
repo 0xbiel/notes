@@ -21,7 +21,7 @@ struct AIOptionSelector: View {
                 Text(options.first { $0.id == selection }?.title ?? selection)
                 Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
             }.font(.callout).padding(.horizontal, 9).padding(.vertical, 8)
-                .background(.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 7))
+                .modifier(NotebookInputSurface(radius: 7))
         }.buttonStyle(.plain).accessibilityLabel(title).accessibilityValue(selection)
             .popover(isPresented: $presented, arrowEdge: .bottom) {
                 VStack(alignment: .leading, spacing: 2) {

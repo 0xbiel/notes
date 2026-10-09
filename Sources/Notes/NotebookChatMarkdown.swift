@@ -5,6 +5,7 @@ import LectureCore
 /// A small native block renderer: inline Markdown remains selectable, code remains literal.
 struct NotebookChatMarkdown: View {
     let text: String
+    @AppStorage("notes.accent") private var accent = ""
     struct Block: Equatable {
         var kind: String
         var text: String
@@ -12,9 +13,17 @@ struct NotebookChatMarkdown: View {
     }
     static func blocks(_ text: String) -> [Block] {
         var result: [Block] = [], paragraph: [String] = [], code: [String] = []
+        let tables = MarkdownTables.blocks(in: text)
+        var offset = 0, skipUntil = 0
         var fence: String?, language = ""
         func flush() { if !paragraph.isEmpty { result.append(.init(kind: "paragraph", text: paragraph.joined(separator: "\n"))); paragraph = [] } }
         for line in text.components(separatedBy: "\n") {
+            let start = offset; offset += line.utf16.count + 1
+            if start < skipUntil { continue }
+            if let table = tables.first(where: { $0.range.location == start }) {
+                flush(); result.append(.init(kind: "table", text: (text as NSString).substring(with: table.range)))
+                skipUntil = NSMaxRange(table.range); continue
+            }
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if let active = fence {
                 if trimmed.hasPrefix(active) { result.append(.init(kind: "code:" + language, text: code.joined(separator: "\n"))); code = []; fence = nil }
@@ -43,12 +52,19 @@ struct NotebookChatMarkdown: View {
         return result
     }
     private func inline(_ text: String) -> Text {
-        Text((try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text))
+        Text(Self.inlineAttributed(text, accent: NotebookAccent.color(accent)))
+    }
+    static func inlineAttributed(_ text: String, accent: Color) -> AttributedString {
+        var result = InlineUnderline.attributed(text)
+        for run in result.runs where run.link != nil { result[run.range].foregroundColor = accent }
+        return result
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(Array(Self.blocks(text).enumerated()), id: \.offset) { _, block in
-                if block.kind.hasPrefix("code:") {
+                if block.kind == "table", let table = MarkdownTables.blocks(in: block.text).first?.table {
+                    MarkdownTablePreview(table: table).frame(maxWidth: .infinity)
+                } else if block.kind.hasPrefix("code:") {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Text(String(block.kind.dropFirst(5))).font(.caption).foregroundStyle(.secondary)
@@ -68,7 +84,7 @@ struct NotebookChatMarkdown: View {
                     HStack(alignment: .top, spacing: 8) { Text(block.kind.count == 6 ? "•" : String(block.kind.dropFirst(5))).foregroundStyle(.secondary); inline(block.text) }
                 } else { inline(block.text) }
             }
-        }.frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+        }.frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled).tint(NotebookAccent.color(accent))
     }
 }
 

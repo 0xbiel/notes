@@ -68,8 +68,10 @@ final class EditorTests: XCTestCase {
         let view = MarkdownTextView(frame: NSRect(x: 0, y: 0, width: 700, height: 460))
         if ProcessInfo.processInfo.environment["NOTES_CODE_BLOCK_APPEARANCE"] == "light" {
             view.appearance = NSAppearance(named: .aqua)
+        } else if ProcessInfo.processInfo.environment["NOTES_CODE_BLOCK_APPEARANCE"] == "dark" {
+            view.appearance = NSAppearance(named: .darkAqua)
         }
-        let source = "Intro\n\n```text\nlet plain = 42\n```\n\n```swift\nlet message = \"hello\" // note\n```\n\n```json\n{\"name\": 42}\n```\n"
+        let source = "Texto con `organismo autónomo` y `código` dentro de la misma línea.\n\nTambién puede envolver `un fragmento de código largo que continúa en la siguiente línea sin convertirse en un bloque grande` entre palabras.\n\n```text\nlet plain = 42\n```\n\n```swift\nlet message = \"hello\" // note\n```\n\n```json\n{\"name\": 42}\n```\n"
         view.string = source
         view.liveEditing = false
         view.renderMarkdown()
@@ -102,9 +104,13 @@ final class EditorTests: XCTestCase {
         view.renderMarkdown()
 
         if let output = ProcessInfo.processInfo.environment["NOTES_CODE_BLOCK_SCREENSHOT"] {
+            let canvas = NSBox(frame: view.bounds)
+            canvas.boxType = .custom; canvas.borderType = .noBorder
+            canvas.fillColor = .textBackgroundColor; canvas.contentViewMargins = .zero
+            canvas.appearance = view.effectiveAppearance; canvas.contentView = view
             view.layoutManager?.ensureLayout(for: view.textContainer!)
-            let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
-            view.cacheDisplay(in: view.bounds, to: bitmap)
+            let bitmap = try XCTUnwrap(canvas.bitmapImageRepForCachingDisplay(in: canvas.bounds))
+            canvas.cacheDisplay(in: canvas.bounds, to: bitmap)
             try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: output))
         }
     }

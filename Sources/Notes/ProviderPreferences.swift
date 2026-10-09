@@ -1,9 +1,10 @@
 import SwiftUI
+import Combine
 import LectureCore
 
 @MainActor
 final class ProviderPreferencesModel: ObservableObject {
-    @Published var draft: AIProviderSettings
+    @Published var draft: AIProviderSettings { didSet { synchronizeCatalogs() } }
     @Published private(set) var checking = false
     @Published private(set) var diagnostic: String?
     @Published private(set) var error: String?
@@ -13,9 +14,23 @@ final class ProviderPreferencesModel: ObservableObject {
     @Published private(set) var connectionResult: ProviderConnectionTestResult?
     @Published private(set) var connectionError: String?
     private var testedConfiguration: AIProviderConfiguration?
+    private var catalogSubscription: AnyCancellable?
     let ai: AIController
 
-    init(ai: AIController) { self.ai = ai; draft = ai.providerSettings }
+    init(ai: AIController) {
+        self.ai = ai; draft = ai.providerSettings
+        synchronizeCatalogs()
+        catalogSubscription = ai.modelCatalogs.$entries.sink { [weak self] entries in
+            self?.synchronizeCatalogs(entries)
+        }
+    }
+    private func synchronizeCatalogs(_ entries: [NotesAIProvider: ProviderCatalogStore.Entry]? = nil) {
+        let entries = entries ?? ai.modelCatalogs.entries
+        let matching = entries.filter { $0.value.key == ProviderCatalogKey(draft.configuration(for: $0.key)) }.mapValues(\.models)
+        if catalogs != matching { catalogs = matching }
+    }
+    struct CatalogIdentity: Hashable { let key: ProviderCatalogKey; let enabled: Bool }
+    var catalogIdentity: CatalogIdentity { .init(key: ProviderCatalogKey(draft.selected), enabled: draft.selected.accountSendingAllowed) }
     var hasChanges: Bool { draft != ai.providerSettings }
 
     func detectInstallation() {
@@ -27,7 +42,7 @@ final class ProviderPreferencesModel: ObservableObject {
     }
 
     func clearStatus() { diagnostic = nil; error = nil }
-    func invalidateSelection() { checks.removeValue(forKey: draft.selectedProvider); catalogs.removeValue(forKey: draft.selectedProvider); clearStatus() }
+    func invalidateSelection() { checks.removeValue(forKey: draft.selectedProvider); synchronizeCatalogs(); clearStatus() }
 
     var modelPreferences: AIProviderModelPreferences {
         get { draft.modelPreferences?[draft.selectedProvider.rawValue] ?? .init() }
@@ -126,14 +141,23 @@ final class ProviderPreferencesModel: ObservableObject {
     }
 
     func loadCatalogs() async {
-        for provider in NotesAIProvider.allCases where catalogs[provider] == nil && draft.configuration(for: provider).accountSendingAllowed {
+        for provider in NotesAIProvider.allCases where draft.configuration(for: provider).accountSendingAllowed {
             guard !Task.isCancelled else { return }
             let configuration = draft.configuration(for: provider)
             do {
-                let models = try await ai.transport.models(configuration)
-                if draft.configuration(for: provider) == configuration { catalogs[provider] = models }
+                _ = try await ai.modelCatalogs.refresh(configuration)
             } catch { }
         }
+    }
+
+    func refreshCatalogPeriodically() async {
+        repeat {
+            guard !Task.isCancelled else { return }
+            do { _ = try await ai.modelCatalogs.refresh(draft.selected) }
+            catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+            do { try await Task.sleep(for: .seconds(ProviderCatalogStore.refreshInterval)) }
+            catch { return }
+        } while !Task.isCancelled
     }
 
     func checkInstallation() async {
@@ -144,9 +168,8 @@ final class ProviderPreferencesModel: ObservableObject {
         do {
             let result = try await ai.transport.diagnose(configuration)
             if draft.selected == configuration { diagnostic = result.message; checks[configuration.provider] = true }
-            let models = try await ai.transport.models(configuration)
+            _ = try await ai.modelCatalogs.refresh(configuration, force: true)
             if draft.selected == configuration {
-                catalogs[configuration.provider] = models
                 if configuration.provider == .codexCLI, selectedModel != nil {
                     if !supportsFastMode { draft.selected.fastMode = false }
                     if let effort = draft.selected.reasoningEffort, selectedModel?.reasoning.contains(effort) != true { draft.selected.reasoningEffort = nil }
@@ -217,9 +240,7 @@ struct ProviderPreferences: View {
         .onChange(of: ai.providerSettings) { old, updated in
             if preferences.draft == old { preferences.draft = updated }
         }
-        .task(id: preferences.draft.selectedProvider) {
-            if preferences.catalogs[preferences.draft.selectedProvider] == nil { await preferences.checkInstallation() }
-        }
+        .task(id: preferences.catalogIdentity) { await preferences.refreshCatalogPeriodically() }
         .onDisappear { checkTask?.cancel() }
     }
 
@@ -254,7 +275,7 @@ struct ProviderPreferences: View {
                         .accessibilityAddTraits(preferences.draft.selectedProvider == provider ? .isSelected : [])
                         .accessibilityIdentifier("provider.select." + provider.rawValue)
                     Toggle(name(provider), isOn: enabledBinding(provider))
-                        .toggleStyle(.switch).controlSize(.mini).labelsHidden().tint(.accentColor)
+                        .controlSize(.mini).labelsHidden().modifier(NotebookToggleAccent(switchStyle: true))
                         .accessibilityLabel(text("Activar ", "Enable ") + name(provider))
                         .accessibilityIdentifier("provider.enabled." + provider.rawValue)
                 }.padding(.horizontal, 12).padding(.vertical, 16)
@@ -304,7 +325,7 @@ struct ProviderPreferences: View {
                         field("localharness_external", value: $preferences.draft.selected.harnessPath, identifier: "provider.harness")
                     }
                     Button(text("Detectar instalación", "Detect installation")) { preferences.detectInstallation() }
-                    Text(text("Utiliza una instalación existente. Notes no instala programas ni copia credenciales.", "Uses an existing installation. Notes does not install software or copy credentials."))
+                    Text(text("Utiliza una instalación existente. Palladium no instala programas ni copia credenciales.", "Uses an existing installation. Palladium does not install software or copy credentials."))
                         .font(.caption).foregroundStyle(.secondary)
                 }.padding(.top, 12)
             }.font(.headline)

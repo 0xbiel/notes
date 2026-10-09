@@ -121,7 +121,7 @@ struct MediaTranscriptEditor: View {
                 ForEach(job.transcript) { segment in
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            Toggle("Seleccionar", isOn: Binding(get: { selected.contains(segment.id) }, set: { if $0 { selected.insert(segment.id) } else { selected.remove(segment.id) } })).labelsHidden()
+                            Toggle("Seleccionar", isOn: Binding(get: { selected.contains(segment.id) }, set: { if $0 { selected.insert(segment.id) } else { selected.remove(segment.id) } })).labelsHidden().modifier(NotebookToggleAccent())
                             Button(timestamp(segment.start)) { media.seek(segment.start) }.font(.caption.monospaced()).buttonStyle(.borderless)
                         }
                         if segment.boundaryReview == true { Text("Unión de audio · revisa negaciones y correcciones").font(.caption2).foregroundStyle(.orange) }

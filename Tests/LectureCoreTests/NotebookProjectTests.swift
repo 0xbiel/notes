@@ -77,16 +77,23 @@ final class NotebookProjectTests: XCTestCase {
         store.installWriteTracking()
         try workspace.writeNote("One.md", expected: "One", replacement: "Manual")
         XCTAssertEqual(store.timeline("derecho").count, 2)
-        var state = NotebookProjectState(legal: true); state.profile.instructions = "Use headings"; state.chats = [.init(title: "First")]; state.activeChatID = state.chats[0].id
+        var state = NotebookProjectState(); state.profile.instructions = "Use headings"; state.chats = [.init(title: "First")]; state.activeChatID = state.chats[0].id
         try store.saveState(state, notebookID: "derecho")
         XCTAssertEqual(try store.loadState(.copiedCourse), state)
         XCTAssertTrue(try store.loadState(store.notebooks[1]).chats.isEmpty)
     }
-    func testAssistantUsesUniqueAnchorsAndVerifiedArticleTokens() throws {
-        let response = NotebookAssistantResponse(reply: "Done", edits: [.init(path: "One.md", find: "One", replacement: "One\n\n{{article:0}}")])
-        let changes = try NotebookAssistantProtocol.changes(response, documents: ["One.md": "One"], sources: ["Literal legal source"], requiresArticle: true)
-        XCTAssertEqual(changes[0].after, "One\n\nLiteral legal source")
-        XCTAssertThrowsError(try NotebookAssistantProtocol.changes(response, documents: ["One.md": "One One"], sources: [], requiresArticle: true))
-        XCTAssertThrowsError(try NotebookAssistantProtocol.changes(.init(reply: "Done", edits: [.init(path: "One.md", find: "One", replacement: "Invented law")]), documents: ["One.md": "One"], sources: [], requiresArticle: true))
+    func testAssistantUsesUniqueAnchorsAndProviderContentWithoutLegalResolver() throws {
+        let response = NotebookAssistantResponse(reply: "Done", edits: [.init(path: "One.md", find: "One", replacement: "One\n\nProvider content with citation")])
+        let changes = try NotebookAssistantProtocol.changes(response, documents: ["One.md": "One"])
+        XCTAssertEqual(changes[0].after, "One\n\nProvider content with citation")
+        XCTAssertThrowsError(try NotebookAssistantProtocol.changes(response, documents: ["One.md": "One One"]))
+        XCTAssertFalse((NotebookAssistantProtocol.schema["properties"] as? [String: Any])?.keys.contains("articles") == true)
+        let arguments = NotesProviderTransport.codexArguments(AIProviderConfiguration(provider: .codexCLI, executablePath: "/usr/bin/false"), schema: URL(fileURLWithPath: "/tmp/response.json"), instructions: NotebookAssistantProtocol.instructions, allowWebSearch: true)
+        XCTAssertTrue(arguments.contains("web_search=\"live\""))
+        XCTAssertTrue(arguments.contains("read-only")); XCTAssertTrue(arguments.contains("shell_tool"))
+        let legacy = Data("{\"purpose\":\"Saved\",\"instructions\":\"Keep\",\"formatting\":\"\",\"sourceRules\":\"Cite\",\"resolveArticles\":true}".utf8)
+        let profile = try JSONDecoder().decode(NotebookProfile.self, from: legacy)
+        XCTAssertEqual(profile.instructions, "Keep")
+        XCTAssertFalse(String(decoding: try JSONEncoder().encode(profile), as: UTF8.self).contains("resolveArticles"))
     }
 }

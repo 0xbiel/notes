@@ -13,6 +13,7 @@ final class AIController: ObservableObject {
     var onAutomaticEdit: ((EditorChange) -> Void)?
     let harness: OpenRouterHarness
     let transport: NotesProviderTransport
+    let modelCatalogs: ProviderCatalogStore
     @Published var providerSettings: AIProviderSettings
     private var worker: Task<Void, Never>?
     private var latestMedia: [String: MediaJob] = [:]
@@ -23,6 +24,8 @@ final class AIController: ObservableObject {
         harness = OpenRouterHarness(store: LocalMediaStore(workspace: workspace))
         transport = NotesProviderTransport(store: LocalMediaStore(workspace: workspace))
         providerSettings = try AIProviderSettings.load(in: workspace)
+        let catalogTransport = transport
+        modelCatalogs = ProviderCatalogStore(workspace: workspace) { try await catalogTransport.models($0) }
         try outbox.recoverApplications(editor: editor); refresh()
     }
     func refresh() { batches = outbox.batches }

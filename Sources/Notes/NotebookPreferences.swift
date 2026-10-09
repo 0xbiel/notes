@@ -113,6 +113,7 @@ struct NotebookPreferences: View {
     @Binding var section: NotebookPreferencesSection
     @AppStorage("notes.language") private var language = "es"
     @AppStorage("notes.confirmChatDeletion") private var confirmChatDeletion = true
+    @AppStorage("notes.documentWidth") private var documentWidth = "wide"
 
     var body: some View {
         VStack(spacing: 0) {
@@ -136,6 +137,13 @@ struct NotebookPreferences: View {
                             Text("Abre un espacio local para configurar los proveedores.").foregroundStyle(.secondary)
                         }
                     } else {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(language == "en" ? "Text documents" : "Documentos de texto").font(.headline)
+                            DocumentReadingWidthPicker(selection: $documentWidth)
+                            Text(language == "en" ? "Standard centers an A4-like reading column. Wide uses the available space. Both shrink with the window." : "Estándar centra una columna de lectura similar a A4. Amplio aprovecha el espacio disponible. Ambos se adaptan al reducir la ventana.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Divider()
                         if let ai = model.ai {
                             GeneralAIPreferences(ai: ai) { section = .providers }.id(ai.outbox.workspace.root.path)
                             Divider()
@@ -143,7 +151,7 @@ struct NotebookPreferences: View {
                         VStack(alignment: .leading, spacing: 10) {
                             Text(language == "en" ? "Chats" : "Chats").font(.headline)
                             Toggle(language == "en" ? "Confirm before deleting chats" : "Confirmar antes de eliminar chats", isOn: $confirmChatDeletion)
-                                .toggleStyle(.switch)
+                                .modifier(NotebookToggleAccent(switchStyle: true))
                                 .accessibilityIdentifier("preferences.confirmChatDeletion")
                             Text(language == "en" ? "Turn off to delete chats immediately. Documents and checkpoints are kept." : "Desactívalo para eliminar chats directamente. Se conservan los documentos y el historial.")
                                 .font(.caption).foregroundStyle(.secondary)

@@ -13,16 +13,17 @@ root=Path.cwd(); stage=Path(tempfile.mkdtemp(prefix='derecho-build-stage-'))
 try:
     workspace=Path(sys.argv[1]).absolute()
     if not (workspace/'original-hashes.json').is_file():raise RuntimeError('Initialize a separate demo workspace or supply NOTES_WORKSPACE before packaging')
-    app=stage/'Notes.app'; executable=app/'Contents/MacOS/Notes'
+    app=stage/'Palladium.app'; executable=app/'Contents/MacOS/Notes'
     executable.parent.mkdir(parents=True)
     shutil.copyfile(root/'.build-native/debug/Notes',executable);executable.chmod(0o755)
-    shutil.copytree(root/'Resources', app/'Contents/Resources', dirs_exist_ok=True)
-    info={"CFBundleExecutable":"Notes","CFBundleIdentifier":"local.biel.DerechoReplayPrototype","CFBundleName":"Notes","CFBundleDisplayName":"Notes","CFBundlePackageType":"APPL","CFBundleShortVersionString":"0.3.0","CFBundleVersion":"3","LSMinimumSystemVersion":"14.0","NSHighResolutionCapable":True,"NSMicrophoneUsageDescription":"Grabar la clase únicamente cuando pulses Grabar; el audio permanece en este Mac.","PrototypeWorkspace":str(workspace)}
+    shutil.copytree(root/'Resources', app/'Contents/Resources', dirs_exist_ok=True, ignore=shutil.ignore_patterns('Branding'))
+    shutil.copyfile(root/'Resources/Branding/Palladium.icns', app/'Contents/Resources/Palladium.icns')
+    info={"CFBundleExecutable":"Notes","CFBundleIdentifier":"local.biel.DerechoReplayPrototype","CFBundleName":"Palladium","CFBundleDisplayName":"Palladium","CFBundleIconFile":"Palladium.icns","CFBundlePackageType":"APPL","CFBundleShortVersionString":"0.3.0","CFBundleVersion":"3","LSMinimumSystemVersion":"14.0","NSHighResolutionCapable":True,"NSMicrophoneUsageDescription":"Grabar la clase únicamente cuando pulses Grabar; el audio permanece en este Mac.","PrototypeWorkspace":str(workspace)}
     (app/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
     subprocess.run(['xattr','-cr',str(app)],check=True)
     subprocess.run(['codesign','--force','--sign','-','--timestamp=none',str(app)],check=True)
     subprocess.run(['codesign','--verify','--deep','--strict',str(app)],check=True)
-    destination=root/'build/Notes.app'
+    destination=root/'build/Palladium.app'
     if destination.is_symlink():raise RuntimeError('Generated app path must not be a symlink')
     destination.parent.mkdir(exist_ok=True)
     # Replace file inodes instead of overwriting a mapped executable. Overwriting

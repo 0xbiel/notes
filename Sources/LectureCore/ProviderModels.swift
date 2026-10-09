@@ -77,7 +77,7 @@ extension NotesProviderTransport {
         try configuration.validate()
         if configuration.provider == .openCode {
             _ = try await diagnose(configuration)
-            return [.init(id: OpenRouterHarness.model, name: "OpenRouter Free", detail: "Router gratuito configurado en Notes", isDefault: true)]
+            return [.init(id: OpenRouterHarness.model, name: "OpenRouter Free", detail: "Router gratuito configurado en Palladium", isDefault: true)]
         }
         if configuration.provider == .antigravity { return try await AntigravityTextTransport(store: store, configuration: configuration).models() }
         let directory = try temporaryDirectory()

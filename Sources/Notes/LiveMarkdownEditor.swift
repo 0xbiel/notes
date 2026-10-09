@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import LectureCore
 
 @MainActor private final class FoldingLayoutManager: NSLayoutManager, @preconcurrency NSLayoutManagerDelegate {
     var foldedRanges: [NSRange] = [] {
@@ -37,6 +38,44 @@ import SwiftUI
     }
 }
 
+@MainActor final class MarkdownScrollView: NSScrollView {
+    private var pendingOrigin: NSPoint?
+    private var restoring = false
+    private var restorationGeneration = 0
+
+    func restoreScroll(to origin: NSPoint, replacingPending: Bool) {
+        if replacingPending || pendingOrigin == nil { pendingOrigin = origin }
+        restorationGeneration += 1
+        let generation = restorationGeneration
+        needsLayout = true
+        layoutSubtreeIfNeeded()
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.restorationGeneration == generation else { return }
+            if self.applyPendingScroll() { self.pendingOrigin = nil }
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        _ = applyPendingScroll()
+    }
+
+    @discardableResult private func applyPendingScroll() -> Bool {
+        guard !restoring, let origin = pendingOrigin,
+              contentSize.width > 0, contentSize.height > 0,
+              let view = documentView as? MarkdownTextView else { return false }
+        restoring = true
+        view.frame.size.width = contentSize.width
+        if let container = view.textContainer { view.layoutManager?.ensureLayout(for: container) }
+        view.sizeToFit()
+        view.setFrameOrigin(.zero)
+        contentView.scroll(to: origin)
+        reflectScrolledClipView(contentView)
+        restoring = false
+        return true
+    }
+}
+
 /// The NSTextStorage always contains exact Markdown. Presentation changes only
 /// attributes; it never replaces characters with a rendered representation.
 struct LiveMarkdownEditor: NSViewRepresentable {
@@ -44,14 +83,16 @@ struct LiveMarkdownEditor: NSViewRepresentable {
     var text: String
     var editing: Bool
     var heading: String? = nil
+    var bottomInset: CGFloat = 0
     var onChange: (String) -> Void
     var onLink: (URL) -> Void
     var onTaskToggle: ((String) -> Void)? = nil
     @AppStorage("notes.accent") private var storedAccent = ""
+    @AppStorage("notes.documentWidth") private var storedWidth = "wide"
 
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSScrollView()
+        let scroll = MarkdownScrollView()
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.drawsBackground = false
@@ -69,7 +110,11 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         var changing = false
         var lastHeading: String?
         func update(_ owner: LiveMarkdownEditor, scroll: NSScrollView) {
+            if currentID != owner.documentID || !owner.editing { (scroll.documentView as? MarkdownTextView)?.finishInlineTableCell() }
             self.owner = owner
+            scroll.automaticallyAdjustsContentInsets = false
+            let switching = currentID != owner.documentID
+            let previousOrigin = scroll.contentView.bounds.origin
             let view: MarkdownTextView
             if let existing = editors[owner.documentID] { view = existing }
             else {
@@ -78,18 +123,19 @@ struct LiveMarkdownEditor: NSViewRepresentable {
                 view.string = owner.text
                 editors[owner.documentID] = view
             }
-            if currentID != owner.documentID {
+            if switching {
                 if let previous = scroll.documentView as? MarkdownTextView { previous.savedScroll = scroll.contentView.bounds.origin }
                 // Fence off late callbacks from the outgoing text view before detaching it.
                 currentID = owner.documentID
                 scroll.documentView = view
                 lastHeading = nil
                 view.frame.size.width = scroll.contentSize.width
-                scroll.contentView.scroll(to: view.savedScroll)
             }
             // Never replace marked text during an input-method composition.
             if view.string != owner.text && !view.hasMarkedText() {
                 changing = true
+                view.finishInlineTableCell()
+                view.tableSelection = nil
                 let selection = view.selectedRange()
                 view.string = owner.text
                 view.setSelectedRange(NSRange(location: min(selection.location, view.string.utf16.count), length: 0))
@@ -100,12 +146,28 @@ struct LiveMarkdownEditor: NSViewRepresentable {
             view.liveEditing = owner.editing
             view.setAccessibilityLabel(owner.editing ? "Editar nota, vista previa Markdown" : "Ver nota")
             view.openLink = owner.onLink
+            view.readingWidth = DocumentReadingWidth(rawValue: owner.storedWidth) ?? .wide
             view.taskAccent = NSColor(NotebookAccent.color(owner.storedAccent))
             view.didToggleTask = { [weak self, weak view] in
                 guard let self, let view, let currentID = self.currentID, self.editors[currentID] === view else { return }
                 self.owner?.onTaskToggle?(view.string)
             }
             view.renderMarkdown()
+            // Attach and lay out the flipped text view before adjusting insets.
+            // Otherwise an initially empty clip view can open a long note halfway down.
+            let insetChanged = scroll.contentInsets.bottom != owner.bottomInset
+            if insetChanged { scroll.contentInsets.bottom = owner.bottomInset }
+            if switching || insetChanged {
+                let origin = switching ? view.savedScroll : previousOrigin
+                if let markdown = scroll as? MarkdownScrollView { markdown.restoreScroll(to: origin, replacingPending: switching) }
+                else {
+                    if let container = view.textContainer { view.layoutManager?.ensureLayout(for: container) }
+                    view.sizeToFit()
+                    view.setFrameOrigin(.zero)
+                    scroll.contentView.scroll(to: origin)
+                    scroll.reflectScrolledClipView(scroll.contentView)
+                }
+            }
             if let heading = owner.heading, lastHeading != heading {
                 let pattern = "(?m)^#{1,6}[ \t]+" + NSRegularExpression.escapedPattern(for: heading) + "[ \t]*$"
                 if let match = (try? NSRegularExpression(pattern: pattern))?.firstMatch(in: view.string, range: NSRange(location: 0, length: view.string.utf16.count)) {
@@ -152,7 +214,27 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         let checked: Bool
     }
     private(set) var taskItems: [TaskItem] = []
-    var taskAccent = NSColor.controlAccentColor { didSet { needsDisplay = true } }
+    var readingWidth = DocumentReadingWidth.wide {
+        didSet {
+            guard readingWidth != oldValue else { return }
+            updateReadingInsets()
+            renderedSource = nil; renderMarkdown()
+        }
+    }
+    private func updateReadingInsets() {
+        let inset = readingWidth.horizontalInset(viewport: frame.width)
+        let size = NSSize(width: inset, height: 28)
+        if textContainerInset != size { textContainerInset = size }
+    }
+    var taskAccent = NSColor.controlAccentColor {
+        didSet {
+            // NSTextView's link attributes override the text-storage foreground.
+            linkTextAttributes = [.foregroundColor: taskAccent, .underlineStyle: NSUnderlineStyle.single.rawValue]
+            insertionPointColor = taskAccent
+            if taskAccent != oldValue { renderedSource = nil; renderMarkdown() }
+            needsDisplay = true
+        }
+    }
     var didToggleTask: (() -> Void)?
     var liveEditing = true
     var savedScroll = NSPoint.zero
@@ -162,6 +244,15 @@ struct LiveMarkdownEditor: NSViewRepresentable {
     private var renderedSelection = NSRange(location: NSNotFound, length: 0)
     private var renderedEditing = false
     private var codeBlocks: [CodeBlock] = []
+    private var inlineCode: [NSRange] = []
+    private(set) var tableBlocks: [MarkdownTableBlock] = []
+    private(set) var renderedTables: [RenderedMarkdownTable] = []
+    var contextTable: MarkdownTableBlock?
+    var contextTableSource = ""
+    var contextTableCell: (row: Int, column: Int)?
+    var inlineTableCell: InlineTableCellEdit?
+    var tableControls: [NSButton] = []
+    var tableSelection: TableCellSelection?
     private var collapsedBlocks: Set<String> = []
     private let documentUndo = UndoManager()
     override var undoManager: UndoManager? { documentUndo }
@@ -192,8 +283,10 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         isIncrementalSearchingEnabled = true
     }
     override func setFrameSize(_ newSize: NSSize) {
+        let changedWidth = frame.width != newSize.width
         super.setFrameSize(newSize)
-        textContainerInset = NSSize(width: newSize.width < 600 ? 22 : 40, height: 28)
+        updateReadingInsets()
+        if changedWidth { renderedSource = nil; renderMarkdown() }
     }
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
@@ -237,13 +330,20 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         renderMarkdown()
         (layoutManager as? FoldingLayoutManager)?.foldedRanges = codeBlocks.compactMap {
             collapsedBlocks.contains($0.id) ? foldedRange(for: $0) : nil
-        }
+        } + renderedTables.compactMap(\.foldedRange)
         needsDisplay = true
         window?.invalidateCursorRects(for: self)
     }
 
     override func mouseDown(with event: NSEvent) {
+        finishInlineTableCell()
         let point = convert(event.locationInWindow, from: nil)
+        if isEditable, let hit = tableCell(at: point) {
+            selectTableCell(hit.table, cellIndex: hit.index, extending: event.modifierFlags.contains(.shift))
+            window?.makeFirstResponder(self)
+            if event.clickCount > 1 { beginInlineTableCell(hit.table, cellIndex: hit.index) }; return
+        }
+        tableSelection = nil; needsDisplay = true
         if let index = taskItems.indices.first(where: { taskRect(taskItems[$0])?.insetBy(dx: -4, dy: -4).contains(point) == true }) {
             toggleTask(at: index); return
         }
@@ -273,14 +373,30 @@ struct LiveMarkdownEditor: NSViewRepresentable {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        if layoutManager != nil {
+        let codeFill = NSColor.textBackgroundColor.blended(withFraction: 0.07, of: .labelColor) ?? .controlBackgroundColor
+        let codeBorder = NSColor.separatorColor.withAlphaComponent(0.42)
+        if let layoutManager, let textContainer {
+            for range in inlineCode {
+                let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+                layoutManager.enumerateEnclosingRects(forGlyphRange: glyphs,
+                    withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0), in: textContainer) { rect, _ in
+                    // Keep the card within the normal line height, including wrapped snippets.
+                    let height = min(rect.height, layoutManager.defaultLineHeight(for: .monospacedSystemFont(ofSize: 14, weight: .regular)) + 2)
+                    let card = NSRect(x: rect.minX + self.textContainerOrigin.x - 3,
+                        y: rect.midY + self.textContainerOrigin.y - height / 2, width: rect.width + 6, height: height)
+                    guard card.intersects(dirtyRect) else { return }
+                    let path = NSBezierPath(roundedRect: card, xRadius: 4, yRadius: 4)
+                    codeFill.setFill(); path.fill()
+                    codeBorder.setStroke(); path.lineWidth = 0.7; path.stroke()
+                }
+            }
             for block in codeBlocks {
                 guard let card = blockRect(block) else { continue }
                 guard card.intersects(dirtyRect) else { continue }
                 let path = NSBezierPath(roundedRect: card.insetBy(dx: 1, dy: 1), xRadius: 12, yRadius: 12)
-                (NSColor.textBackgroundColor.blended(withFraction: 0.07, of: .labelColor) ?? .controlBackgroundColor).setFill()
+                codeFill.setFill()
                 path.fill()
-                NSColor.separatorColor.withAlphaComponent(0.42).setStroke()
+                codeBorder.setStroke()
                 path.lineWidth = 1
                 path.stroke()
                 let label = (block.language.isEmpty ? "TEXT" : block.language.uppercased()) as NSString
@@ -330,6 +446,9 @@ struct LiveMarkdownEditor: NSViewRepresentable {
             }
         }
         super.draw(dirtyRect)
+        for table in renderedTables {
+            if let rect = tableRect(table), rect.intersects(dirtyRect) { table.layout.draw(at: rect.origin); drawTableSelection(table, at: rect) }
+        }
         for task in taskItems {
             guard let rect = taskRect(task), rect.intersects(dirtyRect) else { continue }
             let box = NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3)
@@ -400,11 +519,78 @@ struct LiveMarkdownEditor: NSViewRepresentable {
     @objc func undo(_ sender: Any?) { if isEditable { documentUndo.undo() } }
     @objc func redo(_ sender: Any?) { if isEditable { documentUndo.redo() } }
     override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(copy(_:)), selectedTableText() != nil { return true }
         if item.action == #selector(undo(_:)) { return isEditable && documentUndo.canUndo }
         if item.action == #selector(redo(_:)) { return isEditable && documentUndo.canRedo }
+        if item.action == #selector(visualTableMenuAction(_:)) || item.action == #selector(insertMarkdownTable(_:)) || item.action == #selector(editMarkdownTable(_:)) { return isEditable && !hasMarkedText() }
         return super.validateUserInterfaceItem(item)
     }
-    override func paste(_ sender: Any?) { pasteAsPlainText(sender) }
+    override func paste(_ sender: Any?) {
+        if tableSelection != nil { if !pasteTableCells(NSPasteboard.general.string(forType: .string) ?? "") { NSSound.beep() }; return }; pasteAsPlainText(sender)
+    }
+    override func copy(_ sender: Any?) {
+        if let text = selectedTableText() { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) } else { super.copy(sender) }
+    }
+    override func mouseDragged(with event: NSEvent) {
+        if tableSelection != nil, let hit = tableCell(at: convert(event.locationInWindow, from: nil)) { selectTableCell(hit.table, cellIndex: hit.index, extending: true) } else if tableSelection == nil { super.mouseDragged(with: event) }
+    }
+    override func keyDown(with event: NSEvent) { if handleTableKey(event) { return }; super.keyDown(with: event) }
+    func tableRect(_ table: RenderedMarkdownTable) -> NSRect? {
+        guard let layoutManager, let textContainer, table.firstLine.location < (string as NSString).length else { return nil }
+        layoutManager.ensureLayout(for: textContainer)
+        let glyph = layoutManager.glyphIndexForCharacter(at: table.firstLine.location)
+        let line = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        return NSRect(x: textContainerOrigin.x, y: textContainerOrigin.y + line.minY + 4, width: table.layout.width, height: table.layout.height)
+    }
+    override func menu(for event: NSEvent) -> NSMenu? {
+        finishInlineTableCell()
+        let menu = super.menu(for: event) ?? NSMenu()
+        guard isEditable, !hasMarkedText() else { return menu }
+        let point = convert(event.locationInWindow, from: nil)
+        contextTable = renderedTables.first(where: { tableRect($0)?.contains(point) == true })?.block
+            ?? tableBlocks.first(where: { NSLocationInRange(characterIndexForInsertion(at: point), $0.range) })
+        contextTableSource = string
+        contextTableCell = tableCell(at: point).map { hit in
+            selectTableCell(hit.table, cellIndex: hit.index, extending: false)
+            let cell = hit.table.block.table.cells[hit.index]; return (cell.row, cell.column)
+        }
+        menu.addItem(.separator())
+        let english = UserDefaults.standard.string(forKey: "notes.language") == "en"
+        if contextTable != nil {
+            addVisualTableMenuItems(to: menu)
+            let edit = NSMenuItem(title: english ? "Edit table…" : "Editar tabla…", action: #selector(editMarkdownTable(_:)), keyEquivalent: "")
+            edit.target = self; menu.addItem(edit)
+        }
+        let insert = NSMenuItem(title: english ? "Insert table…" : "Insertar tabla…", action: #selector(insertMarkdownTable(_:)), keyEquivalent: "")
+        insert.target = self; menu.addItem(insert)
+        return menu
+    }
+    @objc func insertMarkdownTable(_ sender: Any?) { presentTableEditor(nil) }
+    @objc func editMarkdownTable(_ sender: Any?) {
+        let table = contextTable ?? tableBlocks.first(where: { NSLocationInRange(selectedRange().location, $0.range) })
+        if let table { presentTableEditor(table) }
+    }
+    private func presentTableEditor(_ block: MarkdownTableBlock?) {
+        guard isEditable, !hasMarkedText(), let window, window.attachedSheet == nil else { return }
+        let original = string, range = block?.range ?? selectedRange()
+        let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+        panel.isReleasedWhenClosed = false
+        let initialRow = block == nil ? 0 : min(contextTableCell?.row ?? tableSelection?.row ?? 0, (block?.table.rows ?? 1) - 1)
+        let initialColumn = block == nil ? 0 : min(contextTableCell?.column ?? tableSelection?.column ?? 0, (block?.table.columns ?? 1) - 1)
+        panel.contentView = NSHostingView(rootView: MarkdownTableEditingSheet(table: block?.table ?? MarkdownTable(), save: { [weak self, weak panel] table in
+            guard let self, let panel else { return }
+            guard self.applyMarkdownTable(table, replacing: range, expectedSource: original, inserting: block == nil) else { NSSound.beep(); return }
+            window.endSheet(panel); panel.close(); panel.contentView = nil
+        }, cancel: { [weak panel] in if let panel { window.endSheet(panel); panel.close(); panel.contentView = nil } }, selectedRow: initialRow, selectedColumn: initialColumn))
+        window.beginSheet(panel)
+    }
+    @discardableResult func applyMarkdownTable(_ table: MarkdownTable, replacing range: NSRange, expectedSource: String, inserting: Bool) -> Bool {
+        guard isEditable, !hasMarkedText(), string == expectedSource, range.location != NSNotFound, NSMaxRange(range) <= (string as NSString).length else { return false }
+        let text = inserting ? "\n\n" + table.source + "\n\n" : table.source + (NSMaxRange(range) == (string as NSString).length ? "\n\n" : "")
+        breakUndoCoalescing(); documentUndo.beginUndoGrouping(); insertText(text, replacementRange: range); documentUndo.endUndoGrouping(); breakUndoCoalescing()
+        setSelectedRange(NSRange(location: min((string as NSString).length, range.location + text.utf16.count + 1), length: 0))
+        renderedSource = nil; renderMarkdown(); return true
+    }
     override func insertNewline(_ sender: Any?) {
         guard !hasMarkedText(), selectedRange().length == 0 else { super.insertNewline(sender); return }
         let source = string as NSString
@@ -555,6 +741,20 @@ struct LiveMarkdownEditor: NSViewRepresentable {
             }
         }
         var codeRanges = blocks.map(\.range)
+        tableBlocks = MarkdownTables.blocks(in: string)
+        renderedTables = []
+        for block in tableBlocks {
+            let firstLine = NSIntersectionRange(source.lineRange(for: NSRange(location: block.range.location, length: 0)), block.range)
+            let layout = MarkdownTableLayout(table: block.table, width: max(80, (textContainer?.size.width ?? frame.width - textContainerInset.width * 2) - (liveEditing ? 32 : 0)), accent: taskAccent)
+            let bodyStart = min(NSMaxRange(block.range), NSMaxRange(firstLine))
+            let folded = NSRange(location: bodyStart, length: NSMaxRange(block.range) - bodyStart)
+            renderedTables.append(.init(block: block, firstLine: firstLine, foldedRange: folded.length > 0 ? folded : nil, layout: layout))
+            let hidden = NSMutableParagraphStyle(); hidden.minimumLineHeight = 0.01; hidden.maximumLineHeight = 0.01
+            storage.addAttributes([.font: NSFont.systemFont(ofSize: 0.01), .foregroundColor: NSColor.clear, .paragraphStyle: hidden], range: block.range)
+            let strut = NSMutableParagraphStyle(); strut.minimumLineHeight = layout.height + (liveEditing ? 44 : 8); strut.maximumLineHeight = strut.minimumLineHeight
+            storage.addAttribute(.paragraphStyle, value: strut, range: firstLine)
+        }
+        codeRanges += tableBlocks.map(\.range)
         func inCode(_ range: NSRange) -> Bool { codeRanges.contains { NSIntersectionRange($0, range).length > 0 } }
         for block in blocks {
             storage.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: 14, weight: .regular), range: block.range)
@@ -611,31 +811,53 @@ struct LiveMarkdownEditor: NSViewRepresentable {
             storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: match.range)
             hide(NSRange(location: match.range.location, length: match.range(at: 1).location - match.range.location), context: match.range)
         }
+        inlineCode = []
         for match in matches("(?<!\\\\)`([^`\\n]+)`") where !inCode(match.range) {
-            storage.addAttributes([.font: NSFont.monospacedSystemFont(ofSize: 14, weight: .regular), .backgroundColor: NSColor.quaternaryLabelColor.withAlphaComponent(0.1)], range: match.range(at: 1))
+            let body = match.range(at: 1)
+            inlineCode.append(body)
+            storage.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: 14, weight: .regular), range: body)
             hide(NSRange(location: match.range.location, length: 1), context: match.range)
             hide(NSRange(location: NSMaxRange(match.range) - 1, length: 1), context: match.range)
+            if !visible(match.range) {
+                storage.addAttribute(.kern, value: 3, range: NSRange(location: match.range.location, length: 1))
+                storage.addAttribute(.kern, value: 3, range: NSRange(location: NSMaxRange(match.range) - 1, length: 1))
+            }
             codeRanges.append(match.range)
         }
+        let boldItalic = NSFontManager.shared.convert(.systemFont(ofSize: 16), toHaveTrait: [.boldFontMask, .italicFontMask])
         let formats: [(String, NSAttributedString.Key, Any, Int)] = [
-            ("(?<!\\\\)\\*\\*([^*\\n]+)\\*\\*", .font, NSFont.boldSystemFont(ofSize: 16), 2),
-            ("(?<![\\\\*])\\*([^*\\n]+)\\*(?!\\*)", .font, NSFontManager.shared.convert(.systemFont(ofSize: 16), toHaveTrait: .italicFontMask), 1),
+            (#"(?<![\\*])\*\*\*([^*\n]+)\*\*\*(?!\*)"#, .font, boldItalic, 3),
+            (#"(?<![\\*])\*\*([^*\n]+)\*\*(?!\*)"#, .font, NSFont.boldSystemFont(ofSize: 16), 2),
+            (#"(?<![\\*])\*([^*\n]+)\*(?!\*)"#, .font, NSFontManager.shared.convert(.systemFont(ofSize: 16), toHaveTrait: .italicFontMask), 1),
+            (#"(?<![\\\p{L}\p{N}_])___([^_\n]+)___(?![\p{L}\p{N}_])"#, .font, boldItalic, 3),
+            (#"(?<![\\\p{L}\p{N}_])__([^_\n]+)__(?![\p{L}\p{N}_])"#, .font, NSFont.boldSystemFont(ofSize: 16), 2),
+            (#"(?<![\\\p{L}\p{N}_])_([^_\n]+)_(?![\p{L}\p{N}_])"#, .font, NSFontManager.shared.convert(.systemFont(ofSize: 16), toHaveTrait: .italicFontMask), 1),
             ("(?<!\\\\)~~([^~\\n]+)~~", .strikethroughStyle, NSUnderlineStyle.single.rawValue, 2)
         ]
         for (pattern, key, value, count) in formats {
             for match in matches(pattern) where !inCode(match.range) {
+                let body = source.substring(with: match.range(at: 1))
+                guard body.first?.isWhitespace == false, body.last?.isWhitespace == false else { continue }
                 if key == .font, let requested = value as? NSFont {
-                    let current = storage.attribute(.font, at: match.range(at: 1).location, effectiveRange: nil) as? NSFont ?? requested
                     let traits = NSFontManager.shared.traits(of: requested)
-                    storage.addAttribute(.font, value: NSFontManager.shared.convert(current, toHaveTrait: traits), range: match.range(at: 1))
+                    var fonts: [(NSRange, NSFont)] = []
+                    storage.enumerateAttribute(.font, in: match.range(at: 1)) { value, range, _ in
+                        fonts.append((range, NSFontManager.shared.convert(value as? NSFont ?? requested, toHaveTrait: traits)))
+                    }
+                    for (range, font) in fonts { storage.addAttribute(.font, value: font, range: range) }
                 } else { storage.addAttribute(key, value: value, range: match.range(at: 1)) }
                 hide(NSRange(location: match.range.location, length: count), context: match.range)
                 hide(NSRange(location: NSMaxRange(match.range) - count, length: count), context: match.range)
             }
         }
+        for span in InlineUnderline.spans(in: string, excluding: codeRanges) {
+            storage.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: span.content)
+            hide(span.opening, context: span.range)
+            hide(span.closing, context: span.range)
+        }
         for match in matches("(?<!\\\\)\\[([^]\\n]+)\\]\\(([^)\\n]+)\\)") where !inCode(match.range) {
             guard let url = URL(string: source.substring(with: match.range(at: 2))) else { continue }
-            storage.addAttributes([.link: url, .foregroundColor: NSColor.linkColor], range: match.range(at: 1))
+            storage.addAttributes([.link: url, .foregroundColor: taskAccent], range: match.range(at: 1))
             hide(NSRange(location: match.range.location, length: 1), context: match.range)
             hide(NSRange(location: NSMaxRange(match.range(at: 1)), length: NSMaxRange(match.range) - NSMaxRange(match.range(at: 1))), context: match.range)
         }
@@ -646,7 +868,7 @@ struct LiveMarkdownEditor: NSViewRepresentable {
             url.queryItems = [.init(name: "target", value: String(parts[0]))]
             let labelStart = parts.count == 2 ? match.range(at: 1).location + String(parts[0]).utf16.count + 1 : match.range(at: 1).location
             let label = NSRange(location: labelStart, length: NSMaxRange(match.range(at: 1)) - labelStart)
-            if let link = url.url { storage.addAttributes([.link: link, .foregroundColor: NSColor.linkColor], range: label) }
+            if let link = url.url { storage.addAttributes([.link: link, .foregroundColor: taskAccent], range: label) }
             hide(NSRange(location: match.range.location, length: labelStart - match.range.location), context: match.range)
             hide(NSRange(location: NSMaxRange(label), length: 2), context: match.range)
         }
@@ -654,7 +876,7 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         documentUndo.enableUndoRegistration()
         (layoutManager as? FoldingLayoutManager)?.foldedRanges = blocks.compactMap {
             collapsedBlocks.contains($0.id) ? foldedRange(for: $0) : nil
-        }
+        } + renderedTables.compactMap(\.foldedRange)
         // Selection callbacks can restyle text during an AppKit character edit.
         // In that path, font changes outside the edited paragraph can retain
         // glyph IDs from the previous font. Regenerate them after styling.
@@ -663,5 +885,6 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         needsDisplay = true
         window?.invalidateCursorRects(for: self)
         typingAttributes = [.font: NSFont.systemFont(ofSize: 16), .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph]
+        syncVisualTableControls()
     }
 }

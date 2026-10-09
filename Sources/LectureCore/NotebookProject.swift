@@ -6,8 +6,7 @@ public struct NotebookProfile: Codable, Equatable, Sendable {
     public var instructions = ""
     public var formatting = ""
     public var sourceRules = ""
-    public var resolveArticles = false
-    public init(legal: Bool = false) { resolveArticles = legal }
+    public init() {}
 }
 
 public struct NotebookActivity: Codable, Identifiable, Equatable, Sendable {
@@ -45,7 +44,7 @@ public struct NotebookProjectState: Codable, Equatable, Sendable {
     public var chats: [NotebookChat] = []
     public var activeChatID: String?
     public var pendingDrafts: [NotebookChat]?
-    public init(legal: Bool = false) { profile = NotebookProfile(legal: legal) }
+    public init() { profile = NotebookProfile() }
 }
 
 public struct NotebookCheckpoint: Codable, Identifiable, Equatable, Sendable {
@@ -91,7 +90,7 @@ public final class NotebookProjectStore {
     private func statePath(_ id: String) -> String { "projects/" + Self.digest(id) + "/state.json" }
     public func loadState(_ notebook: Notebook) throws -> NotebookProjectState {
         let path = statePath(notebook.id)
-        return exists(path) ? try JSONDecoder().decode(NotebookProjectState.self, from: workspace.readStorage(path)) : .init(legal: notebook.id == "derecho")
+        return exists(path) ? try JSONDecoder().decode(NotebookProjectState.self, from: workspace.readStorage(path)) : .init()
     }
     public func saveState(_ state: NotebookProjectState, notebookID: String) throws {
         try workspace.writeStorage(statePath(notebookID), data: JSONEncoder().encode(state))

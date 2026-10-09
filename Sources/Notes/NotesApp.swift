@@ -6,7 +6,7 @@ struct NotesApp: App {
     @StateObject private var model = Workbench()
     @AppStorage("notes.appearance") private var appearance = "system"
     var body: some Scene {
-        WindowGroup("Notes Test") {
+        WindowGroup("Palladium") {
             WorkbenchView(model: model).frame(minWidth: 600, minHeight: 500)
                 .onChange(of: appearance, initial: true) { _, value in
                     // Clear the native override immediately when returning to System.
@@ -17,8 +17,9 @@ struct NotesApp: App {
                     default: NSApp.appearance = nil
                     }
                 }
-                .onDisappear { model.assistant?.stop(); model.ai?.stop(); if model.media?.isRecording == true { model.media?.stopMicrophone() } }
-                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in model.assistant?.stop(); model.ai?.stop(); model.media?.shutdown() }
+                .onDisappear { model.flushAutosave(); model.assistant?.stop(); model.ai?.stop(); if model.media?.isRecording == true { model.media?.stopMicrophone() } }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in model.flushAutosave() }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in model.flushAutosave(); model.assistant?.stop(); model.ai?.stop(); model.media?.shutdown() }
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentMinSize)
@@ -56,6 +57,10 @@ final class Workbench: ObservableObject {
     @Published var selectedID: String?
     @Published var document: SessionDocument?
     @Published var notes: [String] = []
+    @Published var libraryFiles: [String] = []
+    @Published var selectedFile: String?
+    @Published var selectedFolder: String?
+    @Published var documentChatVisible = false
     @Published var folders: [String] = []
     @Published var noteText = ""
     @Published var errorText: String?
@@ -78,6 +83,7 @@ final class Workbench: ObservableObject {
     @Published var draftVersion = 0
     @Published var statusText = ""
     var drafts: [String: String] = [:]
+    var autosaveTasks: [String: Task<Void, Never>] = [:]
     var bases: [String: String] = [:]
     var editor: NotebookEditor?
     var replayTask: Task<Void, Never>?
@@ -131,7 +137,7 @@ final class Workbench: ObservableObject {
             }
             let projects = try NotebookProjectStore(workspace: workspace, notebooks: notebooks)
             self.projects = projects
-            notes = try workspace.noteNames(); folders = try workspace.folderNames()
+            notes = try workspace.noteNames(); libraryFiles = try workspace.fileNames(); folders = try workspace.folderNames()
             assistant = try NotebookAssistantController(store: projects)
             try loadTrash()
             for notebook in notebooks { try projects.capture(notebook.id, summary: "Inicio") }

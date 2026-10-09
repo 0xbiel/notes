@@ -7,7 +7,7 @@ struct NotebookHome: View {
     @ObservedObject var assistant: NotebookAssistantController
     @AppStorage("notes.language") private var language = "es"
     private var notebook: Notebook { model.currentNotebook }
-    private var empty: Bool { assistant.chat(notebook)?.messages.isEmpty != false }
+    private var empty: Bool { assistant.chat(notebook)?.messages.isEmpty != false && assistant.unrepresentedError(notebook) == nil }
     var body: some View {
         VStack(spacing: 18) {
             NotebookChatPicker(notebook: notebook, assistant: assistant).padding(.top, 20)
@@ -18,7 +18,7 @@ struct NotebookHome: View {
                     Text(language == "en" ? "What would you like to work on?" : "¿En qué quieres trabajar?").foregroundStyle(.secondary)
                 }
             } else {
-                NotebookConversation(model: model, assistant: assistant).frame(maxHeight: .infinity)
+                NotebookConversation(model: model, assistant: assistant).padding(16).frame(maxHeight: .infinity)
             }
             NotebookComposer(model: model, assistant: assistant, large: true).frame(maxWidth: 740)
             if empty { Spacer(minLength: 35) }
@@ -38,16 +38,18 @@ struct NotebookChatPicker: View {
     @State private var pendingDeletion: NotebookChat?
     @AppStorage("notes.confirmChatDeletion") private var confirmChatDeletion = true
     private var chats: [NotebookChat] { assistant.matchingChats(notebook, query: search) }
+    private var title: String { assistant.chat(notebook)?.title ?? "Chats" }
+    private var titleWidth: CGFloat { min(240, max(28, (title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13)]).width.rounded(.up))) }
     var body: some View {
         HStack(spacing: 12) {
             Button { presented.toggle() } label: {
                 HStack(spacing: 7) {
                     Image(systemName: "bubble.left.and.bubble.right").foregroundStyle(.secondary)
-                    Text(assistant.chat(notebook)?.title ?? "Chats").lineLimit(1).truncationMode(.tail)
+                    Text(title).lineLimit(1).truncationMode(.tail).frame(width: titleWidth, alignment: .leading)
                     Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
                 }.padding(.horizontal, 10).padding(.vertical, 8)
-                    .background(.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 7))
-            }.buttonStyle(.plain).frame(maxWidth: 280).fixedSize(horizontal: false, vertical: true)
+                    .modifier(NotebookInputSurface(radius: 7))
+            }.buttonStyle(.plain)
                 .accessibilityIdentifier("notebook.chatPicker")
                 .accessibilityLabel(language == "en" ? "Choose chat" : "Elegir chat")
                 .accessibilityValue(assistant.chat(notebook)?.title ?? "Chats")
@@ -107,6 +109,7 @@ struct NotebookChatPicker: View {
         }.font(.callout)
             .fixedSize(horizontal: true, vertical: true)
             .frame(maxWidth: .infinity, alignment: .center)
+            .accessibilityElement(children: .contain).accessibilityIdentifier("notebook.chatHeader")
     }
 }
 
@@ -141,6 +144,13 @@ struct NotebookConversation: View {
                     if assistant.runningNotebookID == model.currentNotebook.id, assistant.runningChatID == assistant.chat(model.currentNotebook)?.id {
                         NotebookWorkLog(activities: assistant.activities, running: true).padding(.vertical, 8)
                     }
+                    if let error = assistant.unrepresentedError(model.currentNotebook) {
+                        HStack(alignment: .top, spacing: 8) {
+                            NotebookChatMarkdown(text: NotebookAssistantText.display(error, language: language)).foregroundStyle(.orange)
+                            Button { assistant.error = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
+                                .accessibilityLabel(language == "en" ? "Dismiss error" : "Cerrar error")
+                        }.padding(4).accessibilityIdentifier("notebook.chatError")
+                    }
                     Color.clear.frame(height: 1).id("end").onAppear { followsLatest = true }.onDisappear { followsLatest = false }
                 }.frame(maxWidth: 740).frame(maxWidth: .infinity).padding(.horizontal, 8)
             }
@@ -160,12 +170,26 @@ struct NotebookComposer: View {
     @State private var dropTargeted = false
     @AppStorage("notes.accent") private var accent = ""
     @AppStorage("notes.language") private var language = "es"
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var notebook: Notebook { model.currentNotebook }
     private var draft: Binding<String> { Binding(get: { assistant.chat(notebook)?.draft ?? "" }, set: { assistant.setDraft($0, notebook: notebook) }) }
     private var running: Bool { assistant.runningNotebookID == notebook.id }
     var body: some View {
         VStack(spacing: 8) {
+            if !large && showConversation {
+                VStack(spacing: 12) {
+                    HStack(spacing: 8) {
+                        NotebookChatPicker(notebook: notebook, assistant: assistant).labelStyle(.iconOnly)
+                        Button { showConversation = false } label: { Image(systemName: "xmark").frame(width: 26, height: 26) }
+                            .buttonStyle(.plain).accessibilityLabel(language == "en" ? "Close chat" : "Cerrar chat")
+                            .accessibilityIdentifier("notebook.closeChat")
+                    }
+                    NotebookConversation(model: model, assistant: assistant)
+                }.padding(14).frame(height: 280)
+                    .modifier(NotebookInputSurface(radius: 18, floating: true, borderOpacity: 0.6))
+                    .accessibilityIdentifier("notebook.floatingChat")
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
             VStack(alignment: .leading, spacing: large ? 16 : 8) {
                 if let attachments = assistant.chat(notebook)?.attachments, !attachments.isEmpty {
                     NotebookAttachmentStrip(attachments: attachments, workspace: assistant.store.workspace) { assistant.removeAttachment($0, notebook: notebook) }
@@ -187,15 +211,11 @@ struct NotebookComposer: View {
                         .accessibilityIdentifier("notebook.attachFiles")
                     ListeningDock(model: model, embedded: true)
                     if !large {
-                        Button { showConversation.toggle() } label: { Image(systemName: "bubble.left.and.bubble.right").frame(width: 28, height: 28) }
-                            .buttonStyle(.plain).help(language == "en" ? "Show chat" : "Mostrar chat").accessibilityLabel("Mostrar chat")
+                        Button { showConversation.toggle() } label: { Image(systemName: showConversation ? "bubble.left.and.bubble.right.fill" : "bubble.left.and.bubble.right").frame(width: 28, height: 28) }
+                            .buttonStyle(.plain).help(language == "en" ? "Toggle chat" : "Mostrar u ocultar chat").accessibilityLabel(language == "en" ? "Toggle chat" : "Mostrar u ocultar chat")
+                            .modifier(NotebookInputSurface(radius: 7))
+                            .accessibilityAddTraits(showConversation ? .isSelected : [])
                             .accessibilityIdentifier("notebook.showChat")
-                            .popover(isPresented: $showConversation) {
-                                VStack(spacing: 14) {
-                                    NotebookChatPicker(notebook: notebook, assistant: assistant)
-                                    NotebookConversation(model: model, assistant: assistant)
-                                }.padding(16).frame(width: 450, height: 340)
-                            }
                     }
                     Button {
                         if running { assistant.stop() } else { model.submitNotebookPrompt() }
@@ -209,8 +229,20 @@ struct NotebookComposer: View {
                         .accessibilityIdentifier("notebook.send")
                 }
             }.padding(large ? 18 : 12)
-                .background(reduceTransparency ? Color(nsColor: .controlBackgroundColor) : Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: large ? 22 : 18))
-                .overlay(RoundedRectangle(cornerRadius: large ? 22 : 18).stroke(dropTargeted ? NotebookAccent.color(accent) : Color(nsColor: .separatorColor).opacity(0.45), lineWidth: dropTargeted ? 2 : 1))
+                .modifier(NotebookInputSurface(radius: large ? 22 : 18, floating: !large, borderOpacity: 0.6))
+                .overlay(alignment: .top) {
+                    if !running, !model.chatHistoryVisible, let error = assistant.composerError(notebook) {
+                        HStack(spacing: 8) {
+                            Text(NotebookAssistantText.display(error, language: language)).font(.caption).foregroundStyle(.orange).lineLimit(3)
+                            Spacer(minLength: 0)
+                            Button { assistant.error = nil } label: { Image(systemName: "xmark") }
+                                .buttonStyle(.plain).accessibilityLabel(language == "en" ? "Dismiss error" : "Cerrar error")
+                        }.padding(10).modifier(NotebookInputSurface(radius: 10))
+                            .accessibilityIdentifier("notebook.composerError")
+                            .alignmentGuide(.top) { $0[.bottom] + 8 }
+                    }
+                }
+                .overlay(RoundedRectangle(cornerRadius: large ? 22 : 18).stroke(dropTargeted ? NotebookAccent.color(accent) : .clear, lineWidth: 2))
                 .dropDestination(for: URL.self) { urls, _ in
                     guard !assistant.importingAttachments, !urls.isEmpty else { return false }
                     assistant.importAttachments(urls, notebook: notebook); return true
@@ -221,13 +253,13 @@ struct NotebookComposer: View {
                     case .failure(let error): assistant.error = error.localizedDescription
                     }
                 }
-            if let media = model.media, media.isRecording { NoteRecordingStatus(model: model, media: media) }
-            if running {
-                HStack(spacing: 7) { ProgressView().controlSize(.small); Text(NotebookAssistantText.display(assistant.progress, language: language)).font(.caption).foregroundStyle(.secondary); Spacer() }
-            } else if let error = assistant.error {
-                HStack { Text(NotebookAssistantText.display(error, language: language)).font(.caption).foregroundStyle(.orange).lineLimit(3); Spacer(); Button { assistant.error = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel("Cerrar error") }
-            }
         }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: showConversation)
+        .onExitCommand { showConversation = false }
+        .onChange(of: notebook.id) { _, _ in showConversation = false }
+        .onChange(of: showConversation) { _, value in if !large { model.documentChatVisible = value } }
+        .onAppear { if !large { model.documentChatVisible = showConversation } }
+        .onDisappear { if !large { model.documentChatVisible = false } }
     }
 }
 
@@ -247,7 +279,7 @@ private struct NotebookModelControls: View {
         }.controlSize(.small).disabled(disabled || ai.running)
             .onChange(of: preferences.draft) { _, _ in if preferences.hasChanges { preferences.save() } }
             .onChange(of: ai.providerSettings) { old, new in if preferences.draft == old { preferences.draft = new } }
-            .task(id: preferences.draft.selectedProvider) { await preferences.checkInstallation() }
+            .task(id: preferences.catalogIdentity) { await preferences.refreshCatalogPeriodically() }
     }
     private var selector: some View { AIModelSelector(preferences: preferences, manageProviders: manage) }
     @ViewBuilder private var reasoning: some View {
@@ -277,12 +309,16 @@ struct NotebookManagement: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Text(notebook.name).font(.title2.weight(.semibold)); Spacer()
-                Button(t("Cerrar", "Close")) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button { dismiss() } label: {
+                    Image(systemName: "xmark").font(.system(size: 12, weight: .medium)).frame(width: 32, height: 32)
+                        .modifier(NotebookGlassCloseSurface())
+                }.buttonStyle(.plain).keyboardShortcut(.cancelAction)
+                    .accessibilityLabel(t("Cerrar", "Close")).accessibilityIdentifier("notebook.management.close")
             }
-            Picker(t("Gestionar cuaderno", "Manage notebook"), selection: $tab) {
-                Text(t("Perfil", "Profile")).tag("profile")
-                Text(t("Historial", "History")).tag("history")
-            }.pickerStyle(.segmented).accessibilityIdentifier("notebook.management.tabs")
+            NotebookGlassSelector(selection: $tab, options: [
+                .init(id: "profile", title: t("Perfil", "Profile")),
+                .init(id: "history", title: t("Historial", "History"))
+            ]).accessibilityIdentifier("notebook.management.tabs")
             if tab == "profile" {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
@@ -290,11 +326,12 @@ struct NotebookManagement: View {
                         field(t("Instrucciones del asistente", "Assistant instructions"), text: $profile.instructions, lines: 4)
                         field(t("Estilo y formato", "Style and formatting"), text: $profile.formatting)
                         field(t("Reglas de fuentes", "Source rules"), text: $profile.sourceRules)
-                        Toggle(t("Resolver artículos con BOE al enviar", "Look up articles in BOE when sending"), isOn: $profile.resolveArticles)
-                        Text(t("La ley se identifica por el contexto. El asistente preguntará si la referencia es ambigua.", "The law is identified from context. The assistant will ask when the reference is ambiguous.")).font(.caption).foregroundStyle(.secondary)
                     }.padding(2)
                 }
-                HStack { Spacer(); Button(t("Guardar perfil", "Save profile")) { assistant.saveProfile(profile, notebook: notebook) }.buttonStyle(.borderedProminent).accessibilityIdentifier("notebook.saveProfile").disabled(profile == assistant.state(notebook).profile) }
+                HStack { Spacer(); Button { assistant.saveProfile(profile, notebook: notebook) } label: {
+                    Label(t("Guardar perfil", "Save profile"), systemImage: "checkmark").padding(.horizontal, 12).padding(.vertical, 9)
+                        .modifier(NotebookInputSurface(radius: 8))
+                }.buttonStyle(.plain).accessibilityIdentifier("notebook.saveProfile").disabled(profile == assistant.state(notebook).profile) }
             } else { history }
             if let error = assistant.error { Text(NotebookAssistantText.display(error, language: language)).foregroundStyle(.orange).font(.caption) }
         }.padding(24).frame(minWidth: 480, idealWidth: 700, maxWidth: 800, minHeight: 460, idealHeight: 620)
@@ -302,7 +339,8 @@ struct NotebookManagement: View {
     private func field(_ title: String, text: Binding<String>, lines: Int = 2) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title).font(.callout.weight(.medium))
-            TextField(title, text: text, axis: .vertical).textFieldStyle(.roundedBorder).lineLimit(lines...8)
+            TextField(title, text: text, axis: .vertical).textFieldStyle(.plain).lineLimit(lines...8)
+                .padding(12).modifier(NotebookInputSurface(radius: 12))
         }
     }
     private var history: some View {

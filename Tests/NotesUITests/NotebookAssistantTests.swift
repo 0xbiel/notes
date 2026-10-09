@@ -171,28 +171,26 @@ final class NotebookAssistantTests: XCTestCase {
         XCTAssertEqual(assistant.chat(.copiedCourse)?.messages.last?.role, "assistant")
         XCTAssertNil(assistant.chat(other))
     }
-    @MainActor func testRequestsAdditionalFilesAndExactLegalSource() async throws {
+    @MainActor func testRequestsAdditionalFilesAndPreservesProviderCitations() async throws {
         let (model, assistant, _) = try fixture()
         for name in ["A", "B", "C", "D", "Z"] { try model.workspace?.createNote(name + ".md", text: "# \(name)\n") }
         assistant.setDraft("Añade Art. 13 del Estatuto de los Trabajadores", notebook: model.currentNotebook)
         var round = 0
-        assistant.fetchArticle = { query in XCTAssertEqual(query.article, "13"); return "Exact legal text with BOE citation" }
         assistant.generate = { request, _ in
             round += 1
-            if round == 1 { return .init(reply: "", readFiles: ["Z.md"], articles: [.init(lawID: "BOE-A-2015-11430", lawName: "Estatuto de los Trabajadores", article: "13")]) }
+            if round == 1 { return .init(reply: "", readFiles: ["Z.md"]) }
             XCTAssertEqual(request.documents["Z.md"], "# Z\n")
-            return .init(reply: "Added", edits: [.init(path: "Z.md", find: "# Z\n", replacement: "# Z\n\n{{article:0}}")])
+            return .init(reply: "Added", edits: [.init(path: "Z.md", find: "# Z\n", replacement: "# Z\n\nProvider text with source citation")])
         }
         model.submitNotebookPrompt(); await assistant.waitUntilFinished()
         XCTAssertNil(assistant.error); XCTAssertEqual(round, 2)
         let activities = try XCTUnwrap(assistant.chat(model.currentNotebook)?.messages.last?.activities)
-        XCTAssertTrue(activities.contains { $0.title.contains("BOE") })
         XCTAssertTrue(activities.contains { $0.title.contains("Z.md") })
         XCTAssertTrue(activities.last?.title.contains("1 archivo") == true)
         XCTAssertNil(assistant.runningChatID)
-        XCTAssertTrue(try model.workspace!.readNote("Z.md").contains("Exact legal text with BOE citation"))
+        XCTAssertTrue(try model.workspace!.readNote("Z.md").contains("Provider text with source citation"))
     }
-    @MainActor func testAmbiguityLookupFailureAndCancellationLeaveNotesUntouched() async throws {
+    @MainActor func testAmbiguityProviderFailureAndCancellationLeaveNotesUntouched() async throws {
         let (model, assistant, _) = try fixture()
         let initial = try model.workspace!.readNote("Inicio.md")
         assistant.setDraft("Art. 13", notebook: model.currentNotebook)
@@ -200,8 +198,7 @@ final class NotebookAssistantTests: XCTestCase {
         model.submitNotebookPrompt(); await assistant.waitUntilFinished()
         XCTAssertEqual(assistant.chat(model.currentNotebook)?.messages.last?.text, "¿De qué ley?")
         assistant.setDraft("Art. 13 del Estatuto", notebook: model.currentNotebook)
-        assistant.generate = { _, _ in .init(reply: "", articles: [.init(lawID: "BOE-A-2015-11430", lawName: "Estatuto", article: "13")]) }
-        assistant.fetchArticle = { _ in throw MediaError.invalid("Offline") }
+        assistant.generate = { _, _ in throw MediaError.invalid("Offline") }
         model.submitNotebookPrompt(); await assistant.waitUntilFinished()
         XCTAssertEqual(assistant.error, "Offline")
         assistant.setDraft("Edit everything", notebook: model.currentNotebook)
@@ -333,13 +330,15 @@ final class NotebookAssistantTests: XCTestCase {
         try reopened.createNotebookItem(kind: "cuaderno", name: "Fresh")
         XCTAssertEqual(reopened.currentNotebook.name, "Fresh")
     }
-    @MainActor func testFolderDeletionRejectsOtherAssetsAndNotebookRoots() throws {
+    @MainActor func testFolderDeletionArchivesOtherAssetsAndRejectsNotebookRoots() throws {
         let (model, _, root) = try fixture()
         try model.createNotebookItem(kind: "carpeta", name: "Assets")
         try Data("Keep".utf8).write(to: root.appendingPathComponent("copied-course/Assets/file.txt"))
         model.deleteItem("Assets", folder: true)
-        XCTAssertNotNil(model.errorText)
-        XCTAssertTrue(model.trash.isEmpty)
+        XCTAssertNil(model.errorText)
+        XCTAssertEqual(model.trash.count, 1)
+        model.restoreTrash(try XCTUnwrap(model.trash.first))
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("copied-course/Assets/file.txt")), Data("Keep".utf8))
         try model.createNotebookItem(kind: "cuaderno", name: "Other")
         model.deleteItem("Cuadernos", folder: true)
         XCTAssertNotNil(model.errorText)

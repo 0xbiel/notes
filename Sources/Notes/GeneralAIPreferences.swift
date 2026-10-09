@@ -70,7 +70,7 @@ struct GeneralAIPreferences: View {
             if preferences.draft == old { preferences.draft = updated }
         }
         .disabled(ai.running)
-        .task(id: preferences.draft.selectedProvider) { await preferences.checkInstallation() }
+        .task(id: preferences.catalogIdentity) { await preferences.refreshCatalogPeriodically() }
         .onDisappear { connectionTask?.cancel() }
     }
     private var modelControl: some View { AIModelSelector(preferences: preferences, manageProviders: manageProviders) }
