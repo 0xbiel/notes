@@ -129,6 +129,52 @@ extension Workbench {
             openNotebook(entry.notebookID)
         }
     }
+    func permanentlyDeleteTrash(_ entry: NotebookTrashEntry) {
+        guard canManageFiles else { return }
+        perform {
+            guard trash.contains(where: { $0.id == entry.id }) else { throw ReplayError.conflict }
+            try saveTrash(trash.filter { $0.id != entry.id })
+        }
+    }
+    func permanentlyDeleteNotebook(_ notebook: Notebook) {
+        guard canManageFiles, let workspace, let projects else { return }
+        perform {
+            guard notebooks.contains(where: { $0.id == notebook.id && $0.archivedAt != nil }),
+                  !notebook.id.contains("/"), !notebook.id.hasPrefix(".") else { throw ReplayError.conflict }
+            let paths = try workspace.fileNames().filter { projects.owner(of: $0)?.id == notebook.id }
+            let files = try paths.map { ($0, try workspace.readFile($0)) }
+            let folders = try workspace.folderNames().filter { folder in
+                projects.owner(of: folder + "/placeholder")?.id == notebook.id && folder != "Cuadernos" &&
+                !notebooks.contains(where: { $0.id != notebook.id && !$0.rootPrefix.isEmpty && $0.rootPrefix.hasPrefix(folder + "/") })
+            }
+            for (path, bytes) in files {
+                try workspace.permanentlyRemoveFile(path, expected: bytes)
+                autosaveTasks[path]?.cancel(); autosaveTasks[path] = nil
+                drafts[path] = nil; bases[path] = nil
+            }
+            for folder in folders.sorted(by: { $0.count > $1.count }) { try workspace.removeEmptyFolder(folder) }
+            try projects.forgetNotebook(notebook.id)
+            try workspace.removeStorageTree("projects/attachments/" + notebook.id)
+            try saveTrash(trash.filter { $0.notebookID != notebook.id })
+            let remaining = notebooks.filter { $0.id != notebook.id }
+            try workspace.writeStorage("notebooks.json", data: JSONEncoder().encode(remaining))
+            notebooks = remaining
+            persistDrafts()
+            refreshProjectFiles(paths)
+        }
+    }
+    func clearTrash() {
+        guard canManageFiles else { return }
+        errorText = nil
+        for notebook in notebooks.filter({ $0.archivedAt != nil }) {
+            permanentlyDeleteNotebook(notebook)
+            if errorText != nil { return }
+        }
+        for entry in trash {
+            permanentlyDeleteTrash(entry)
+            if errorText != nil { return }
+        }
+    }
     func createFolderInside(_ path: String) {
         guard let notebook = projects?.owner(of: path + "/placeholder.md") else { return }
         selectedNotebookID = notebook.id
@@ -139,18 +185,130 @@ extension Workbench {
 
 struct NotebookTrashMenu: View {
     @ObservedObject var model: Workbench
+    @State private var presented = false
+    @State private var query = ""
+    @State private var hovered: String?
+    @State private var pendingDeletion: TrashDeletion?
+    @AppStorage("notes.language") private var language = "es"
+    @AppStorage("notes.accent") private var accent = ""
+    private func text(_ es: String, _ en: String) -> String { language == "en" ? en : es }
+    private var notebooks: [Notebook] {
+        model.notebooks.filter { $0.archivedAt != nil && matches($0.name) }
+    }
+    private var entries: [NotebookTrashEntry] { model.trash.reversed().filter { matches($0.name) } }
+    private func matches(_ name: String) -> Bool {
+        query.isEmpty || name.localizedStandardContains(query)
+    }
     var body: some View {
-        Menu {
-            if model.trash.isEmpty && !model.notebooks.contains(where: { $0.archivedAt != nil }) { Text("Papelera vacía") }
-            ForEach(model.notebooks.filter { $0.archivedAt != nil }) { notebook in
-                Button { model.restoreNotebook(notebook) } label: { Label(notebook.name, systemImage: "book.closed") }
-            }
-            ForEach(model.trash.reversed()) { entry in
-                Button { model.restoreTrash(entry) } label: { Label(entry.name, systemImage: entry.folders.isEmpty ? "doc.text" : "folder") }
-            }
-        } label: { Image(systemName: "trash").frame(width: 28, height: 28) }
-            .menuStyle(.borderlessButton).fixedSize().disabled(!model.canManageFiles)
-            .accessibilityLabel("Papelera · restaurar elementos").help("Papelera · restaurar elementos")
+        Button { query = ""; presented.toggle() } label: {
+            Image(systemName: "trash").offset(y: -1).frame(width: 28, height: 28).contentShape(Rectangle())
+        }.buttonStyle(.plain).modifier(ControlHoverBackground())
+            .accessibilityLabel(text("Papelera · restaurar elementos", "Trash · restore items"))
+            .help(text("Papelera · restaurar elementos", "Trash · restore items"))
             .accessibilityIdentifier("notebook.trash")
+            .popover(isPresented: $presented, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(text("Papelera", "Trash")).font(.system(size: 11)).foregroundStyle(.secondary)
+                        .padding(.horizontal, 9).padding(.vertical, 5)
+                    HStack(spacing: 7) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        TextField(text("Buscar elementos…", "Search items…"), text: $query)
+                            .textFieldStyle(.plain).accessibilityIdentifier("notebook.trash.search")
+                        if !query.isEmpty {
+                            Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                                .buttonStyle(.plain).accessibilityLabel(text("Borrar búsqueda", "Clear search"))
+                        }
+                    }.padding(9)
+                    Divider()
+                    ScrollView {
+                        VStack(spacing: 2) {
+                            ForEach(notebooks) { notebook in
+                                trashRow(id: "notebook." + notebook.id, name: notebook.name,
+                                    detail: text("Cuaderno", "Notebook"), symbol: "book.closed", enabled: model.canManageFiles, delete: { pendingDeletion = .notebook(notebook) }) {
+                                    model.restoreNotebook(notebook)
+                                    model.notebookRevealRequest += 1
+                                }
+                            }
+                            ForEach(entries) { entry in
+                                let owner = model.notebooks.first { $0.id == entry.notebookID }
+                                let archived = owner?.archivedAt != nil
+                                trashRow(id: entry.id, name: URL(fileURLWithPath: entry.name).lastPathComponent,
+                                    detail: archived ? text("Restaura primero el cuaderno", "Restore the notebook first") : entry.name,
+                                    symbol: entry.folders.isEmpty ? LibraryFileIcon.symbol(entry.name) : "folder",
+                                    enabled: model.canManageFiles && !archived, delete: { pendingDeletion = .entry(entry) }) {
+                                    model.restoreTrash(entry)
+                                }
+                            }
+                            if notebooks.isEmpty && entries.isEmpty {
+                                Text(query.isEmpty ? text("Papelera vacía", "Trash is empty") : text("No se encontraron elementos", "No items found"))
+                                    .font(.callout).foregroundStyle(.secondary).padding(18).frame(maxWidth: .infinity)
+                            }
+                        }.padding(.vertical, 4)
+                    }.frame(height: min(280, CGFloat(max(1, notebooks.count + entries.count)) * 58))
+                    Divider()
+                    HStack {
+                        Spacer()
+                        Button { pendingDeletion = .all } label: {
+                            Label(text("Vaciar todo", "Clear all"), systemImage: "trash")
+                                .font(.system(size: 12)).padding(.horizontal, 8).padding(.vertical, 7)
+                        }.buttonStyle(.plain).modifier(ControlHoverBackground())
+                            .disabled(!model.canManageFiles || (model.trash.isEmpty && !model.notebooks.contains { $0.archivedAt != nil }))
+                            .accessibilityIdentifier("notebook.trash.clearAll")
+                    }.padding(.horizontal, 4)
+                }.padding(5).frame(width: 320).background(Color(nsColor: .windowBackgroundColor))
+                    .background(NotebookAccentCaret()).tint(NotebookAccent.color(accent))
+                    .onExitCommand { presented = false }
+                    .alert(pendingDeletion?.isAll == true ? text("¿Vaciar toda la papelera?", "Clear all Trash?") : text("¿Eliminar permanentemente?", "Delete permanently?"), isPresented: Binding(
+                        get: { pendingDeletion != nil }, set: { if !$0 { pendingDeletion = nil } })) {
+                        Button(text("Cancelar", "Cancel"), role: .cancel) { pendingDeletion = nil }
+                        Button(text("Eliminar permanentemente", "Delete permanently"), role: .destructive) {
+                            if let pendingDeletion {
+                                switch pendingDeletion {
+                                case .notebook(let notebook): model.permanentlyDeleteNotebook(notebook)
+                                case .entry(let entry): model.permanentlyDeleteTrash(entry)
+                                case .all: model.clearTrash()
+                                }
+                            }
+                            pendingDeletion = nil
+                        }
+                    } message: {
+                        Text(pendingDeletion?.isAll == true
+                            ? text("Se eliminarán permanentemente todos los elementos y cuadernos de la papelera. No podrás restaurarlos desde aquí.", "All items and notebooks in Trash will be permanently deleted. You won't be able to restore them from here.")
+                            : (pendingDeletion?.name ?? "") + "\n" + text("No podrás restaurar este elemento desde la papelera.", "You won't be able to restore this item from Trash."))
+                    }
+            }
+    }
+    private enum TrashDeletion {
+        case notebook(Notebook), entry(NotebookTrashEntry), all
+        var isAll: Bool { if case .all = self { return true }; return false }
+        var name: String {
+            switch self { case .notebook(let value): value.name; case .entry(let value): URL(fileURLWithPath: value.name).lastPathComponent; case .all: "" }
+        }
+    }
+    private func trashRow(id: String, name: String, detail: String, symbol: String, enabled: Bool, delete: @escaping () -> Void,
+                          restore: @escaping () -> Void) -> some View {
+        HStack(spacing: 2) {
+        Button(action: restore) {
+            HStack(spacing: 9) {
+                Image(systemName: symbol).foregroundStyle(.secondary).frame(width: 18)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(name).font(.system(size: 13)).lineLimit(2).multilineTextAlignment(.leading)
+                    Text(detail).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "arrow.uturn.backward").font(.system(size: 12)).foregroundStyle(.secondary)
+            }.padding(.horizontal, 8).padding(.vertical, 7).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                .background(hovered == id ? Color.primary.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 5))
+        }.buttonStyle(.plain).disabled(!enabled).onHover { hovered = $0 ? id : nil }
+            .help(text("Restaurar ", "Restore ") + name)
+            .accessibilityLabel(text("Restaurar ", "Restore ") + name)
+            .accessibilityIdentifier("notebook.trash.restore." + id)
+        Button(action: delete) {
+            Image(systemName: "trash").foregroundStyle(.secondary).frame(width: 28, height: 30)
+        }.buttonStyle(.plain).modifier(ControlHoverBackground()).disabled(!model.canManageFiles)
+            .help(text("Eliminar permanentemente ", "Delete permanently ") + name)
+            .accessibilityLabel(text("Eliminar permanentemente ", "Delete permanently ") + name)
+            .accessibilityIdentifier("notebook.trash.delete." + id)
+        }
     }
 }

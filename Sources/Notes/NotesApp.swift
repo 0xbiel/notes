@@ -77,6 +77,7 @@ final class Workbench: ObservableObject {
     @Published var trash: [NotebookTrashEntry] = []
     @Published var notebooks: [Notebook] = [.copiedCourse] { didSet { projects?.notebooks = notebooks } }
     @Published var selectedNotebookID = "derecho"
+    @Published var notebookRevealRequest = 0
     @Published var selectedNote: String?
     @Published var draftText = ""
     @Published var previewHeading: String?

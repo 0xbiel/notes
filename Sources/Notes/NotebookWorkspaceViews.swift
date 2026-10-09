@@ -14,7 +14,7 @@ struct NotebookHome: View {
             if empty {
                 Spacer(minLength: 20)
                 VStack(spacing: 10) {
-                    Text(notebook.name).font(.system(size: 29, weight: .medium, design: .rounded)).multilineTextAlignment(.center)
+                    NotebookHomePicker(model: model)
                     Text(language == "en" ? "What would you like to work on?" : "¿En qué quieres trabajar?").foregroundStyle(.secondary)
                 }
             } else {
@@ -25,6 +25,84 @@ struct NotebookHome: View {
         }.padding(.horizontal, 30).padding(.bottom, 18)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
+    }
+}
+
+struct NotebookHomePicker: View {
+    @ObservedObject var model: Workbench
+    @AppStorage("notes.accent") private var accent = ""
+    @State private var titleHovered = false
+    @AppStorage("notes.language") private var language = "es"
+    @State private var presented = false
+    @State private var search = ""
+    @State private var hovered: String?
+    private var notebooks: [Notebook] {
+        model.activeNotebooks.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) }
+    }
+    var body: some View {
+        Button { search = ""; presented = true } label: {
+            Text(model.currentNotebook.name)
+                .font(.system(size: 29, weight: .semibold, design: .rounded))
+                .multilineTextAlignment(.center)
+                .padding(.bottom, 9)
+                .overlay(alignment: .bottom) {
+                    GeometryReader { geometry in
+                        Path { path in
+                            path.move(to: CGPoint(x: 1.5, y: 1.5))
+                            path.addLine(to: CGPoint(x: max(1.5, geometry.size.width - 1.5), y: 1.5))
+                        }.stroke(style: StrokeStyle(lineWidth: 3, lineCap: .round, dash: [5, 9]))
+                            .foregroundStyle(titleHovered ? NotebookAccent.color(accent) : Color.secondary.opacity(0.75))
+                    }.frame(height: 3)
+                }
+                .contentShape(Rectangle())
+        }.buttonStyle(.plain)
+            .onHover { titleHovered = $0 }
+            .accessibilityIdentifier("notebook.homePicker")
+            .accessibilityLabel(language == "en" ? "Choose notebook" : "Elegir cuaderno")
+            .accessibilityValue(model.currentNotebook.name)
+            .popover(isPresented: $presented, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 7) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        TextField(language == "en" ? "Search notebooks…" : "Buscar cuadernos…", text: $search)
+                            .textFieldStyle(.plain).accessibilityIdentifier("notebook.searchNotebooks")
+                        if !search.isEmpty {
+                            Button { search = "" } label: { Image(systemName: "xmark.circle.fill") }
+                                .buttonStyle(.plain).accessibilityLabel(language == "en" ? "Clear search" : "Borrar búsqueda")
+                        }
+                    }.padding(9)
+                    Divider()
+                    ScrollView {
+                        VStack(spacing: 2) {
+                            ForEach(notebooks) { notebook in
+                                Button {
+                                    model.openNotebook(notebook.id)
+                                    model.notebookRevealRequest += 1
+                                    presented = false
+                                } label: {
+                                    HStack(spacing: 7) {
+                                        Image(systemName: "book.closed").foregroundStyle(.secondary)
+                                        Text(notebook.name).font(.system(size: 13)).lineLimit(2).multilineTextAlignment(.leading)
+                                        Spacer(minLength: 0)
+                                        if model.selectedNotebookID == notebook.id {
+                                            Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                                        }
+                                    }.padding(.horizontal, 8).padding(.vertical, 6)
+                                        .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                                        .background(model.selectedNotebookID == notebook.id || hovered == notebook.id ? Color.primary.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 5))
+                                }.buttonStyle(.plain).onHover { hovered = $0 ? notebook.id : nil }
+                                    .accessibilityIdentifier("notebook.choose." + notebook.id)
+                                    .accessibilityAddTraits(model.selectedNotebookID == notebook.id ? .isSelected : [])
+                            }
+                            if notebooks.isEmpty {
+                                Text(language == "en" ? "No notebooks found" : "No se encontraron cuadernos")
+                                    .font(.callout).foregroundStyle(.secondary).padding(8)
+                            }
+                        }
+                    }.frame(height: min(280, CGFloat(max(1, notebooks.count)) * 38))
+                }.padding(5).frame(width: 290).background(Color(nsColor: .windowBackgroundColor))
+                    .onExitCommand { presented = false }
+            }
     }
 }
 
@@ -128,7 +206,7 @@ struct NotebookConversation: View {
                             if let attachments = message.attachments, !attachments.isEmpty {
                                 NotebookAttachmentStrip(attachments: attachments, workspace: assistant.store.workspace)
                             }
-                            NotebookChatMarkdown(text: message.role == "error" ? NotebookAssistantText.display(message.text, language: language) : message.text)
+                            NotebookChatMarkdown(text: NotebookAssistantText.message(message, language: language))
                                 .foregroundStyle(message.role == "error" ? Color.orange : Color.primary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             if !message.files.isEmpty { NotebookChangedFiles(model: model, assistant: assistant, message: message) }
@@ -190,6 +268,18 @@ struct NotebookComposer: View {
                     .accessibilityIdentifier("notebook.floatingChat")
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
+            if !running, !model.chatHistoryVisible, let error = assistant.composerError(notebook) {
+                HStack(spacing: 8) {
+                    Text(NotebookAssistantText.display(error, language: language)).font(.caption).foregroundStyle(.orange).lineLimit(3)
+                    Spacer(minLength: 0)
+                    Button { assistant.error = nil } label: { Image(systemName: "xmark") }
+                        .buttonStyle(.plain).accessibilityLabel(language == "en" ? "Dismiss error" : "Cerrar error")
+                }.padding(10)
+                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+                    .modifier(NotebookInputSurface(radius: 10))
+                    .accessibilityIdentifier("notebook.composerError")
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             VStack(alignment: .leading, spacing: large ? 16 : 8) {
                 if let attachments = assistant.chat(notebook)?.attachments, !attachments.isEmpty {
                     NotebookAttachmentStrip(attachments: attachments, workspace: assistant.store.workspace) { assistant.removeAttachment($0, notebook: notebook) }
@@ -230,18 +320,6 @@ struct NotebookComposer: View {
                 }
             }.padding(large ? 18 : 12)
                 .modifier(NotebookInputSurface(radius: large ? 22 : 18, floating: !large, borderOpacity: 0.6))
-                .overlay(alignment: .top) {
-                    if !running, !model.chatHistoryVisible, let error = assistant.composerError(notebook) {
-                        HStack(spacing: 8) {
-                            Text(NotebookAssistantText.display(error, language: language)).font(.caption).foregroundStyle(.orange).lineLimit(3)
-                            Spacer(minLength: 0)
-                            Button { assistant.error = nil } label: { Image(systemName: "xmark") }
-                                .buttonStyle(.plain).accessibilityLabel(language == "en" ? "Dismiss error" : "Cerrar error")
-                        }.padding(10).modifier(NotebookInputSurface(radius: 10))
-                            .accessibilityIdentifier("notebook.composerError")
-                            .alignmentGuide(.top) { $0[.bottom] + 8 }
-                    }
-                }
                 .overlay(RoundedRectangle(cornerRadius: large ? 22 : 18).stroke(dropTargeted ? NotebookAccent.color(accent) : .clear, lineWidth: 2))
                 .dropDestination(for: URL.self) { urls, _ in
                     guard !assistant.importingAttachments, !urls.isEmpty else { return false }

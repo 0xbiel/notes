@@ -20,7 +20,7 @@ struct AIOptionSelector: View {
                 Image(systemName: symbol).foregroundStyle(.secondary)
                 Text(options.first { $0.id == selection }?.title ?? selection)
                 Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
-            }.font(.callout).padding(.horizontal, 9).padding(.vertical, 8)
+            }.font(.callout).padding(.horizontal, 9).frame(height: 34)
                 .modifier(NotebookInputSurface(radius: 7))
         }.buttonStyle(.plain).accessibilityLabel(title).accessibilityValue(selection)
             .popover(isPresented: $presented, arrowEdge: .bottom) {

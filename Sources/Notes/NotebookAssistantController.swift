@@ -196,14 +196,17 @@ final class NotebookAssistantController: ObservableObject {
             var value = state(notebook)
             guard let i = value.chats.firstIndex(where: { $0.id == chat.id }) else { return }
             let allAttachments = value.chats[i].messages.flatMap { $0.attachments ?? [] } + (chat.attachments ?? [])
-            let images = try NotebookAttachmentImport.images(allAttachments, notebookID: notebook.id, workspace: store.workspace)
+            var images = try NotebookAttachmentImport.images(allAttachments, notebookID: notebook.id, workspace: store.workspace)
             if configuration.provider == .openCode && !images.isEmpty { throw MediaError.invalid("This provider does not support image/PDF attachments. Select Codex or Antigravity.") }
             var message = NotebookMessage(role: "user", text: prompt.isEmpty ? (UserDefaults.standard.string(forKey: "notes.language") == "en" ? "Review the attached files." : "Revisa los archivos adjuntos.") : prompt)
             message.attachments = chat.attachments
             value.chats[i].messages.append(message)
             if value.chats[i].messages.count == 1 { value.chats[i].title = String(message.text.prefix(65)) }
             value.chats[i].draft = ""; value.chats[i].attachments = nil
-            let candidate = NotebookTextRequest(notebook: notebook, profile: value.profile, messages: value.chats[i].messages, currentDocument: document, texts: texts)
+            let library = NotebookFileLibrary(projects: store)
+            let libraryFiles = try store.workspace.fileNames().filter { store.owner(of: $0)?.id == notebook.id }
+            let language = UserDefaults.standard.string(forKey: "notes.language") ?? "es"
+            let candidate = NotebookTextRequest(notebook: notebook, profile: value.profile, messages: value.chats[i].messages, currentDocument: document, texts: texts, language: language, libraryFiles: libraryFiles)
             _ = try candidate.prompt()
             try save(value, id: notebook.id)
             runningNotebookID = notebook.id; runningChatID = chat.id; activities = []; report("Leyendo el cuaderno…"); error = nil
@@ -214,6 +217,7 @@ final class NotebookAssistantController: ObservableObject {
                 defer { self.runningNotebookID = nil; self.runningChatID = nil; self.progress = ""; self.worker = nil }
                 do {
                     var redundantRounds = 0
+                    var repairRounds = 0
                     for _ in 0..<6 {
                         try Task.checkCancellation()
                         self.report("Preparando cambios…")
@@ -225,23 +229,54 @@ final class NotebookAssistantController: ObservableObject {
                             guard response.edits.isEmpty else { throw MediaError.invalid("El asistente pidió contexto y cambios a la vez.") }
                             var advanced = false
                             for path in response.readFiles {
-                                try self.store.validate(path, notebookID: notebook.id)
-                                guard let text = texts[path] else { throw MediaError.invalid("Documento solicitado inexistente: \(path)") }
-                                if request.documents[path] == nil { self.report("Leyendo · \(path)"); request.documents[path] = text; advanced = true }
+                                try library.validate(path, notebookID: notebook.id)
+                                guard request.catalog[path] != nil else { throw MediaError.invalid("Documento solicitado inexistente: \(path)") }
+                                if request.documents[path] == nil {
+                                    self.report("Leyendo · \(path)")
+                                    if let text = texts[path] { request.documents[path] = text }
+                                    else {
+                                        do {
+                                            let source = try NotebookLibraryContext.read(path, library: library, notebookID: notebook.id)
+                                            request.documents[path] = source.text
+                                            if configuration.provider == .openCode && !source.images.isEmpty {
+                                                request.documents[path, default: ""] += "\n[This provider cannot read images. Choose an image-capable provider for scanned pages/images.]"
+                                            } else if images.count + source.images.count <= NotebookAttachmentImport.maximumImages,
+                                                      images.reduce(0, { $0 + $1.data.count }) + source.images.reduce(0, { $0 + $1.data.count }) <= 32 * 1024 * 1024 {
+                                                images += source.images
+                                            } else { request.documents[path, default: ""] += "\n[Images omitted: request image limit reached. Ask for a smaller excerpt.]" }
+                                        } catch { request.documents[path] = "[Source exists but could not be extracted: " + error.localizedDescription + "]" }
+                                    }
+                                    advanced = true
+                                }
                             }
-                            request.contextUpdate = "Requested retrieval completed. Full documents available: " + request.documents.keys.sorted().joined(separator: ", ") + ". Use these contents now; do not request them again. Return edits, or ask the user if the task is unclear."
+                            request.contextUpdate = (request.language == "en" ? "Requested retrieval completed. Sources available (observe any extraction limits): " : "Lectura completada. Fuentes disponibles (respeta los límites de extracción): ") + request.documents.keys.sorted().joined(separator: ", ") + (request.language == "en" ? ". Use these contents now; do not request them again. Return edits, or ask the user if the task is unclear." : ". Usa estos contenidos ahora, sin volver a pedirlos. Devuelve los cambios o pregunta si la petición es ambigua.")
                             if !advanced {
                                 redundantRounds += 1
                                 guard redundantRounds < 2 else { throw MediaError.invalid("El asistente repitió una petición de contexto. Acota la petición y vuelve a enviar.") }
                             }
                             continue
                         }
-                        let changes = try NotebookAssistantProtocol.changes(response, documents: request.documents)
+                        let changes: [NotebookFileChange]
+                        do { changes = try NotebookAssistantProtocol.changes(response, documents: request.documents) }
+                        catch let validation as NotebookEditValidationError {
+                            guard repairRounds < 2, let original = texts[validation.path] else { throw validation }
+                            try self.store.validate(validation.path, notebookID: notebook.id)
+                            repairRounds += 1
+                            request.documents[validation.path] = original
+                            request.contextUpdate = (request.language == "en"
+                                ? "The previous edits were rejected before applying any changes. The current exact source is now in documents for "
+                                : "Los cambios anteriores se rechazaron sin aplicar nada. documents contiene ahora el original exacto de ")
+                                + validation.path + ". " + (request.language == "en"
+                                ? "Repair the response using this source. For a full translation/rewrite, return one edit with create=false, replaceEntireFile=true, find=empty string, replacement=the complete updated Markdown. For partial edits, use unique non-overlapping exact passages from this source. Continue the user's task; do not repeat the rejected edit or ask the user to split it."
+                                : "Corrige la respuesta usando este original. Para traducir/reescribir la nota completa devuelve un cambio con create=false, replaceEntireFile=true, find=cadena vacía y replacement=Markdown actualizado completo. Para cambios parciales usa fragmentos exactos, únicos y no solapados del original. Continúa la petición del usuario sin repetir el cambio rechazado ni pedir que divida la tarea.")
+                            self.report("Corrigiendo cambios…")
+                            continue
+                        }
                         try Task.checkCancellation()
                         self.report("Validando y guardando \(changes.count) archivo(s)…")
                         let checkpoint = try apply(changes, request.documents, prompt)
                         let reply = response.reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? (changes.isEmpty ? "Sin cambios." : "Cambios guardados · \(changes.count) archivo(s).") : response.reply
-                        try self.append(.init(role: "assistant", text: reply, files: changes.map(\.path), checkpointID: checkpoint?.id, activities: self.activities), notebook: notebook, chatID: chat.id)
+                        try self.append(.init(role: "assistant", text: reply, files: changes.map(\.path), checkpointID: checkpoint?.id, activities: self.activities, appGenerated: response.reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), notebook: notebook, chatID: chat.id)
                         return
                     }
                     throw MediaError.invalid("La petición necesita demasiado contexto. Acótala para continuar.")
@@ -278,7 +313,7 @@ extension Workbench {
             assistant.send(notebook: notebook, document: selectedNote, texts: snapshot, configuration: ai.providerSettings.selected) { [weak self] changes, read, prompt in
                 guard let self else { throw CancellationError() }
                 guard !changes.isEmpty else { return nil }
-                for (path, original) in read {
+                for (path, original) in read where disk[path] != nil {
                     guard try self.workspace?.readNote(path) == disk[path], (self.hasDraft(for: path) ? self.drafts[path] : disk[path]) == original else { throw ReplayError.conflict }
                 }
                 for change in changes {

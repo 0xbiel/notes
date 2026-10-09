@@ -38,8 +38,10 @@ struct WorkbenchView: View {
                             SessionInspector(model: model).frame(width: 320)
                         }
                     }
-                    if model.assistant == nil || (model.selectedNote != nil && model.layout == "preview" && model.hideStudyComposer && model.media?.isRecording == true) {
+                    if model.assistant == nil {
                         HStack { Spacer(); ListeningDock(model: model) }.padding(12)
+                    } else if model.selectedNote != nil && model.layout == "preview" && model.hideStudyComposer, let media = model.media {
+                        RecordingOnlyDock(model: model, media: media)
                     }
                 }
                 .opacity(model.showPreferences ? 0 : 1)
@@ -54,10 +56,11 @@ struct WorkbenchView: View {
                 .shadow(color: .black.opacity(0.12), radius: 5, y: 2)
                 .padding(8)
                 .overlay(alignment: .top) {
-                    if !model.chatHistoryVisible, let media = model.media, let assistant = model.assistant, let ai = model.ai {
-                        NotebookStatusIndicator(media: media, assistant: assistant, ai: ai).padding(.top, 17)
+                    if let media = model.media, let assistant = model.assistant, let ai = model.ai {
+                        NotebookStatusIndicator(media: media, assistant: assistant, ai: ai).padding(.top, 2)
                     }
                 }
+
             }
             library
                 .padding(.horizontal, chrome.compact ? 4 : 0)
@@ -264,6 +267,7 @@ struct CourseSidebar: View {
             if section != .notes, let media = model.media {
                 RecordingSidebar(model: model, media: media, query: query, filter: section)
             } else {
+            ScrollViewReader { proxy in
             List(selection: Binding<NotebookSidebarSelection?>(get: {
                 model.librarySelection
             }, set: { value in
@@ -285,11 +289,15 @@ struct CourseSidebar: View {
                     } label: {
                         Button { model.openNotebook(notebook.id) } label: {
                             HStack(spacing: 9) {
-                                Image(systemName: "book.closed.fill").foregroundStyle(.secondary)
-                                Text(notebook.name).font(.callout.weight(.semibold)).lineLimit(2)
+                                Image(systemName: "book.closed.fill").foregroundStyle(.secondary).frame(width: 14)
+                                Text(notebook.name).font(.callout.weight(.semibold))
+                                    .lineLimit(2).truncationMode(.tail).fixedSize(horizontal: false, vertical: true)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                                 Spacer(minLength: 2)
                                 Text("\(model.fileNames(in: notebook).count)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                             }.padding(.vertical, 6).padding(.horizontal, 2).contentShape(Rectangle())
+                                // The native outline arrow follows the label baseline; anchor it to the row center.
+                                .alignmentGuide(.firstTextBaseline) { dimensions in dimensions[VerticalAlignment.center] + 2 }
                         }.buttonStyle(.plain)
                             .accessibilityIdentifier("notebook.open." + notebook.id)
                             .accessibilityAddTraits(model.selectedNotebookID == notebook.id && model.selectedLibraryPath == nil ? .isSelected : [])
@@ -297,6 +305,7 @@ struct CourseSidebar: View {
                             Button("Nueva nota") { prepareCreation("nota", folder: notebook.rootPrefix, notebook: notebook) }
                             Button("Nueva carpeta") { prepareCreation("carpeta", folder: notebook.rootPrefix, notebook: notebook) }
                             Button("Importar archivos…") { model.chooseLibraryImport(into: notebook.rootPrefix, notebookID: notebook.id) }.disabled(!model.canManageFiles)
+                            FolderImportOptions(model: model, notebookID: notebook.id)
                             Divider()
                             Button("Copiar cuaderno") { model.copyLibraryItem(.notebook(notebook.id)) }.disabled(!model.canManageFiles)
                             Button("Pegar") { model.pasteLibraryItems(into: notebook.rootPrefix, notebookID: notebook.id) }.disabled(!model.canManageFiles)
@@ -305,16 +314,28 @@ struct CourseSidebar: View {
                         }
                     }
                     .tag(NotebookSidebarSelection.notebook(notebook.id))
+                    .id(notebook.id)
                     .dropDestination(for: URL.self) { urls, _ in
                         guard model.canManageFiles, !urls.isEmpty else { return false }
                         model.importLibraryFiles(urls, into: notebook.rootPrefix, notebookID: notebook.id); return true
                     }
+
                 }
             }.listStyle(.sidebar).scrollContentBackground(.hidden).background(NeutralSidebarSelection())
+                .onChange(of: model.notebookRevealRequest) { _, _ in
+                    DispatchQueue.main.async { proxy.scrollTo(model.selectedNotebookID, anchor: .center) }
+                }
+                .onAppear {
+                    if model.notebookRevealRequest > 0 {
+                        DispatchQueue.main.async { proxy.scrollTo(model.selectedNotebookID, anchor: .center) }
+                    }
+                }
                 .contextMenu {
                     Button("Nuevo cuaderno") { model.creationInitialName = ""; model.creationKind = "cuaderno" }
+                    ImportFolderAsNotebookButton(model: model)
                     Button("Pegar") { model.pasteLibraryItems(into: model.libraryDestination, notebookID: model.currentNotebook.id) }.disabled(!model.canManageFiles)
                 }
+            }
             }
             HStack {
                 Menu {
@@ -323,6 +344,7 @@ struct CourseSidebar: View {
                     Button("Nuevo cuaderno") { model.creationInitialName = ""; model.creationKind = "cuaderno" }
                     Divider()
                     Button("Importar archivos…") { model.chooseLibraryImport(into: model.libraryDestination, notebookID: model.currentNotebook.id) }.disabled(!model.canManageFiles || model.activeNotebooks.isEmpty)
+                    FolderImportOptions(model: model, notebookID: model.currentNotebook.id)
                 } label: { Image(systemName: "plus").frame(width: 28, height: 34).contentShape(Rectangle()) }
                     .menuStyle(.borderlessButton).fixedSize()
                     .help("Añadir nota, carpeta o cuaderno").accessibilityLabel("Añadir")
@@ -333,8 +355,14 @@ struct CourseSidebar: View {
                 NotebookTrashMenu(model: model)
             }.padding(.horizontal, 20).padding(.vertical, 12)
         }.background(NotebookLibraryClipboard(model: model))
-            .contextMenu { Button("Nuevo cuaderno") { model.creationInitialName = ""; model.creationKind = "cuaderno" } }
+            .contextMenu {
+                Button("Nuevo cuaderno") { model.creationInitialName = ""; model.creationKind = "cuaderno" }
+                ImportFolderAsNotebookButton(model: model)
+            }
             .onChange(of: model.selectedNotebookID) { _, id in expanded.insert(id) }
+            .onChange(of: model.notebookRevealRequest) { _, _ in
+                query = ""; section = .notes; expanded.insert(model.selectedNotebookID)
+            }
 
     }
     private var filterMenu: some View {
@@ -375,7 +403,14 @@ struct CourseTreeRow: View {
                 DisclosureGroup(isExpanded: $expanded) {
                     ForEach(children) { child in CourseTreeRow(model: model, node: child, expandAll: expandAll, createInFolder: createInFolder) }
                 } label: {
-                    Label(node.name, systemImage: "folder").foregroundStyle(.secondary).font(.callout)
+                    HStack(spacing: 9) {
+                        Image(systemName: "folder").frame(width: 14)
+                        Text(node.name).lineLimit(2).truncationMode(.tail)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 2)
+                    }.foregroundStyle(.secondary).font(.callout)
+                        .padding(.vertical, 6).padding(.horizontal, 2)
+                        .alignmentGuide(.firstTextBaseline) { dimensions in dimensions[VerticalAlignment.center] + 2 }
                         .contextMenu {
                             Button("Nueva nota aquí") { createInFolder(node.path) }
                             Button("Nueva carpeta aquí") { model.createFolderInside(node.path) }
@@ -514,19 +549,15 @@ struct ListeningDock: View {
 struct QuickOpenSheet: View {
     @ObservedObject var model: Workbench
     @State private var query = ""
-    @State private var selection: String?
+    @State private var selection: QuickOpenResult?
+    @AppStorage("notes.language") private var language = "es"
     @FocusState private var focused: Bool
-    private let preferencesAction = "notes-action://preferences"
-    private var matches: [String] {
-        let notes = model.libraryFiles.filter { model.projects?.owner(of: $0)?.archivedAt == nil && (query.isEmpty || $0.localizedCaseInsensitiveContains(query)) }
-        let showPreferences = query.isEmpty || ["Preferences", "Settings", "Preferencias", "Ajustes", "Theme", "Tema"].contains { $0.localizedCaseInsensitiveContains(query) }
-        return notes + (showPreferences ? [preferencesAction] : [])
-    }
+    private var matches: [QuickOpenResult] { model.quickOpenMatches(query) }
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Abrir nota o preferencias…", text: $query).textFieldStyle(.plain).font(.title3).focused($focused)
+                TextField(language == "en" ? "Search notebooks, files or preferences…" : "Buscar cuadernos, archivos o preferencias…", text: $query).textFieldStyle(.plain).font(.title3).focused($focused)
                     .onSubmit { open(selection ?? matches.first) }
                     .onKeyPress(.downArrow) { moveSelection(1); return .handled }
                     .onKeyPress(.upArrow) { moveSelection(-1); return .handled }
@@ -538,25 +569,22 @@ struct QuickOpenSheet: View {
                 ContentUnavailableView.search(text: query).frame(height: 180)
             } else {
                 List(selection: $selection) {
-                    ForEach(matches, id: \.self) { name in
-                        Button { open(name) } label: {
+                    ForEach(matches) { result in
+                        Button { open(result) } label: {
                             HStack(spacing: 12) {
-                                Image(systemName: name == preferencesAction ? "gearshape" : "doc.text").foregroundStyle(.secondary)
+                                Image(systemName: symbol(result)).foregroundStyle(.secondary)
                                 VStack(alignment: .leading, spacing: 4) {
-                                    if name == preferencesAction {
-                                        Text("Preferencias")
-                                        Text("General y tema").font(.caption).foregroundStyle(.secondary)
-                                    } else {
-                                        Text(URL(fileURLWithPath: name).deletingPathExtension().lastPathComponent).lineLimit(1)
-                                        Text(name).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                                    }
+                                    Text(title(result)).lineLimit(1)
+                                    Text(subtitle(result)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                                 }
                                 Spacer()
-                                if name == model.selectedNote { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }
-                            }.padding(.vertical, 5)
-                        }.buttonStyle(.plain).tag(name)
+                                if selected(result) { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }
+                            }.padding(.vertical, 5).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                        }.buttonStyle(.plain).tag(result)
+                            .accessibilityIdentifier(identifier(result))
                     }
                 }.listStyle(.plain).frame(height: 280)
+                    .onKeyPress(.return) { open(selection ?? matches.first); return .handled }
             }
             HStack { Text("↵ abrir"); Spacer(); Text("esc cerrar") }.font(.caption).foregroundStyle(.secondary).padding(14)
         }.frame(width: 580)
@@ -564,11 +592,46 @@ struct QuickOpenSheet: View {
             .onChange(of: query) { _, _ in selection = matches.first }
             .onExitCommand { model.showQuickOpen = false }
     }
-    private func open(_ name: String?) {
-        guard let name else { return }
-        model.showQuickOpen = false
-        if name == preferencesAction { model.showPreferences = true }
-        else { model.showPreferences = false; model.openLibraryFile(name) }
+    private func open(_ result: QuickOpenResult?) {
+        guard let result else { return }
+        model.openQuickOpenResult(result)
+    }
+    private func symbol(_ result: QuickOpenResult) -> String {
+        switch result {
+        case .notebook: "book.closed"
+        case .file: "doc.text"
+        case .preferences: "gearshape"
+        }
+    }
+    private func title(_ result: QuickOpenResult) -> String {
+        switch result {
+        case .notebook(let id): model.activeNotebooks.first { $0.id == id }?.name ?? ""
+        case .file(let path): URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+        case .preferences: language == "en" ? "Preferences" : "Preferencias"
+        }
+    }
+    private func subtitle(_ result: QuickOpenResult) -> String {
+        switch result {
+        case .notebook(let id):
+            let count = model.activeNotebooks.first { $0.id == id }.map { model.fileNames(in: $0).count } ?? 0
+            return language == "en" ? "Notebook · \(count) \(count == 1 ? "file" : "files")" : "Cuaderno · \(count) \(count == 1 ? "archivo" : "archivos")"
+        case .file(let path): return path
+        case .preferences: return language == "en" ? "General and theme" : "General y tema"
+        }
+    }
+    private func selected(_ result: QuickOpenResult) -> Bool {
+        switch result {
+        case .notebook(let id): model.librarySelection == .notebook(id)
+        case .file(let path): model.selectedLibraryPath == path
+        case .preferences: model.showPreferences
+        }
+    }
+    private func identifier(_ result: QuickOpenResult) -> String {
+        switch result {
+        case .notebook(let id): "search.notebook." + id
+        case .file(let path): "search.file." + path
+        case .preferences: "search.preferences"
+        }
     }
     private func moveSelection(_ offset: Int) {
         guard !matches.isEmpty else { return }
@@ -753,5 +816,35 @@ private struct RecordingMenuIcon: View {
     @ObservedObject var media: MediaController
     var body: some View {
         Image(systemName: "waveform").foregroundStyle(media.isRecording ? Color.red : Color.secondary).frame(width: 34, height: 32)
+    }
+}
+
+struct FolderImportOptions: View {
+    @ObservedObject var model: Workbench
+    let notebookID: String
+    @AppStorage("notes.language") private var language = "es"
+    var body: some View {
+        Button(language == "en" ? "Import folder contents into notebook…" : "Importar contenido de carpeta al cuaderno…") {
+            model.chooseFolderImport(notebookID: notebookID, asNotebook: false)
+        }.disabled(!model.canManageFiles || model.activeNotebooks.isEmpty)
+        ImportFolderAsNotebookButton(model: model)
+    }
+}
+
+private struct ImportFolderAsNotebookButton: View {
+    @ObservedObject var model: Workbench
+    @AppStorage("notes.language") private var language = "es"
+    var body: some View {
+        Button(language == "en" ? "Import folder as new notebook…" : "Importar carpeta como nuevo cuaderno…") {
+            model.chooseFolderImport(notebookID: model.currentNotebook.id, asNotebook: true)
+        }.disabled(!model.canManageFiles)
+    }
+}
+
+private struct RecordingOnlyDock: View {
+    @ObservedObject var model: Workbench
+    @ObservedObject var media: MediaController
+    var body: some View {
+        if media.isRecording { HStack { Spacer(); ListeningDock(model: model) }.padding(12) }
     }
 }

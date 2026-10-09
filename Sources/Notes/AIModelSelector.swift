@@ -6,6 +6,7 @@ struct AIModelSelector: View {
     let manageProviders: () -> Void
     @State private var isPresented = false
     @AppStorage("notes.language") private var language = "es"
+    @AppStorage("notes.accent") private var accent = ""
 
     var body: some View {
         Button { isPresented.toggle() } label: {
@@ -13,7 +14,7 @@ struct AIModelSelector: View {
                 ProviderLogo(provider: preferences.draft.selectedProvider, size: 17)
                 Text(preferences.selectedModel?.name ?? preferences.draft.selected.model).lineLimit(1)
                 Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
-            }.padding(.horizontal, 10).padding(.vertical, 8)
+            }.font(.callout).padding(.horizontal, 10).frame(height: 34)
                 .modifier(NotebookInputSurface(radius: 7))
         }.buttonStyle(.plain).accessibilityIdentifier("general.ai.model")
             .accessibilityLabel(language == "en" ? "Choose provider and model" : "Elegir proveedor y modelo")
@@ -34,6 +35,7 @@ struct AIModelSelectorPopover: View {
     @State private var hovered: String?
     @FocusState private var searchFocused: Bool
     @AppStorage("notes.language") private var language = "es"
+    @AppStorage("notes.accent") private var accent = ""
 
     private func text(_ es: String, _ en: String) -> String { language == "en" ? en : es }
     private func providerName(_ value: NotesAIProvider) -> String {
@@ -70,7 +72,7 @@ struct AIModelSelectorPopover: View {
                             Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }.buttonStyle(.plain)
                         }
                     }.padding(.vertical, 11).padding(.horizontal, 10)
-                    Rectangle().fill(searchFocused ? Color.accentColor : Color.primary.opacity(0.1)).frame(height: 1).padding(.horizontal, 9)
+                    Rectangle().fill(searchFocused ? NotebookAccent.color(accent) : Color.primary.opacity(0.1)).frame(height: 1).padding(.horizontal, 9)
                     ScrollView {
                         LazyVStack(spacing: 2) {
                             ForEach(Array(rows.enumerated()), id: \.element.id) { index, entry in modelRow(entry, index: index) }
@@ -94,6 +96,7 @@ struct AIModelSelectorPopover: View {
             }.font(.caption).padding(12)
         }.frame(width: 370)
             .background(Color(nsColor: .windowBackgroundColor))
+            .background(NotebookAccentCaret()).tint(NotebookAccent.color(accent))
             .onAppear {
                 let hasFavorites = preferences.draft.modelPreferences?.values.contains { !$0.favorites.isEmpty } ?? false
                 provider = hasFavorites ? nil : preferences.draft.selectedProvider
@@ -110,7 +113,7 @@ struct AIModelSelectorPopover: View {
             }.frame(width: 32, height: 32)
                 .background(provider == value ? Color.primary.opacity(0.11) : .clear, in: RoundedRectangle(cornerRadius: 6))
                 .overlay(alignment: .leading) {
-                    if provider == value { Capsule().fill(Color.accentColor).frame(width: 2, height: 18).offset(x: -6) }
+                    if provider == value { Capsule().fill(NotebookAccent.color(accent)).frame(width: 2, height: 18).offset(x: -6) }
                 }
         }.buttonStyle(.plain)
             .help(value.map(providerName) ?? text("Favoritos", "Favorites"))

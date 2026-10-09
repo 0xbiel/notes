@@ -23,10 +23,11 @@ public struct NotebookMessage: Codable, Identifiable, Equatable, Sendable {
     public var date = Date()
     public var files: [String] = []
     public var checkpointID: String?
+    public var appGenerated: Bool?
     public var activities: [NotebookActivity]?
     public var attachments: [NotebookAttachment]?
-    public init(role: String, text: String, files: [String] = [], checkpointID: String? = nil, activities: [NotebookActivity]? = nil) {
-        self.role = role; self.text = text; self.files = files; self.checkpointID = checkpointID; self.activities = activities
+    public init(role: String, text: String, files: [String] = [], checkpointID: String? = nil, activities: [NotebookActivity]? = nil, appGenerated: Bool? = nil) {
+        self.role = role; self.text = text; self.files = files; self.checkpointID = checkpointID; self.activities = activities; self.appGenerated = appGenerated
     }
 }
 
@@ -95,6 +96,15 @@ public final class NotebookProjectStore {
     public func saveState(_ state: NotebookProjectState, notebookID: String) throws {
         try workspace.writeStorage(statePath(notebookID), data: JSONEncoder().encode(state))
     }
+    public func forgetNotebook(_ notebookID: String) throws {
+        guard !applying else { throw ReplayError.conflict }
+        let remaining = checkpoints.filter { $0.notebookID != notebookID }
+        try workspace.writeStorage(index, data: JSONEncoder().encode(remaining))
+        checkpoints = remaining
+        try workspace.removeStorage(statePath(notebookID))
+        didChange?()
+    }
+
     public func owner(of path: String) -> Notebook? {
         notebooks.filter { $0.rootPrefix.isEmpty || path.hasPrefix($0.rootPrefix + "/") }
             .max { $0.rootPrefix.count < $1.rootPrefix.count }

@@ -15,23 +15,13 @@ struct MarkdownTableLayout {
     let rowHeights: [CGFloat]
     let texts: [NSAttributedString]
     var height: CGFloat { rowHeights.reduce(0, +) }
-    init(table: MarkdownTable, width: CGFloat, accent: NSColor = .controlAccentColor) {
+    @MainActor init(table: MarkdownTable, width: CGFloat, accent: NSColor = .controlAccentColor) {
         self.table = table; self.width = max(80, width)
         let columnWidth = max(80, width) / CGFloat(table.columns)
         texts = table.cells.map { cell in
-            let rich = InlineUnderline.attributed(cell.text)
-            let result = NSMutableAttributedString(attributedString: NSAttributedString(rich))
+            let result = NSMutableAttributedString(attributedString: MarkdownMathText.attributed(
+                cell.text, fontSize: 14, weight: cell.row == 0 ? .semibold : .regular, accent: accent))
             let all = NSRange(location: 0, length: result.length)
-            result.addAttributes([.font: NSFont.systemFont(ofSize: 14, weight: cell.row == 0 ? .semibold : .regular), .foregroundColor: NSColor.labelColor], range: all)
-            for run in rich.runs {
-                let location = String(rich.characters[..<run.range.lowerBound]).utf16.count
-                let range = NSRange(location: location, length: String(rich.characters[run.range]).utf16.count)
-                let intent = run.inlinePresentationIntent ?? []
-                var font = intent.contains(.code) ? NSFont.monospacedSystemFont(ofSize: 13, weight: .regular) : NSFont.systemFont(ofSize: 14, weight: cell.row == 0 || intent.contains(.stronglyEmphasized) ? .semibold : .regular)
-                if intent.contains(.emphasized) { font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask) }
-                result.addAttribute(.font, value: font, range: range)
-                if intent.contains(.strikethrough) { result.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: range) }
-            }
             let style = NSMutableParagraphStyle(); style.lineSpacing = 2
             style.alignment = table.alignments[cell.column] == .center ? .center : table.alignments[cell.column] == .right ? .right : .left
             result.addAttribute(.paragraphStyle, value: style, range: all)

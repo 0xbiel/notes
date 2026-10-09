@@ -97,6 +97,13 @@ public final class SafeWorkspace {
         _ = try fileURL(filename)
         try data.write(to: url, options: .withoutOverwriting)
     }
+    /// Permanent removal uses validated bytes without creating a recoverable note transaction.
+    public func permanentlyRemoveFile(_ filename: String, expected: Data) throws {
+        let url = try fileURL(filename)
+        guard try readFile(filename) == expected else { throw ReplayError.conflict }
+        try fm.removeItem(at: url)
+    }
+
     public func removeAsset(_ filename: String, expected: Data) throws {
         guard !filename.hasSuffix(".md"), try readFile(filename) == expected else { throw ReplayError.conflict }
         try fm.removeItem(at: fileURL(filename))
@@ -222,6 +229,28 @@ public final class SafeWorkspace {
 
     public func readStorage(_ relative: String) throws -> Data {
         try Data(contentsOf: validated(storageRoot.appendingPathComponent(relative), under: storageRoot))
+    }
+
+    public func removeStorage(_ relative: String) throws {
+        let url = try validated(storageRoot.appendingPathComponent(relative), under: storageRoot)
+        if fm.fileExists(atPath: url.path) { try fm.removeItem(at: url) }
+    }
+
+    public func removeStorageTree(_ relative: String) throws {
+        guard !relative.hasPrefix("/"), relative.components(separatedBy: "/").allSatisfy({ !$0.isEmpty && !$0.hasPrefix(".") }) else {
+            throw ReplayError.unsafePath(relative)
+        }
+        let directory = try validated(storageRoot.appendingPathComponent(relative + "/placeholder"), under: storageRoot).deletingLastPathComponent()
+        guard fm.fileExists(atPath: directory.path) else { return }
+        try rejectLinks(directory)
+        guard let iterator = fm.enumerator(at: directory, includingPropertiesForKeys: [.isDirectoryKey]) else { throw ReplayError.unsafePath(relative) }
+        for case let child as URL in iterator {
+            try rejectLinks(child)
+            if try child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory != true {
+                _ = try validated(child, under: storageRoot)
+            }
+        }
+        try fm.removeItem(at: directory)
     }
 
     public func loadSessions() throws -> [SessionDocument] {

@@ -70,7 +70,7 @@ public enum NotebookAttachmentImport {
         for (index, image) in images.enumerated() { try workspace.writeStorage(attachment.storagePrefix + "/\(index).png", data: image) }
         return attachment
     }
-    private static func imagePNG(_ data: Data) throws -> Data {
+    static func imagePNG(_ data: Data) throws -> Data {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 1600, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary) else { throw MediaError.invalid("This image cannot be read.") }
         let output = NSMutableData()

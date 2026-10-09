@@ -1,5 +1,6 @@
 import XCTest
 import SwiftUI
+import PDFKit
 import LectureCore
 @testable import Notes
 
@@ -16,6 +17,156 @@ final class NotebookAssistantTests: XCTestCase {
         addTeardownBlock { @MainActor in model.assistant?.stop(); model.ai?.stop(); model.media?.shutdown(); try? FileManager.default.removeItem(at: root) }
         return (model, assistant, root)
     }
+    @MainActor func testImportedSourceRetrievalCreatesNestedMarkdownInSelectedLanguage() async throws {
+        let (model, assistant, _) = try fixture()
+        let oldLanguage = UserDefaults.standard.string(forKey: "notes.language")
+        defer { UserDefaults.standard.set(oldLanguage, forKey: "notes.language") }
+        UserDefaults.standard.set("en", forKey: "notes.language")
+        try model.workspace!.createAsset("Guía 1.txt", data: Data("Finite automata guide: deterministic transitions.".utf8))
+        try model.createNotebookItem(kind: "cuaderno", name: "Other")
+        let sibling = model.currentNotebook
+        model.openNotebook("derecho")
+        try model.workspace!.createAsset(sibling.rootPrefix + "/Private.txt", data: Data("Private sibling source".utf8))
+        assistant.setDraft("Resume la guía 1 en resumenes", notebook: model.currentNotebook)
+        var round = 0
+        assistant.generate = { request, _ in
+            round += 1
+            XCTAssertEqual(request.language, "en")
+            XCTAssertNotNil(request.catalog["Guía 1.txt"])
+            XCTAssertNil(request.catalog[sibling.rootPrefix + "/Private.txt"])
+            XCTAssertTrue(try request.prompt().contains("it does not determine your reply or document language"))
+            XCTAssertTrue(try request.prompt().contains("automatically creates its parent folders"))
+            if round == 1 { return .init(reply: "", readFiles: ["Guía 1.txt"]) }
+            XCTAssertTrue(request.documents["Guía 1.txt"]?.contains("deterministic transitions") == true)
+            return .init(reply: "Created the summary.", edits: [.init(path: "resumenes/summary.md", replacement: "# Summary\n\nDeterministic transitions.", create: true)])
+        }
+        model.submitNotebookPrompt(); await assistant.waitUntilFinished()
+        XCTAssertNil(assistant.error)
+        XCTAssertEqual(round, 2)
+        XCTAssertTrue(try model.workspace!.readNote("resumenes/summary.md").contains("Deterministic"))
+        XCTAssertEqual(try model.workspace!.readFile("Guía 1.txt"), Data("Finite automata guide: deterministic transitions.".utf8))
+        let spanish = NotebookTextRequest(notebook: model.currentNotebook, profile: .init(), messages: [], currentDocument: nil, texts: [:], language: "es")
+        XCTAssertTrue(try spanish.prompt().contains("no determina el idioma de tu respuesta"))
+        XCTAssertThrowsError(try NotebookAssistantProtocol.changes(.init(reply: "", edits: [.init(path: "Guía 1.txt", find: "guide", replacement: "changed")]), documents: ["Guía 1.txt": "guide"]))
+    }
+
+    @MainActor func testImportedPDFBeyondAttachmentPageLimitIsReadable() throws {
+        let (model, _, _) = try fixture()
+        let view = NSTextView(frame: NSRect(x: 0, y: 0, width: 500, height: 500))
+        view.string = "Automata guide one: transition function."
+        view.font = .systemFont(ofSize: 18)
+        let single = try XCTUnwrap(PDFDocument(data: view.dataWithPDF(inside: view.bounds)))
+        let document = PDFDocument()
+        for index in 0..<30 { document.insert(try XCTUnwrap(single.page(at: 0)?.copy() as? PDFPage), at: index) }
+        try model.workspace!.createAsset("Guía 1.pdf", data: try XCTUnwrap(document.dataRepresentation()))
+        let content = try NotebookLibraryContext.read("Guía 1.pdf", library: NotebookFileLibrary(projects: model.projects!), notebookID: model.currentNotebook.id)
+        XCTAssertTrue(content.text.contains("[Page 30]"))
+        XCTAssertTrue(content.text.contains("transition function"))
+        XCTAssertTrue(content.images.isEmpty)
+        try model.createNotebookItem(kind: "cuaderno", name: "Other")
+        let other = model.currentNotebook
+        XCTAssertThrowsError(try NotebookLibraryContext.read("Guía 1.pdf", library: NotebookFileLibrary(projects: model.projects!), notebookID: other.id))
+    }
+
+    @MainActor func testBatchHeadingCleanupAcrossFilesIsOneUndoableRequest() async throws {
+        let (model, assistant, _) = try fixture()
+        var originals: [String: String] = [:]
+        for name in ["Tema 1.md", "Tema 2.md"] {
+            let original = (1...35).map { "## \($0). Heading \($0)\nBody \($0).\n" }.joined(separator: "\n")
+            try model.workspace!.createNote(name, text: original); originals[name] = original
+        }
+        assistant.setDraft("Remove numbering from every heading in all Tema notes", notebook: model.currentNotebook)
+        assistant.generate = { request, _ in
+            XCTAssertTrue(try request.prompt().contains("Multiple non-overlapping edits per file") || request.prompt().contains("varios cambios no solapados por archivo"))
+            let edits = originals.keys.sorted().flatMap { path in
+                (1...35).map { NotebookEdit(path: path, find: "## \($0). Heading \($0)\n", replacement: "## Heading \($0)\n") }
+            }
+            // Exercise the provider decoder as well as atomic application (>30 edits).
+            return try NotebookAssistantProtocol.decode(String(decoding: JSONEncoder().encode(NotebookAssistantResponse(reply: "Cleaned up all headings.", edits: edits)), as: UTF8.self))
+        }
+        model.submitNotebookPrompt(); await assistant.waitUntilFinished()
+        XCTAssertNil(assistant.error)
+        for path in originals.keys {
+            let text = try model.workspace!.readNote(path)
+            XCTAssertTrue(text.contains("## Heading 35")); XCTAssertFalse(text.contains("## 1."))
+        }
+        let checkpointID = try XCTUnwrap(assistant.chat(model.currentNotebook)?.messages.last?.checkpointID)
+        let timeline = model.projects!.timeline(model.currentNotebook.id)
+        let index = try XCTUnwrap(timeline.firstIndex(where: { $0.id == checkpointID }))
+        _ = try model.projects!.restore(timeline[index - 1])
+        for (path, original) in originals { XCTAssertEqual(try model.workspace!.readNote(path), original) }
+        XCTAssertThrowsError(try NotebookAssistantProtocol.changes(.init(reply: "", edits: [
+            .init(path: "Tema 1.md", find: "## 1. Heading 1", replacement: "A"),
+            .init(path: "Tema 1.md", find: "Heading 1\n", replacement: "B")
+        ]), documents: originals))
+    }
+
+    @MainActor func testShortTranslationFollowUpRepairsInvalidEditAndIsUndoable() async throws {
+        let (model, assistant, _) = try fixture()
+        for name in ["A", "B", "C", "D", "E"] { try model.workspace!.createNote(name + ".md", text: "# Unrelated\n") }
+        let english = "# Fundamental definitions\n\nAlphabet: $\\Sigma = \\{a,b\\}$\n\nA finite set of symbols.\n"
+        let spanish = "# Definiciones fundamentales\n\nAlfabeto: $\\Sigma = \\{a,b\\}$\n\nUn conjunto finito de símbolos.\n"
+        assistant.setDraft("Create a guide", notebook: model.currentNotebook)
+        assistant.generate = { _, _ in .init(reply: "Created the guide.", edits: [.init(path: "Z-guide.md", replacement: english, create: true)]) }
+        model.submitNotebookPrompt(); await assistant.waitUntilFinished()
+        XCTAssertNil(assistant.error)
+        model.openNotebook("derecho")
+        XCTAssertNil(model.selectedNote)
+        assistant.setDraft("Make it in spanish", notebook: model.currentNotebook)
+        var rounds = 0
+        assistant.generate = { request, _ in
+            rounds += 1
+            XCTAssertEqual(request.recentlyEditedDocuments, ["Z-guide.md"])
+            XCTAssertEqual(request.documents["Z-guide.md"], english)
+            XCTAssertTrue(try request.prompt().contains("replaceEntireFile"))
+            if rounds == 1 { return .init(reply: "Translated.", edits: [.init(path: "Z-guide.md", find: "A passage that is not in this document", replacement: spanish)]) }
+            XCTAssertTrue(request.contextUpdate.contains("replaceEntireFile=true"))
+            XCTAssertEqual(try model.workspace!.readNote("Z-guide.md"), english)
+            return .init(reply: "Traducido al español.", edits: [.init(path: "Z-guide.md", replacement: spanish, replaceEntireFile: true)])
+        }
+        model.submitNotebookPrompt(); await assistant.waitUntilFinished()
+        XCTAssertNil(assistant.error); XCTAssertEqual(rounds, 2)
+        XCTAssertEqual(try model.workspace!.readNote("Z-guide.md"), spanish)
+        let checkpoint = try XCTUnwrap(assistant.chat(model.currentNotebook)?.messages.last?.checkpointID)
+        let timeline = model.projects!.timeline(model.currentNotebook.id)
+        let index = try XCTUnwrap(timeline.firstIndex { $0.id == checkpoint })
+        _ = try model.projects!.restore(timeline[index - 1])
+        XCTAssertEqual(try model.workspace!.readNote("Z-guide.md"), english)
+    }
+
+    @MainActor func testInvalidEditRepairIsBoundedAndNeverPartiallyApplies() async throws {
+        let (model, assistant, _) = try fixture()
+        let original = try model.workspace!.readNote("Inicio.md")
+        var rounds = 0
+        assistant.setDraft("Translate this note", notebook: model.currentNotebook)
+        assistant.generate = { _, _ in
+            rounds += 1
+            return .init(reply: "Done", edits: [
+                .init(path: "Created.md", replacement: "# New\n", create: true),
+                .init(path: "Inicio.md", find: "Missing passage", replacement: "Changed")
+            ])
+        }
+        model.submitNotebookPrompt(); await assistant.waitUntilFinished()
+        XCTAssertNotNil(assistant.error); XCTAssertEqual(rounds, 3)
+        XCTAssertEqual(try model.workspace!.readNote("Inicio.md"), original)
+        XCTAssertFalse(model.notes.contains("Created.md"))
+        XCTAssertThrowsError(try NotebookAssistantProtocol.changes(.init(reply: "", edits: [.init(path: "Unread.md", replacement: "# Translation", replaceEntireFile: true)]), documents: [:]))
+    }
+
+    @MainActor func testWholeNoteReplacementRejectsInterveningTyping() async throws {
+        let (model, assistant, _) = try fixture()
+        let original = try model.workspace!.readNote("Inicio.md")
+        assistant.setDraft("Make it in English", notebook: model.currentNotebook)
+        assistant.generate = { _, _ in
+            model.changeDraft("My newer draft")
+            return .init(reply: "Translated", edits: [.init(path: "Inicio.md", replacement: "# Start\n\nInitial text.\n", replaceEntireFile: true)])
+        }
+        model.submitNotebookPrompt(); await assistant.waitUntilFinished()
+        XCTAssertNotNil(assistant.error)
+        XCTAssertEqual(model.draftText, "My newer draft")
+        XCTAssertEqual(try model.workspace!.readNote("Inicio.md"), original)
+    }
+
     @MainActor func testPastedImageAndFileStayWithTheirOriginalChat() async throws {
         let (model, assistant, root) = try fixture()
         let notebook = model.currentNotebook
@@ -216,6 +367,36 @@ final class NotebookAssistantTests: XCTestCase {
         XCTAssertTrue(first.hasPrefix(captured.rootPrefix + "/")); XCTAssertNotEqual(first, second)
         XCTAssertEqual(model.selectedNotebookID, "derecho"); XCTAssertNil(model.selectedNote)
     }
+    @MainActor func testActivityAndComposerErrorRenderInHomeAndDocument() async throws {
+        let (model, assistant, _) = try fixture()
+        let media = try XCTUnwrap(model.media)
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "activity-render-" + UUID().uuidString))
+        defaults.set("en", forKey: "notes.language")
+        defaults.set(NotebookAccent.encode(.purple), forKey: "notes.accent")
+        let output = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("qa/activity-status")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        for scenario in ["home-processing", "document-recording", "hidden-composer-recording", "document-error", "document-error-narrow"] {
+            media.isRecording = scenario.contains("recording")
+            media.busy = scenario == "home-processing"
+            model.hideStudyComposer = scenario == "hidden-composer-recording"
+            if scenario.hasPrefix("home") { model.openNotebook("derecho") }
+            else { model.openNote("Inicio.md"); model.layout = "preview" }
+            assistant.error = scenario.hasPrefix("document-error") ? "Antigravity closed the connection or timed out. Retry explicitly." : nil
+            if scenario == "document-error-narrow" { assistant.error = Array(repeating: assistant.error!, count: 3).joined(separator: " ") }
+            let size = NSSize(width: scenario.hasSuffix("narrow") ? 600 : 1280, height: 820)
+            let host = NSHostingView(rootView: WorkbenchView(model: model).defaultAppStorage(defaults).environment(\.colorScheme, .dark))
+            let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .darkAqua)
+            window.contentView = host; host.frame = NSRect(origin: .zero, size: size)
+            host.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(200)); host.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: output.appendingPathComponent(scenario + ".png"))
+            window.close()
+        }
+        media.isRecording = false; media.busy = false
+    }
+
     @MainActor func testNotebookRenderAtWideAndNarrowSizes() async throws {
         let (model, assistant, _) = try fixture()
         _ = NSApplication.shared

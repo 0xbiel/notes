@@ -32,6 +32,10 @@ struct NeutralSidebarSelection: NSViewRepresentable {
             }
             guard let table else { return }
             table.selectionHighlightStyle = .none
+            if let outline = table as? NSOutlineView {
+                outline.indentationPerLevel = 18
+                outline.indentationMarkerFollowsCell = true
+            }
             if monitor == nil {
                 monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown, .scrollWheel]) { [weak self] event in
                     MainActor.assumeIsolated {

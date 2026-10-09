@@ -14,12 +14,24 @@ struct NotebookChatMarkdown: View {
     static func blocks(_ text: String) -> [Block] {
         var result: [Block] = [], paragraph: [String] = [], code: [String] = []
         let tables = MarkdownTables.blocks(in: text)
+        let source = text as NSString
+        let math = MarkdownMath.spans(in: text).filter { $0.display }.filter { span in
+            let firstLine = source.lineRange(for: NSRange(location: span.range.location, length: 0))
+            let prefix = source.substring(with: NSRange(location: firstLine.location, length: span.range.location - firstLine.location))
+            let lastLine = source.lineRange(for: NSRange(location: NSMaxRange(span.range) - 1, length: 0))
+            let suffix = source.substring(with: NSRange(location: NSMaxRange(span.range), length: NSMaxRange(lastLine) - NSMaxRange(span.range)))
+            return prefix.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && suffix.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
         var offset = 0, skipUntil = 0
         var fence: String?, language = ""
         func flush() { if !paragraph.isEmpty { result.append(.init(kind: "paragraph", text: paragraph.joined(separator: "\n"))); paragraph = [] } }
         for line in text.components(separatedBy: "\n") {
             let start = offset; offset += line.utf16.count + 1
             if start < skipUntil { continue }
+            if let span = math.first(where: { source.lineRange(for: NSRange(location: $0.range.location, length: 0)).location == start }) {
+                flush(); result.append(.init(kind: "math", text: source.substring(with: span.range)))
+                skipUntil = NSMaxRange(span.range); continue
+            }
             if let table = tables.first(where: { $0.range.location == start }) {
                 flush(); result.append(.init(kind: "table", text: (text as NSString).substring(with: table.range)))
                 skipUntil = NSMaxRange(table.range); continue
@@ -51,8 +63,9 @@ struct NotebookChatMarkdown: View {
         if fence != nil { result.append(.init(kind: "code:" + language, text: code.joined(separator: "\n"))) }
         return result
     }
-    private func inline(_ text: String) -> Text {
-        Text(Self.inlineAttributed(text, accent: NotebookAccent.color(accent)))
+    @ViewBuilder private func inline(_ text: String, fontSize: CGFloat = 14, weight: NSFont.Weight = .regular) -> some View {
+        if MarkdownMath.spans(in: text).isEmpty { Text(Self.inlineAttributed(text, accent: NotebookAccent.color(accent))) }
+        else { MarkdownMathText(text: text, fontSize: fontSize, weight: weight, accent: NSColor(NotebookAccent.color(accent))) }
     }
     static func inlineAttributed(_ text: String, accent: Color) -> AttributedString {
         var result = InlineUnderline.attributed(text)
@@ -62,7 +75,9 @@ struct NotebookChatMarkdown: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(Array(Self.blocks(text).enumerated()), id: \.offset) { _, block in
-                if block.kind == "table", let table = MarkdownTables.blocks(in: block.text).first?.table {
+                if block.kind == "math" {
+                    HStack { Spacer(minLength: 0); MarkdownMathText(text: block.text, fontSize: 17, accent: NSColor(NotebookAccent.color(accent))); Spacer(minLength: 0) }
+                } else if block.kind == "table", let table = MarkdownTables.blocks(in: block.text).first?.table {
                     MarkdownTablePreview(table: table).frame(maxWidth: .infinity)
                 } else if block.kind.hasPrefix("code:") {
                     VStack(alignment: .leading, spacing: 8) {
@@ -75,7 +90,7 @@ struct NotebookChatMarkdown: View {
                         ScrollView(.horizontal) { Text(block.text).font(.system(.callout, design: .monospaced)).fixedSize(horizontal: true, vertical: false).textSelection(.enabled) }
                     }.padding(12).background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
                 } else if block.kind == "heading" {
-                    inline(block.text).font(.system(size: block.level == 1 ? 22 : 17, weight: .semibold)).padding(.top, 4)
+                    inline(block.text, fontSize: block.level == 1 ? 22 : 17, weight: .semibold).font(.system(size: block.level == 1 ? 22 : 17, weight: .semibold)).padding(.top, 4)
                 } else if block.kind == "quote" {
                     HStack(alignment: .top) { Rectangle().fill(.secondary.opacity(0.35)).frame(width: 3); inline(block.text).foregroundStyle(.secondary) }.fixedSize(horizontal: false, vertical: true)
                 } else if ["task", "checked"].contains(block.kind) {

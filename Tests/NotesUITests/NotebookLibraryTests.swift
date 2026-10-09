@@ -22,6 +22,121 @@ final class NotebookLibraryTests: XCTestCase {
         }
         return (model, root, clipboard)
     }
+    @MainActor func testQuickOpenSearchIncludesNotebooksAndRevealsTheirSidebarSelection() throws {
+        let (model, _, _) = try fixture()
+        try model.createNotebookItem(kind: "cuaderno", name: "Álgebra")
+        let notebook = model.currentNotebook
+        try model.createNotebookItem(kind: "nota", name: "Álgebra")
+        let path = try XCTUnwrap(model.selectedNote)
+        let matches = model.quickOpenMatches(" algebra ")
+        XCTAssertEqual(matches.first, .notebook(notebook.id))
+        XCTAssertTrue(matches.contains(.file(path)))
+        XCTAssertTrue(model.quickOpenMatches("").contains(.notebook("derecho")))
+        XCTAssertTrue(model.quickOpenMatches("Preferences").contains(.preferences))
+        let reveal = model.notebookRevealRequest
+        model.showQuickOpen = true
+        model.openQuickOpenResult(.notebook(notebook.id))
+        XCTAssertFalse(model.showQuickOpen)
+        XCTAssertEqual(model.librarySelection, .notebook(notebook.id))
+        XCTAssertNil(model.selectedLibraryPath)
+        XCTAssertEqual(model.notebookRevealRequest, reveal + 1)
+        model.openQuickOpenResult(.preferences)
+        XCTAssertTrue(model.showPreferences)
+        model.openQuickOpenResult(.file(path))
+        XCTAssertFalse(model.showPreferences)
+        XCTAssertEqual(model.selectedNote, path)
+        var notebooks = model.notebooks
+        notebooks[try XCTUnwrap(notebooks.firstIndex(where: { $0.id == notebook.id }))].archivedAt = Date()
+        model.notebooks = notebooks
+        XCTAssertFalse(model.quickOpenMatches("algebra").contains(.notebook(notebook.id)))
+        XCTAssertFalse(model.quickOpenMatches("algebra").contains(.file(path)))
+    }
+
+    @MainActor func testImportFolderContentsAtNotebookRootAndAsNamedNotebook() throws {
+        let (model, root, _) = try fixture()
+        let source = root.appendingPathComponent("external/Course")
+        try FileManager.default.createDirectory(at: source.appendingPathComponent("Resources/Empty"), withIntermediateDirectories: true)
+        try Data("Imported".utf8).write(to: source.appendingPathComponent("Inicio.md"))
+        let binary = Data([0, 255, 19])
+        try binary.write(to: source.appendingPathComponent("Resources/data.bin"))
+        model.importFolderContents(source, notebookID: "derecho", asNotebook: false)
+        XCTAssertNil(model.errorText)
+        XCTAssertEqual(try model.workspace!.readNote("Inicio.md"), "# Original\n")
+        XCTAssertEqual(try model.workspace!.readNote("Inicio copy.md"), "Imported")
+        XCTAssertEqual(try model.workspace!.readFile("Resources/data.bin"), binary)
+        XCTAssertTrue(model.folders.contains("Resources/Empty"))
+        XCTAssertFalse(model.folders.contains("Course"))
+        model.importFolderContents(source, notebookID: "derecho", asNotebook: true)
+        XCTAssertNil(model.errorText)
+        let notebook = model.currentNotebook
+        XCTAssertEqual(notebook.name, "Course")
+        XCTAssertEqual(model.librarySelection, .notebook(notebook.id))
+        XCTAssertEqual(try model.workspace!.readNote(notebook.rootPrefix + "/Inicio.md"), "Imported")
+        XCTAssertEqual(try model.workspace!.readFile(notebook.rootPrefix + "/Resources/data.bin"), binary)
+        XCTAssertFalse(model.folders.contains(notebook.rootPrefix + "/Course"))
+        model.importFolderContents(source, notebookID: "derecho", asNotebook: true)
+        XCTAssertNil(model.errorText)
+        XCTAssertEqual(model.currentNotebook.name, "Course 2")
+        let reopened = Workbench(workspaceRoot: root)
+        defer { reopened.ai?.stop(); reopened.media?.shutdown() }
+        XCTAssertTrue(reopened.notebooks.contains { $0.id == notebook.id })
+        XCTAssertEqual(try reopened.workspace!.readFile(notebook.rootPrefix + "/Resources/data.bin"), binary)
+    }
+
+    @MainActor func testPermanentTrashDeletionAndNotebookDeletionPreserveOtherNotebooks() throws {
+        let (model, root, _) = try fixture()
+        try model.createNotebookItem(kind: "nota", name: "Disposable")
+        model.deleteItem("Disposable.md", folder: false)
+        let entry = try XCTUnwrap(model.trash.first)
+        model.permanentlyDeleteTrash(entry)
+        XCTAssertNil(model.errorText)
+        XCTAssertFalse(model.trash.contains { $0.id == entry.id })
+        try model.createNotebookItem(kind: "cuaderno", name: "Discard")
+        let discarded = model.currentNotebook
+        try model.createNotebookItem(kind: "nota", name: "Nested/Example")
+        try model.workspace!.createAsset(discarded.rootPrefix + "/asset.bin", data: Data([255, 0]))
+        let attachment = try NotebookAttachmentImport.prepare(data: Data("Context".utf8), name: "Context.txt", notebookID: discarded.id, workspace: model.workspace!)
+        model.deleteNotebook(discarded)
+        model.permanentlyDeleteNotebook(discarded)
+        XCTAssertNil(model.errorText)
+        XCTAssertFalse(model.notebooks.contains { $0.id == discarded.id })
+        XCTAssertFalse(model.projects!.checkpoints.contains { $0.notebookID == discarded.id })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: model.workspace!.courseRoot.appendingPathComponent(discarded.rootPrefix).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: model.workspace!.storageRoot.appendingPathComponent(attachment.storagePrefix).path))
+        XCTAssertEqual(try model.workspace!.readNote("Inicio.md"), "# Original\n")
+        let reopened = Workbench(workspaceRoot: root)
+        defer { reopened.ai?.stop(); reopened.media?.shutdown() }
+        XCTAssertNil(reopened.errorText)
+        XCTAssertFalse(reopened.notebooks.contains { $0.id == discarded.id })
+        XCTAssertFalse(reopened.trash.contains { $0.id == entry.id })
+        // Active notebooks cannot be purged by the permanent-delete action.
+        reopened.permanentlyDeleteNotebook(reopened.currentNotebook)
+        XCTAssertNotNil(reopened.errorText)
+        XCTAssertEqual(try reopened.workspace!.readNote("Inicio.md"), "# Original\n")
+    }
+
+    @MainActor func testClearTrashPurgesArchivedNotebooksAndItemsButKeepsActiveFiles() throws {
+        let (model, root, _) = try fixture()
+        try model.createNotebookItem(kind: "nota", name: "Deleted note")
+        model.deleteItem("Deleted note.md", folder: false)
+        try model.createNotebookItem(kind: "cuaderno", name: "Deleted notebook")
+        let deletedNotebook = model.currentNotebook
+        try model.createNotebookItem(kind: "nota", name: "Example")
+        model.deleteNotebook(deletedNotebook)
+        XCTAssertFalse(model.trash.isEmpty)
+        model.clearTrash()
+        XCTAssertNil(model.errorText)
+        XCTAssertTrue(model.trash.isEmpty)
+        XCTAssertFalse(model.notebooks.contains { $0.archivedAt != nil })
+        XCTAssertFalse(model.projects!.checkpoints.contains { $0.notebookID == deletedNotebook.id })
+        XCTAssertEqual(try model.workspace!.readNote("Inicio.md"), "# Original\n")
+        let reopened = Workbench(workspaceRoot: root)
+        defer { reopened.ai?.stop(); reopened.media?.shutdown() }
+        XCTAssertTrue(reopened.trash.isEmpty)
+        XCTAssertFalse(reopened.notebooks.contains { $0.id == deletedNotebook.id })
+        XCTAssertEqual(try reopened.workspace!.readNote("Inicio.md"), "# Original\n")
+    }
+
     @MainActor func testImportArbitraryBytesNestedFoldersAndPDFReload() throws {
         let (model, root, _) = try fixture()
         let source = root.appendingPathComponent("external/Resources")
