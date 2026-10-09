@@ -13,7 +13,7 @@ struct NotebookTrashEntry: Codable, Identifiable {
 
 @MainActor
 extension Workbench {
-    var activeNotebooks: [Notebook] { notebooks.filter { $0.archivedAt == nil } }
+    var activeNotebooks: [Notebook] { orderedNotebooks(notebooks.filter { $0.archivedAt == nil }) }
     var visibleNotes: [String] { notes.filter { projects?.owner(of: $0)?.archivedAt == nil } }
     var canManageFiles: Bool { assistant?.runningNotebookID == nil && ai?.running != true && media?.busy != true && media?.isRecording != true && !busy }
     func loadTrash() throws {

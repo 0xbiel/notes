@@ -38,6 +38,14 @@ struct MarkdownSection: Identifiable, Equatable {
 }
 
 enum MarkdownSectionNavigation {
+    static func visibleIDs(sections: [MarkdownSection], positions: [CGFloat], documentHeight: CGFloat, viewport: CGRect) -> Set<Int> {
+        guard viewport.height > 0, positions.count == sections.count else { return [] }
+        return Set(sections.enumerated().compactMap { index, section in
+            let end = index + 1 < positions.count ? positions[index + 1] : documentHeight
+            return end > viewport.minY && positions[index] < viewport.maxY ? section.id : nil
+        })
+    }
+
     static func path(to id: Int?, in sections: [MarkdownSection]) -> [MarkdownSection] {
         var path: [MarkdownSection] = []
         for section in sections {
@@ -94,6 +102,11 @@ enum MarkdownSectionNavigation {
 
 @MainActor final class MarkdownSectionState: ObservableObject {
     @Published var sections: [MarkdownSection] = []
+    @Published var visibleIDs: Set<Int> = []
+    var overviewVisibleIDs: Set<Int> {
+        let displayed = overview
+        return Set(visibleIDs.compactMap { MarkdownSectionNavigation.activeID($0, in: sections, overview: displayed) })
+    }
     @Published var currentID: Int?
     var overview: [MarkdownSection] { MarkdownSectionNavigation.overview(sections, currentID: currentID) }
     var overviewCurrentID: Int? { MarkdownSectionNavigation.activeID(currentID, in: sections, overview: overview) }
@@ -115,8 +128,14 @@ struct MarkdownSectionIndicator: View {
     @State private var hoveredID: Int?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var outlinePresented = false
+    @State private var rowFrames: [Int: CGRect] = [:]
+    @State private var tooltipHeight: CGFloat = 80
     private var hoveredIndex: Int? { state.overview.firstIndex { $0.id == hoveredID } }
     private let rowHeight: CGFloat = 11
+    init(state: MarkdownSectionState, initialHoveredID: Int? = nil) {
+        self.state = state
+        _hoveredID = State(initialValue: initialHoveredID)
+    }
     var body: some View {
         VStack(alignment: .trailing, spacing: 6) {
             Button { outlinePresented.toggle() } label: {
@@ -137,36 +156,63 @@ struct MarkdownSectionIndicator: View {
                             HStack {
                                 Spacer(minLength: 0)
                                 Capsule()
-                                    .fill(hoveredID == section.id ? Color(state.accent) : (state.overviewCurrentID == section.id ? Color.primary : Color.secondary.opacity(0.45)))
-                                    .frame(width: MarkdownSectionEmphasis.width(index: index, hoveredIndex: hoveredIndex), height: state.overviewCurrentID == section.id ? 2 : 1.5)
+                                    .fill(hoveredID == section.id ? Color(state.accent) : (state.overviewVisibleIDs.contains(section.id) ? Color.primary : Color.secondary.opacity(0.45)))
+                                    .frame(width: MarkdownSectionEmphasis.width(index: index, hoveredIndex: hoveredIndex), height: 1.5)
                             }.frame(width: 32, height: rowHeight).contentShape(Rectangle())
                         }.buttonStyle(.plain)
                             .onHover { hoveredID = $0 ? section.id : (hoveredID == section.id ? nil : hoveredID) }
-                            .overlay(alignment: .trailing) {
-                                if hoveredID == section.id {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        let path = MarkdownSectionNavigation.path(to: section.id, in: state.sections).dropLast()
-                                        if !path.isEmpty {
-                                            Text(path.map(\.title).joined(separator: " › "))
-                                                .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2)
-                                        }
-                                        Text(section.title).font(.system(size: 12, weight: .medium)).lineLimit(3)
-                                    }.multilineTextAlignment(.leading)
-                                        .padding(.horizontal, 11).padding(.vertical, 8)
-                                        .frame(width: 230, alignment: .leading).fixedSize(horizontal: false, vertical: true)
-                                        .modifier(NotebookInputSurface(radius: 8, floating: true))
-                                        .offset(x: -43).allowsHitTesting(false)
+                            .background {
+                                GeometryReader { geometry in
+                                    Color.clear.preference(key: SectionRowFrames.self, value: [section.id: geometry.frame(in: .named("section-indicator"))])
                                 }
                             }
                             .accessibilityLabel((language == "en" ? "Go to section: " : "Ir a la sección: ") + section.title)
-                            .accessibilityAddTraits(state.overviewCurrentID == section.id ? .isSelected : [])
+                            .accessibilityAddTraits(state.overviewVisibleIDs.contains(section.id) ? .isSelected : [])
                             .id(section.id)
                     }
                 }.frame(maxWidth: .infinity, alignment: .trailing).padding(.vertical, 8)
                     .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: hoveredID)
             }.scrollIndicators(.hidden)
                 .onChange(of: state.sections) { _, _ in hoveredID = nil; outlinePresented = false }
+        }
+        .coordinateSpace(name: "section-indicator")
+        .onPreferenceChange(SectionRowFrames.self) { rowFrames = $0 }
+        .overlay {
+            GeometryReader { geometry in
+                if let section = state.overview.first(where: { $0.id == hoveredID }), let row = rowFrames[section.id] {
+                    sectionTooltip(section)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { tooltipHeight = $0 }
+                        .position(x: geometry.size.width - 43 - 115,
+                                  y: MarkdownSectionTooltip.center(rowY: row.midY, height: tooltipHeight, availableHeight: geometry.size.height))
+                        .allowsHitTesting(false)
+                }
+            }
         }.accessibilityIdentifier("document.sectionIndicator")
+    }
+    private func sectionTooltip(_ section: MarkdownSection) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            let path = MarkdownSectionNavigation.path(to: section.id, in: state.sections).dropLast()
+            if !path.isEmpty {
+                Text(path.map(\.title).joined(separator: " › "))
+                    .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2)
+            }
+            Text(section.title).font(.system(size: 12, weight: .medium)).lineLimit(3)
+        }.multilineTextAlignment(.leading)
+            .padding(.horizontal, 11).padding(.vertical, 8)
+            .frame(width: 230, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+            .modifier(NotebookInputSurface(radius: 8, floating: true, opaque: true))
+    }
+}
+
+private struct SectionRowFrames: PreferenceKey {
+    static let defaultValue: [Int: CGRect] = [:]
+    static func reduce(value: inout [Int: CGRect], nextValue: () -> [Int: CGRect]) { value.merge(nextValue(), uniquingKeysWith: { _, new in new }) }
+}
+
+enum MarkdownSectionTooltip {
+    static func center(rowY: CGFloat, height: CGFloat, availableHeight: CGFloat) -> CGFloat {
+        let half = height / 2
+        return max(half, min(rowY, availableHeight - half))
     }
 }
 

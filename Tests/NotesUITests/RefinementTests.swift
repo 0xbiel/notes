@@ -4,6 +4,41 @@ import LectureCore
 @testable import Notes
 
 final class RefinementTests: XCTestCase {
+    @MainActor func testSidebarSelectionSurvivesResizeAndRowReuse() throws {
+        _ = NSApplication.shared
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 400))
+        let scroll = NSScrollView(frame: root.bounds)
+        let table = NSTableView(frame: root.bounds)
+        let source = SidebarSelectionDataSource()
+        table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name")))
+        table.dataSource = source
+        scroll.documentView = table
+        root.addSubview(scroll)
+        let bridge = NeutralSidebarSelection.SelectionBridge(frame: .zero)
+        root.addSubview(bridge)
+        bridge.connect()
+        table.reloadData()
+        table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        let overlay = try XCTUnwrap(table.subviews.compactMap { $0 as? NeutralSidebarSelection.SelectionOverlay }.first)
+        XCTAssertNil(overlay.hitTest(.zero))
+        for width in [240.0, 380.0, 260.0] {
+            table.setFrameSize(NSSize(width: width, height: 400))
+            table.reloadData()
+            bridge.connect()
+            XCTAssertEqual(table.selectedRowIndexes, IndexSet(integer: 1))
+            XCTAssertEqual(table.selectionHighlightStyle, .none)
+            XCTAssertEqual(overlay.frame, table.bounds)
+            let selection = overlay.selectionRect(forRow: 1)
+            XCTAssertEqual(selection.minX, table.rect(ofRow: 1).minX + 8)
+            XCTAssertEqual(selection.maxX, table.rect(ofRow: 1).maxX - 8)
+            XCTAssertTrue(table.subviews.contains { $0 === overlay })
+        }
+        table.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false)
+        XCTAssertEqual(table.selectedRow, 2)
+        bridge.disconnect()
+        XCTAssertNil(overlay.superview)
+    }
+
     func testLibrarySeparatesOriginalVideoFromExtractedAudioAndMicrophone() {
         var video = MediaJob(notebookID: "test", subject: "Test", note: "Test.md", sourceName: "Lecture.MP4")
         video.audioRelativePath = "extracted.wav"
@@ -15,6 +50,28 @@ final class RefinementTests: XCTestCase {
         let microphone = MediaJob(notebookID: "test", subject: "Test", note: "Test.md", sourceName: "Micrófono", microphone: true)
         XCTAssertTrue(LibraryContentFilter.audio.includes(microphone))
         XCTAssertFalse(LibraryContentFilter.video.includes(microphone))
+    }
+
+    func testImportedMediaFiltersAndNotebookRecordingOwnership() {
+        for path in ["Class.MP4", "nested/Clip.webm", "Lecture.mkv"] {
+            XCTAssertTrue(LibraryContentFilter.video.includes(path: path))
+            XCTAssertFalse(LibraryContentFilter.audio.includes(path: path))
+            XCTAssertFalse(LibraryContentFilter.notes.includes(path: path))
+        }
+        for path in ["nested/Audio.M4A", "Lecture.opus", "Recording.wav"] {
+            XCTAssertTrue(LibraryContentFilter.audio.includes(path: path))
+            XCTAssertFalse(LibraryContentFilter.video.includes(path: path))
+            XCTAssertFalse(LibraryContentFilter.notes.includes(path: path))
+        }
+        for path in ["Note.md", "Guide.pdf", "Handout.docx", "Picture.png"] {
+            XCTAssertTrue(LibraryContentFilter.notes.includes(path: path))
+        }
+        var local = MediaJob(notebookID: "one", subject: "One", note: "One.md", sourceName: "Voice", microphone: true)
+        local.unitTags = ["Automata"]
+        let sibling = MediaJob(notebookID: "two", subject: "Two", note: "Two.md", sourceName: "Voice", microphone: true)
+        XCTAssertEqual(LibraryContentFilter.audio.recordings([sibling, local], notebookID: "one", query: "automata").map(\.id), [local.id])
+        XCTAssertTrue(LibraryContentFilter.video.recordings([local], notebookID: "one", query: "").isEmpty)
+        XCTAssertTrue(LibraryContentFilter.audio.recordings([local], notebookID: "two", query: "").isEmpty)
     }
 
     @MainActor func testFormattingRoundTripUndoAndSelection() async throws {
@@ -95,4 +152,8 @@ final class RefinementTests: XCTestCase {
         job.stage = .recording
         XCTAssertEqual(RecordingPresentation(job: job).title, "Grabando")
     }
+}
+
+@MainActor private final class SidebarSelectionDataSource: NSObject, NSTableViewDataSource {
+    func numberOfRows(in tableView: NSTableView) -> Int { 4 }
 }

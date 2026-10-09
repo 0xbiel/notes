@@ -1,8 +1,47 @@
 import XCTest
 import AppKit
+import SwiftUI
 @testable import Notes
 
 final class MarkdownSectionTests: XCTestCase {
+    @MainActor func testAllVisibleSectionsIncludePartlyVisibleBodies() {
+        let state = MarkdownSectionState()
+        state.sections = MarkdownSection.parse("# One\n# Two\n# Three")
+        let ids = state.sections.map(\.id)
+        state.visibleIDs = MarkdownSectionNavigation.visibleIDs(sections: state.sections, positions: [0, 100, 200],
+            documentHeight: 400, viewport: CGRect(x: 0, y: 50, width: 300, height: 200))
+        XCTAssertEqual(state.visibleIDs, Set(ids))
+        XCTAssertEqual(state.overviewVisibleIDs, Set(ids))
+        XCTAssertEqual(MarkdownSectionNavigation.visibleIDs(sections: state.sections, positions: [0, 100, 200],
+            documentHeight: 400, viewport: CGRect(x: 0, y: 100, width: 300, height: 100)), [ids[1]])
+    }
+
+    func testHoverTooltipStaysInsideBothRailEdges() {
+        XCTAssertEqual(MarkdownSectionTooltip.center(rowY: 5, height: 80, availableHeight: 280), 40)
+        XCTAssertEqual(MarkdownSectionTooltip.center(rowY: 275, height: 80, availableHeight: 280), 240)
+        XCTAssertEqual(MarkdownSectionTooltip.center(rowY: 140, height: 80, availableHeight: 280), 140)
+        XCTAssertEqual(MarkdownSectionTooltip.center(rowY: 100, height: 100, availableHeight: 112), 62)
+    }
+
+    @MainActor func testFirstAndLastHoverLabelsRenderWithoutScrollClipping() async throws {
+        _ = NSApplication.shared
+        let state = MarkdownSectionState()
+        state.sections = MarkdownSection.parse("# Long notebook heading for hover label ancestors\n" + (1...18).map { "## Section \($0) with a deliberately long title that wraps across multiple lines" }.joined(separator: "\n"))
+        let output = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("qa/section-hover")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        for section in [state.sections.first!, state.sections.last!] {
+            let host = NSHostingView(rootView: MarkdownSectionIndicator(state: state, initialHoveredID: section.id).environment(\.colorScheme, .dark))
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 280, height: 280), styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .darkAqua)
+            window.contentView = host; host.frame = NSRect(x: 0, y: 0, width: 280, height: 280)
+            host.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(150)); host.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: output.appendingPathComponent(section == state.sections.first ? "first.png" : "last.png"))
+            window.close()
+        }
+    }
+
     func testHeadingSectionsIgnoreCodeAndKeepDuplicateHeadingsDistinct() {
         let source = "# **Overview**\n\n😀\n## Details ###\n```md\n# Not a section\n```\n~~~\n## Also code\n~~~\n    # Indented code\n\\# Escaped\n####### Too many\n#No space\n## Details\n###### Deep\n"
         let sections = MarkdownSection.parse(source)

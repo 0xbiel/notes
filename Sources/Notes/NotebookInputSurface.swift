@@ -3,12 +3,13 @@ import SwiftUI
 struct NotebookInputSurface: ViewModifier {
     var radius: CGFloat = 10
     var floating = false
+    var opaque = false
     var borderOpacity: Double = 0.35
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     func body(content: Content) -> some View {
         content.background {
             let shape = RoundedRectangle(cornerRadius: radius)
-            if reduceTransparency { shape.fill(Color(nsColor: .controlBackgroundColor)) }
+            if opaque || reduceTransparency { shape.fill(Color(nsColor: .controlBackgroundColor)) }
             else if floating { shape.fill(.ultraThinMaterial) }
             else { shape.fill(Color.primary.opacity(0.045)) }
         }

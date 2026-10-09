@@ -188,6 +188,7 @@ struct ProviderPreferences: View {
     @State private var showRuntime = false
     let contentWidth: CGFloat
     @AppStorage("notes.language") private var language = "es"
+    @AppStorage("notes.accent") private var accent = ""
 
     init(ai: AIController, contentWidth: CGFloat = 680) {
         self.ai = ai
@@ -210,29 +211,14 @@ struct ProviderPreferences: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack {
-                Text(text("Este Mac", "This Mac")).font(.callout).foregroundStyle(.secondary)
-                Spacer()
-                Text(text("Proveedor activo: ", "Active provider: ") + name(ai.providerSettings.selectedProvider)).font(.callout)
-            }
-            Group {
-                if contentWidth >= 620 {
-                    HStack(alignment: .top, spacing: 0) {
-                        providerList.frame(width: 220)
-                        Divider()
-                        editor.padding(22).frame(width: contentWidth - 221)
-                    }.fixedSize(horizontal: false, vertical: true)
-                } else {
-                    VStack(spacing: 0) { providerList; Divider(); editor.padding(20) }
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .background(.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 12))
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(.separator.opacity(0.4)))
+            providerList
+            editor.padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .modifier(NotebookInputSurface(radius: 14, borderOpacity: 0.22))
             Text(text("Cada lote conserva su proveedor y su permiso de edición. Ajusta los cambios automáticos en General.", "Each batch keeps its provider and editing permission. Set automatic changes in General."))
                 .font(.caption).foregroundStyle(.secondary)
         }
+        .tint(NotebookAccent.color(accent))
         .disabled(busy)
         .onChange(of: preferences.draft) { _, _ in
             if preferences.hasChanges { preferences.save() }
@@ -255,42 +241,41 @@ struct ProviderPreferences: View {
     }
 
     private var providerList: some View {
-        VStack(spacing: 0) {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: contentWidth >= 620 ? 190 : 240), spacing: 8)], spacing: 8) {
             ForEach(NotesAIProvider.allCases) { provider in
+                let selected = preferences.draft.selectedProvider == provider
                 HStack(spacing: 8) {
                     Button {
                         preferences.draft.selectedProvider = provider
                         showRuntime = false
                     } label: {
-                        HStack(alignment: .top, spacing: 10) {
-                            ProviderLogo(provider: provider, size: 17)
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(name(provider)).font(.callout.weight(.medium)).lineLimit(1)
-                                Text(status(provider)).font(.caption2).foregroundStyle(.secondary)
-                                    .lineLimit(2)
+                        HStack(spacing: 10) {
+                            ProviderLogo(provider: provider, size: 22)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(name(provider)).font(.callout.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
+                                Text(status(provider)).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                             }
                             Spacer(minLength: 0)
                         }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                     }.buttonStyle(.plain).accessibilityLabel(name(provider))
-                        .accessibilityAddTraits(preferences.draft.selectedProvider == provider ? .isSelected : [])
+                        .accessibilityAddTraits(selected ? .isSelected : [])
                         .accessibilityIdentifier("provider.select." + provider.rawValue)
                     Toggle(name(provider), isOn: enabledBinding(provider))
                         .controlSize(.mini).labelsHidden().modifier(NotebookToggleAccent(switchStyle: true))
                         .accessibilityLabel(text("Activar ", "Enable ") + name(provider))
                         .accessibilityIdentifier("provider.enabled." + provider.rawValue)
-                }.padding(.horizontal, 12).padding(.vertical, 16)
-                    .background {
-                        Rectangle().fill(preferences.draft.selectedProvider == provider ? Color.primary.opacity(0.06) : .clear)
-                    }
-                if provider != NotesAIProvider.allCases.last { Divider().opacity(0.5) }
+                }.padding(12).frame(minHeight: 56)
+                    .background(NotebookAccent.color(accent).opacity(selected ? 0.10 : 0), in: RoundedRectangle(cornerRadius: 12))
+                    .modifier(NotebookInputSurface(radius: 12, borderOpacity: 0.18))
+                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(NotebookAccent.color(accent).opacity(selected ? 0.5 : 0), lineWidth: 1))
             }
         }
     }
 
     private var editor: some View {
-        VStack(alignment: .leading, spacing: 22) {
+        VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 12) {
-                ProviderLogo(provider: preferences.draft.selectedProvider, size: 32)
+                ProviderLogo(provider: preferences.draft.selectedProvider, size: 28)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(name(preferences.draft.selectedProvider)).font(.title3.weight(.semibold))
                     Text(status(preferences.draft.selectedProvider)).font(.caption).foregroundStyle(.secondary)
@@ -300,14 +285,13 @@ struct ProviderPreferences: View {
                     checkTask = Task { await preferences.checkInstallation() }
                 } label: {
                     if preferences.checking { ProgressView().controlSize(.small) }
-                    else { Image(systemName: "arrow.clockwise") }
-                }.help(text("Actualizar estado y modelos", "Refresh status and models"))
+                    else { Image(systemName: "arrow.clockwise").foregroundStyle(.secondary) }
+                }.buttonStyle(.plain).frame(width: 32, height: 32).modifier(ControlHoverBackground()).help(text("Actualizar estado y modelos", "Refresh status and models"))
                     .accessibilityLabel(text("Actualizar estado y modelos", "Refresh status and models"))
                     .accessibilityIdentifier("provider.check")
             }
-            Divider()
-            VStack(alignment: .leading, spacing: 10) {
-                Text(text("Configuración", "Setup")).font(.headline)
+            Divider().opacity(0.35)
+            VStack(alignment: .leading, spacing: 8) {
                 Text(accountProvider ? text("Usa tu cuenta iniciada en el cliente del proveedor.", "Use your account signed in through the provider's client.") : text("OpenRouter · router gratuito · retención cero para apuntes reales.", "OpenRouter · free router · zero retention for real notes."))
                     .font(.callout).foregroundStyle(.secondary)
                 if accountProvider {
@@ -324,13 +308,17 @@ struct ProviderPreferences: View {
                     if preferences.draft.selectedProvider == .antigravity {
                         field("localharness_external", value: $preferences.draft.selected.harnessPath, identifier: "provider.harness")
                     }
-                    Button(text("Detectar instalación", "Detect installation")) { preferences.detectInstallation() }
+                    Button { preferences.detectInstallation() } label: {
+                        Label(text("Detectar instalación", "Detect installation"), systemImage: "magnifyingglass")
+                            .font(.callout).padding(.horizontal, 10).frame(height: 32)
+                            .modifier(NotebookInputSurface(radius: 8))
+                    }.buttonStyle(.plain)
                     Text(text("Utiliza una instalación existente. Palladium no instala programas ni copia credenciales.", "Uses an existing installation. Palladium does not install software or copy credentials."))
                         .font(.caption).foregroundStyle(.secondary)
                 }.padding(.top, 12)
-            }.font(.headline)
+            }.font(.callout.weight(.medium))
+            Divider().opacity(0.35)
             ProviderModelList(preferences: preferences)
-            Divider()
             if let error = preferences.error {
                 Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).font(.caption).textSelection(.enabled)
                     .accessibilityIdentifier("provider.error")
@@ -344,7 +332,8 @@ struct ProviderPreferences: View {
             TextField(title, text: Binding(get: { value.wrappedValue }, set: { updated in
                 value.wrappedValue = updated
                 preferences.invalidateSelection()
-            })).font(.callout).textFieldStyle(.roundedBorder)
+            })).font(.callout).textFieldStyle(.plain)
+                .padding(.horizontal, 11).frame(height: 34).modifier(NotebookInputSurface(radius: 9))
                 .accessibilityLabel(title).accessibilityIdentifier(identifier)
         }
     }

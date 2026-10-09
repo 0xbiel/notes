@@ -7,7 +7,7 @@ struct MediaInspector: View {
     @ObservedObject var model: Workbench
     @State private var filter = ""
     @State private var grouping = "Fecha"
-    private var filtered: [MediaJob] { media.jobs.filter { $0.notebookID == model.selectedNotebookID && (filter.isEmpty || ([$0.sourceName, $0.targetNote] + $0.unitTags + $0.examTags).joined(separator: " ").localizedCaseInsensitiveContains(filter)) } }
+    private var filtered: [MediaJob] { media.jobs.filter { !$0.syntheticFixture && $0.notebookID == model.selectedNotebookID && (filter.isEmpty || ([$0.sourceName, $0.targetNote] + $0.unitTags + $0.examTags).joined(separator: " ").localizedCaseInsensitiveContains(filter)) } }
     private var groups: [(String, [MediaJob])] {
         var result: [String: [MediaJob]] = [:]
         for job in filtered {
@@ -20,30 +20,31 @@ struct MediaInspector: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
-                    Picker("Agrupar", selection: $grouping) { ForEach(["Fecha", "Unidad", "Examen"], id: \.self) { Text($0) } }.labelsHidden()
+                    Picker("Agrupar", selection: $grouping) { ForEach(["Fecha", "Unidad", "Examen"], id: \.self) { Text(LocalizedStringKey($0)) } }.labelsHidden()
                     Spacer()
                     Button { model.importMedia() } label: { Image(systemName: "square.and.arrow.down") }.help("Importar audio o MP4").disabled(media.busy || media.isRecording)
                 }
                 TextField("Buscar grabaciones", text: $filter).textFieldStyle(.roundedBorder)
                 ForEach(groups, id: \.0) { group in
-                    Text(group.0).font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                    Group {
+                        if group.0 == "Sin unidad" || group.0 == "Sin examen" { Text(LocalizedStringKey(group.0)) }
+                        else { Text(group.0) }
+                    }.font(.caption.weight(.medium)).foregroundStyle(.secondary)
                     ForEach(group.1) { job in
                         Button { media.select(job.id) } label: {
                             HStack {
                                 Image(systemName: job.isMicrophone ? "mic" : "film")
-                                VStack(alignment: .leading, spacing: 4) { Text(job.sourceName).lineLimit(1); Text("\(timestamp(job.duration)) · \(job.stage.label)").font(.caption).foregroundStyle(.secondary) }
+                                VStack(alignment: .leading, spacing: 4) { Text(job.sourceName).lineLimit(1); (Text(timestamp(job.duration) + " · ") + Text(LocalizedStringKey(job.stage.label))).font(.caption).foregroundStyle(.secondary) }
                                 Spacer(); if job.id == media.selectedID { Image(systemName: "checkmark") }
                             }.padding(8).background(job.id == media.selectedID ? Color.accentColor.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 8))
                         }.buttonStyle(.plain).disabled(media.isRecording)
                     }
                 }
-                if let job = media.selected, job.notebookID == model.selectedNotebookID {
+                if let job = media.selected, !job.syntheticFixture, job.notebookID == model.selectedNotebookID {
                     Divider()
                     MediaDetail(media: media, job: job).id(job.id)
                 } else if filtered.isEmpty { Text("Importa audio/MP4 o pulsa Grabar. El audio se guarda en este Mac.").font(.callout).foregroundStyle(.secondary) }
                 if let error = media.error { Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
-                Divider()
-                Button("Ver sesiones de la demo") { model.selectedTab = "demo" }.font(.caption).buttonStyle(.borderless)
             }.padding(16)
         }
     }
@@ -62,21 +63,21 @@ struct MediaDetail: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(job.stage.label).font(.headline)
+            Text(LocalizedStringKey(job.stage.label)).font(.headline)
             if media.busy { ProgressView(value: job.progress); Button("Cancelar") { media.cancel() } }
             if media.isRecording { Text("\(timestamp(job.duration)) · Micrófono activo").foregroundStyle(.red) }
             if let live = job.live {
                 Text("\(live.processedChunks) de \(live.sealedChunks) fragmentos transcritos · \(live.backlog) pendientes").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 Text("Whisper local transcribe mientras grabas; al detener termina los fragmentos pendientes.").font(.caption).foregroundStyle(.secondary)
             }
-            Picker("Entrada", selection: $mode) { ForEach(InputMode.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.onChange(of: mode) { _, _ in save() }.disabled(media.busy || media.isRecording)
+            Picker("Entrada", selection: $mode) { ForEach(InputMode.allCases, id: \.self) { Text(LocalizedStringKey($0.rawValue)).tag($0) } }.onChange(of: mode) { _, _ in save() }.disabled(media.busy || media.isRecording)
             DatePicker("Fecha de clase", selection: $date, displayedComponents: [.date]).onChange(of: date) { _, _ in save() }.disabled(media.busy || media.isRecording)
             TextField("Unidad (separada por comas)", text: $units).textFieldStyle(.roundedBorder).onChange(of: units) { _, _ in save() }.disabled(media.busy || media.isRecording)
             TextField("Examen", text: $exams).textFieldStyle(.roundedBorder).onChange(of: exams) { _, _ in save() }.disabled(media.busy || media.isRecording)
             if job.audioRelativePath != nil {
                 HStack { Button { media.playPause() } label: { Image(systemName: media.playing ? "pause.fill" : "play.fill") }; Text("\(timestamp(media.position)) / \(timestamp(job.duration))").font(.caption.monospaced()) }
                 Slider(value: Binding(get: { min(media.position, max(job.duration, 1)) }, set: { media.seek($0) }), in: 0...max(job.duration, 1)).disabled(media.isRecording)
-                Button(job.completedChunks > 0 && job.stage != .transcribed ? "Reanudar transcripción" : "Transcribir en español") { media.transcribe() }
+                Button(LocalizedStringKey(job.completedChunks > 0 && job.stage != .transcribed ? "Reanudar transcripción" : "Transcribir en español")) { media.transcribe() }
                     .disabled(media.busy || media.isRecording || !media.whisperAvailable || job.stage == .transcribed)
                 if let configuration = media.whisperConfiguration(for: job) {
                     Text("\(configuration.model.displayName) · local · \(job.live == nil ? "audio importado" : "grabación en directo")").font(.caption).foregroundStyle(.secondary)
@@ -113,8 +114,8 @@ struct MediaTranscriptEditor: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Text(job.sourceName).font(.headline)
-                Text(job.syntheticFixture ? "Texto inventado para probar la IA. No procede de Whisper ni del micrófono." : "Escucha y corrige nombres, cifras o negaciones. Se conserva la salida original de Whisper en la grabación local.").font(.caption).foregroundStyle(.secondary)
-                if job.completedChunks > 1 { Text(job.live == nil ? "Revisa las uniones de los fragmentos de cinco minutos y las negaciones." : "Revisa las uniones de los fragmentos de 30 segundos y las negaciones.").font(.caption).foregroundStyle(.orange) }
+                Text(LocalizedStringKey(job.syntheticFixture ? "Texto inventado para probar la IA. No procede de Whisper ni del micrófono." : "Escucha y corrige nombres, cifras o negaciones. Se conserva la salida original de Whisper en la grabación local.")).font(.caption).foregroundStyle(.secondary)
+                if job.completedChunks > 1 { Text(LocalizedStringKey(job.live == nil ? "Revisa las uniones de los fragmentos de cinco minutos y las negaciones." : "Revisa las uniones de los fragmentos de 30 segundos y las negaciones.")).font(.caption).foregroundStyle(.orange) }
                 if let warning = job.asrQualityWarning { Text(warning).font(.caption).foregroundStyle(.orange) }
                 if job.transcript.isEmpty { Text("Transcribe esta grabación desde Grabaciones.").foregroundStyle(.secondary) }
                 if let ai = model.ai { AISendControls(ai: ai, job: job, selected: $selected) }

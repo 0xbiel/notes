@@ -100,6 +100,7 @@ enum NotebookAssistantText {
         "); respuesta rechazada.": "); response rejected.",
         "Codex no devolvió una respuesta completa.": "Codex did not return a complete response.",
         "Salida del proveedor demasiado grande.": "Provider output too large.",
+        "El proveedor agotó el tiempo de espera; la petición sigue guardada. Reintenta explícitamente.": "The provider timed out; your request is still saved. Retry explicitly.",
         "Petición cancelada o agotó 90 segundos; el lote sigue guardado. Reintenta explícitamente.": "The request was cancelled or timed out after 90 seconds; the batch is still saved. Retry explicitly.",
         "La configuración efectiva de OpenCode no conserva los límites; no se ha enviado contenido.": "The effective OpenCode configuration does not preserve the limits; no content was sent.",
         "Un agente auxiliar no está limitado al router gratuito; envío bloqueado.": "An auxiliary agent is not restricted to the free router; sending was blocked.",

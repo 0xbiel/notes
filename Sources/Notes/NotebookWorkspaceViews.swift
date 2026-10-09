@@ -7,29 +7,54 @@ struct NotebookHome: View {
     @ObservedObject var assistant: NotebookAssistantController
     @AppStorage("notes.language") private var language = "es"
     private var notebook: Notebook { model.currentNotebook }
-    private var empty: Bool { assistant.chat(notebook)?.messages.isEmpty != false && assistant.unrepresentedError(notebook) == nil }
+    private var empty: Bool { assistant.isEmptyChat(notebook) }
     var body: some View {
-        VStack(spacing: 18) {
-            NotebookChatPicker(notebook: notebook, assistant: assistant).padding(.top, 20)
+        VStack(spacing: empty ? 18 : 0) {
+            NotebookChatPicker(notebook: notebook, assistant: assistant)
+                .padding(.top, empty ? 20 : 8).padding(.bottom, empty ? 0 : 6)
             if empty {
                 Spacer(minLength: 20)
                 VStack(spacing: 10) {
-                    NotebookHomePicker(model: model)
+                    NotebookHomePicker(model: model, assistant: assistant)
                     Text(language == "en" ? "What would you like to work on?" : "¿En qué quieres trabajar?").foregroundStyle(.secondary)
                 }
             } else {
-                NotebookConversation(model: model, assistant: assistant).padding(16).frame(maxHeight: .infinity)
+                NotebookConversation(model: model, assistant: assistant, fullPage: true).frame(maxHeight: .infinity)
             }
             NotebookComposer(model: model, assistant: assistant, large: true).frame(maxWidth: 740)
+                .padding(.top, empty ? 0 : 4).padding(.horizontal, empty ? 0 : 30)
             if empty { Spacer(minLength: 35) }
-        }.padding(.horizontal, 30).padding(.bottom, 18)
+        }.padding(.horizontal, empty ? 30 : 0).padding(.bottom, empty ? 18 : 8)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
     }
 }
 
+struct ChatWorkingIndicator: View {
+    @AppStorage("notes.accent") private var accent = ""
+    @AppStorage("notes.language") private var language = "es"
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { context in
+            let color = NotebookAccent.color(accent)
+            let turn = reduceMotion ? 0 : context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.1) / 1.1
+            ZStack {
+                Circle().stroke(color.opacity(0.16), lineWidth: 2)
+                Circle().trim(from: 0.05, to: 0.8)
+                    .stroke(AngularGradient(colors: [color.opacity(0.15), color.opacity(0.7), color], center: .center, startAngle: .degrees(18), endAngle: .degrees(288)), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .rotationEffect(.degrees(turn * 360))
+            }.padding(1)
+        }
+        .frame(width: 16, height: 16)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(language == "en" ? "Working" : "Trabajando")
+        .help(language == "en" ? "Working" : "Trabajando")
+    }
+}
+
 struct NotebookHomePicker: View {
     @ObservedObject var model: Workbench
+    @ObservedObject var assistant: NotebookAssistantController
     @AppStorage("notes.accent") private var accent = ""
     @State private var titleHovered = false
     @AppStorage("notes.language") private var language = "es"
@@ -41,25 +66,28 @@ struct NotebookHomePicker: View {
     }
     var body: some View {
         Button { search = ""; presented = true } label: {
-            Text(model.currentNotebook.name)
-                .font(.system(size: 29, weight: .semibold, design: .rounded))
-                .multilineTextAlignment(.center)
-                .padding(.bottom, 9)
-                .overlay(alignment: .bottom) {
-                    GeometryReader { geometry in
-                        Path { path in
-                            path.move(to: CGPoint(x: 1.5, y: 1.5))
-                            path.addLine(to: CGPoint(x: max(1.5, geometry.size.width - 1.5), y: 1.5))
-                        }.stroke(style: StrokeStyle(lineWidth: 3, lineCap: .round, dash: [5, 9]))
-                            .foregroundStyle(titleHovered ? NotebookAccent.color(accent) : Color.secondary.opacity(0.75))
-                    }.frame(height: 3)
-                }
-                .contentShape(Rectangle())
+            HStack(spacing: 10) {
+                Text(model.currentNotebook.name)
+                    .font(.system(size: 29, weight: .semibold, design: .rounded))
+                    .multilineTextAlignment(.center)
+                    .padding(.bottom, 9)
+                    .overlay(alignment: .bottom) {
+                        GeometryReader { geometry in
+                            Path { path in
+                                path.move(to: CGPoint(x: 1.5, y: 1.5))
+                                path.addLine(to: CGPoint(x: max(1.5, geometry.size.width - 1.5), y: 1.5))
+                            }.stroke(style: StrokeStyle(lineWidth: 3, lineCap: .round, dash: [5, 9]))
+                                .foregroundStyle(titleHovered ? NotebookAccent.color(accent) : Color.secondary.opacity(0.75))
+                        }.frame(height: 3)
+                    }
+                    .contentShape(Rectangle())
+                if assistant.runningCount(in: model.currentNotebook) > 0 { ChatWorkingIndicator() }
+            }
         }.buttonStyle(.plain)
             .onHover { titleHovered = $0 }
             .accessibilityIdentifier("notebook.homePicker")
             .accessibilityLabel(language == "en" ? "Choose notebook" : "Elegir cuaderno")
-            .accessibilityValue(model.currentNotebook.name)
+            .accessibilityValue(model.currentNotebook.name + (assistant.runningCount(in: model.currentNotebook) > 0 ? (language == "en" ? " · Working" : " · Trabajando") : ""))
             .popover(isPresented: $presented, arrowEdge: .bottom) {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 7) {
@@ -76,20 +104,9 @@ struct NotebookHomePicker: View {
                         VStack(spacing: 2) {
                             ForEach(notebooks) { notebook in
                                 Button {
-                                    model.openNotebook(notebook.id)
-                                    model.notebookRevealRequest += 1
-                                    presented = false
+                                    if model.openNotebookForNewChat(notebook.id) { presented = false }
                                 } label: {
-                                    HStack(spacing: 7) {
-                                        Image(systemName: "book.closed").foregroundStyle(.secondary)
-                                        Text(notebook.name).font(.system(size: 13)).lineLimit(2).multilineTextAlignment(.leading)
-                                        Spacer(minLength: 0)
-                                        if model.selectedNotebookID == notebook.id {
-                                            Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
-                                        }
-                                    }.padding(.horizontal, 8).padding(.vertical, 6)
-                                        .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                                        .background(model.selectedNotebookID == notebook.id || hovered == notebook.id ? Color.primary.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 5))
+                                    notebookRowLabel(notebook)
                                 }.buttonStyle(.plain).onHover { hovered = $0 ? notebook.id : nil }
                                     .accessibilityIdentifier("notebook.choose." + notebook.id)
                                     .accessibilityAddTraits(model.selectedNotebookID == notebook.id ? .isSelected : [])
@@ -104,6 +121,20 @@ struct NotebookHomePicker: View {
                     .onExitCommand { presented = false }
             }
     }
+    private func notebookRowLabel(_ notebook: Notebook) -> some View {
+        let selected = model.selectedNotebookID == notebook.id
+        let working = assistant.runningCount(in: notebook) > 0
+        return HStack(spacing: 7) {
+            Image(systemName: "book.closed").foregroundStyle(.secondary)
+            Text(notebook.name).font(.system(size: 13)).lineLimit(2).multilineTextAlignment(.leading)
+            Spacer(minLength: 0)
+            if working { ChatWorkingIndicator() }
+            if selected { Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary) }
+        }.padding(.horizontal, 8).padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+            .background(selected || hovered == notebook.id ? Color.primary.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 5))
+    }
+
 }
 
 struct NotebookChatPicker: View {
@@ -124,13 +155,14 @@ struct NotebookChatPicker: View {
                 HStack(spacing: 7) {
                     Image(systemName: "bubble.left.and.bubble.right").foregroundStyle(.secondary)
                     Text(title).lineLimit(1).truncationMode(.tail).frame(width: titleWidth, alignment: .leading)
+                    if assistant.runningCount(in: notebook) > 0 { ChatWorkingIndicator() }
                     Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
                 }.padding(.horizontal, 10).padding(.vertical, 8)
                     .modifier(NotebookInputSurface(radius: 7))
             }.buttonStyle(.plain)
                 .accessibilityIdentifier("notebook.chatPicker")
                 .accessibilityLabel(language == "en" ? "Choose chat" : "Elegir chat")
-                .accessibilityValue(assistant.chat(notebook)?.title ?? "Chats")
+                .accessibilityValue((assistant.chat(notebook)?.title ?? "Chats") + (assistant.runningCount(in: notebook) > 0 ? (language == "en" ? " · \(assistant.runningCount(in: notebook)) working" : " · \(assistant.runningCount(in: notebook)) trabajando") : ""))
                 .popover(isPresented: $presented, arrowEdge: .bottom) {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 7) {
@@ -145,14 +177,11 @@ struct NotebookChatPicker: View {
                                 ForEach(chats) { chat in
                                     HStack(spacing: 2) {
                                     Button { assistant.selectChat(chat.id, notebook: notebook); presented = false } label: {
-                                        HStack(spacing: 7) {
-                                            Text(chat.title).font(.system(size: 13)).lineLimit(2).multilineTextAlignment(.leading)
-                                            Spacer(minLength: 0)
-                                            if assistant.chat(notebook)?.id == chat.id { Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary) }
-                                        }.padding(.horizontal, 8).padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                                            .background(assistant.chat(notebook)?.id == chat.id || hovered == chat.id ? Color.primary.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 5))
+                                        chatRowLabel(chat)
                                     }.buttonStyle(.plain).onHover { hovered = $0 ? chat.id : nil }
                                         .accessibilityAddTraits(assistant.chat(notebook)?.id == chat.id ? .isSelected : [])
+                                        .accessibilityValue(assistant.isRunning(notebook, chatID: chat.id) ? (language == "en" ? "Working" : "Trabajando") : "")
+                                        .accessibilityIdentifier("notebook.chat." + chat.id)
                                     Button {
                                         if confirmChatDeletion { pendingDeletion = chat }
                                         else {
@@ -161,7 +190,7 @@ struct NotebookChatPicker: View {
                                     } label: {
                                         Image(systemName: "trash").foregroundStyle(.secondary).frame(width: 26, height: 30)
                                     }.buttonStyle(.plain)
-                                        .disabled(assistant.runningNotebookID == notebook.id && assistant.runningChatID == chat.id)
+                                        .disabled(assistant.isRunning(notebook, chatID: chat.id))
                                         .accessibilityLabel((language == "en" ? "Delete chat: " : "Eliminar chat: ") + chat.title)
                                     }
                                 }
@@ -189,6 +218,19 @@ struct NotebookChatPicker: View {
             .frame(maxWidth: .infinity, alignment: .center)
             .accessibilityElement(children: .contain).accessibilityIdentifier("notebook.chatHeader")
     }
+    private func chatRowLabel(_ chat: NotebookChat) -> some View {
+        let selected = assistant.chat(notebook)?.id == chat.id
+        let working = assistant.isRunning(notebook, chatID: chat.id)
+        return HStack(spacing: 7) {
+            Text(chat.title).font(.system(size: 13)).lineLimit(2).multilineTextAlignment(.leading)
+            Spacer(minLength: 0)
+            if working { ChatWorkingIndicator() }
+            if selected { Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary) }
+        }.padding(.horizontal, 8).padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .background(selected || hovered == chat.id ? Color.primary.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 5))
+    }
+
 }
 
 struct NotebookConversation: View {
@@ -196,6 +238,15 @@ struct NotebookConversation: View {
     @AppStorage("notes.language") private var language = "es"
     @ObservedObject var model: Workbench
     @ObservedObject var assistant: NotebookAssistantController
+    var fullPage = false
+    @State private var activeTurnID: String?
+    @State private var messageFrames: [String: CGRect] = [:]
+    @State private var viewportHeight: CGFloat = 0
+    private var visibleTurnIDs: Set<String> {
+        NotebookChatTurn.visible(in: messageFrames, turns: turns, height: viewportHeight)
+    }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private var turns: [NotebookChatTurn] { NotebookChatTurn.collect(assistant.chat(model.currentNotebook)?.messages ?? []) }
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -218,9 +269,16 @@ struct NotebookConversation: View {
                             .background(.primary.opacity(message.role == "user" ? 0.055 : 0), in: RoundedRectangle(cornerRadius: 14))
                             .padding(.leading, message.role == "user" ? 50 : 0)
                             .id(message.id)
+                            .background {
+                                if fullPage {
+                                    GeometryReader { geometry in
+                                        Color.clear.preference(key: NotebookChatMessageFrames.self, value: [message.id: geometry.frame(in: .named("notebook-conversation"))])
+                                    }
+                                }
+                            }
                     }
-                    if assistant.runningNotebookID == model.currentNotebook.id, assistant.runningChatID == assistant.chat(model.currentNotebook)?.id {
-                        NotebookWorkLog(activities: assistant.activities, running: true).padding(.vertical, 8)
+                    if assistant.isRunning(model.currentNotebook) {
+                        NotebookWorkLog(activities: assistant.activities(for: model.currentNotebook), running: true).padding(.vertical, 8)
                     }
                     if let error = assistant.unrepresentedError(model.currentNotebook) {
                         HStack(alignment: .top, spacing: 8) {
@@ -229,12 +287,52 @@ struct NotebookConversation: View {
                                 .accessibilityLabel(language == "en" ? "Dismiss error" : "Cerrar error")
                         }.padding(4).accessibilityIdentifier("notebook.chatError")
                     }
-                    Color.clear.frame(height: 1).id("end").onAppear { followsLatest = true }.onDisappear { followsLatest = false }
-                }.frame(maxWidth: 740).frame(maxWidth: .infinity).padding(.horizontal, 8)
+                    Color.clear.frame(height: fullPage ? 48 : 1).id("end").onAppear { followsLatest = true }.onDisappear { followsLatest = false }
+                }.frame(maxWidth: 740).frame(maxWidth: .infinity).padding(.horizontal, fullPage ? 56 : 8).padding(.top, fullPage ? 12 : 0)
+            }
+            .coordinateSpace(name: "notebook-conversation")
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { viewportHeight = $0 }
+            .onPreferenceChange(NotebookChatMessageFrames.self) { frames in
+                messageFrames = frames
+                if let id = NotebookChatTurn.active(in: frames, turns: turns) { activeTurnID = id }
+            }
+            .scrollBounceBehavior(.always, axes: .vertical)
+            .modifier(NotebookChatEdgeFade(enabled: fullPage))
+            .overlay(alignment: .trailing) {
+                if fullPage && turns.count > 1 {
+                    NotebookChatNavigator(turns: turns, activeID: activeTurnID, visibleIDs: visibleTurnIDs) { id in
+                        followsLatest = false
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .top) }
+                    }.padding(.trailing, 18)
+                }
+            }
+            .onChange(of: assistant.chat(model.currentNotebook)?.id) { _, _ in
+                activeTurnID = nil; messageFrames = [:]; followsLatest = true; proxy.scrollTo("end", anchor: .bottom)
             }
             .onChange(of: assistant.chat(model.currentNotebook)?.messages.count) { _, _ in if followsLatest { proxy.scrollTo("end", anchor: .bottom) } }
-            .onChange(of: assistant.activities.count) { _, _ in if followsLatest { proxy.scrollTo("end", anchor: .bottom) } }
+            .onChange(of: assistant.activities(for: model.currentNotebook).count) { _, _ in if followsLatest { proxy.scrollTo("end", anchor: .bottom) } }
             .onAppear { proxy.scrollTo("end", anchor: .bottom) }
+        }
+    }
+}
+
+private struct NotebookChatEdgeFade: ViewModifier {
+    let enabled: Bool
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    func body(content: Content) -> some View {
+        content.mask {
+            GeometryReader { geometry in
+                if enabled && !reduceTransparency {
+                    let top = min(0.08, 12 / max(1, geometry.size.height))
+                    let bottom = min(0.08, 22 / max(1, geometry.size.height))
+                    LinearGradient(stops: [
+                        .init(color: .clear, location: 0),
+                        .init(color: .black, location: top),
+                        .init(color: .black, location: 1 - bottom),
+                        .init(color: .clear, location: 1)
+                    ], startPoint: .top, endPoint: .bottom)
+                } else { Color.black }
+            }
         }
     }
 }
@@ -251,9 +349,12 @@ struct NotebookComposer: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var notebook: Notebook { model.currentNotebook }
     private var draft: Binding<String> { Binding(get: { assistant.chat(notebook)?.draft ?? "" }, set: { assistant.setDraft($0, notebook: notebook) }) }
-    private var running: Bool { assistant.runningNotebookID == notebook.id }
+    private var running: Bool { assistant.isRunning(notebook) }
     var body: some View {
         VStack(spacing: 8) {
+            if !assistant.queued(notebook).isEmpty {
+                NotebookPromptQueue(model: model, assistant: assistant, notebook: notebook)
+            }
             if !large && showConversation {
                 VStack(spacing: 12) {
                     HStack(spacing: 8) {
@@ -264,7 +365,7 @@ struct NotebookComposer: View {
                     }
                     NotebookConversation(model: model, assistant: assistant)
                 }.padding(14).frame(height: 280)
-                    .modifier(NotebookInputSurface(radius: 18, floating: true, borderOpacity: 0.6))
+                    .modifier(NotebookInputSurface(radius: 18, floating: true, opaque: true, borderOpacity: 0.6))
                     .accessibilityIdentifier("notebook.floatingChat")
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
@@ -292,7 +393,7 @@ struct NotebookComposer: View {
                     .accessibilityLabel(language == "en" ? "Notebook assistant prompt" : "Mensaje al asistente del cuaderno")
                     .accessibilityIdentifier("notebook.composer")
                 HStack(spacing: 8) {
-                    if let ai = model.ai { NotebookModelControls(ai: ai, disabled: assistant.runningNotebookID != nil) { model.showPreferences = true } }
+                    if let ai = model.ai { NotebookModelControls(ai: ai, disabled: running) { model.showPreferences = true } }
                     Spacer(minLength: 4)
                     Button { choosingAttachments = true } label: { Image(systemName: "paperclip").frame(width: 28, height: 28) }
                         .buttonStyle(.plain).foregroundStyle(.secondary)
@@ -303,23 +404,30 @@ struct NotebookComposer: View {
                     if !large {
                         Button { showConversation.toggle() } label: { Image(systemName: showConversation ? "bubble.left.and.bubble.right.fill" : "bubble.left.and.bubble.right").frame(width: 28, height: 28) }
                             .buttonStyle(.plain).help(language == "en" ? "Toggle chat" : "Mostrar u ocultar chat").accessibilityLabel(language == "en" ? "Toggle chat" : "Mostrar u ocultar chat")
-                            .modifier(NotebookInputSurface(radius: 7))
+                            .foregroundStyle(.secondary)
                             .accessibilityAddTraits(showConversation ? .isSelected : [])
                             .accessibilityIdentifier("notebook.showChat")
                     }
+                    if running && (!draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !(assistant.chat(notebook)?.attachments ?? []).isEmpty) {
+                        Menu {
+                            Button(language == "en" ? "Queue after current request" : "Añadir a la cola") { model.submitNotebookPrompt() }
+                            Button(language == "en" ? "Steer now" : "Cambiar instrucciones ahora") { model.steerNotebookPrompt() }
+                        } label: { Image(systemName: "arrow.up").foregroundStyle(NotebookAccent.color(accent)).frame(width: 28, height: 28) }
+                        .menuStyle(.borderlessButton).fixedSize().help(language == "en" ? "Queue or steer" : "Añadir a la cola o dirigir")
+                    }
                     Button {
-                        if running { assistant.stop() } else { model.submitNotebookPrompt() }
+                        if running { assistant.stop(notebook: notebook) } else { model.submitNotebookPrompt() }
                     } label: {
                         Image(systemName: running ? "stop.fill" : "arrow.up")
                             .font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
                             .frame(width: 30, height: 30).background(NotebookAccent.color(accent), in: Circle())
                     }.buttonStyle(.plain)
-                        .disabled(!running && ((draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (assistant.chat(notebook)?.attachments ?? []).isEmpty) || assistant.runningNotebookID != nil || assistant.importingAttachments))
+                        .disabled(!running && ((draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (assistant.chat(notebook)?.attachments ?? []).isEmpty) || assistant.importingAttachments))
                         .accessibilityLabel(running ? (language == "en" ? "Stop" : "Detener") : (language == "en" ? "Send" : "Enviar"))
                         .accessibilityIdentifier("notebook.send")
                 }
             }.padding(large ? 18 : 12)
-                .modifier(NotebookInputSurface(radius: large ? 22 : 18, floating: !large, borderOpacity: 0.6))
+                .modifier(NotebookInputSurface(radius: large ? 22 : 18, floating: !large, opaque: !large, borderOpacity: 0.6))
                 .overlay(RoundedRectangle(cornerRadius: large ? 22 : 18).stroke(dropTargeted ? NotebookAccent.color(accent) : .clear, lineWidth: 2))
                 .dropDestination(for: URL.self) { urls, _ in
                     guard !assistant.importingAttachments, !urls.isEmpty else { return false }
@@ -341,7 +449,46 @@ struct NotebookComposer: View {
     }
 }
 
-private struct NotebookModelControls: View {
+private struct NotebookPromptQueue: View {
+    @ObservedObject var model: Workbench
+    @ObservedObject var assistant: NotebookAssistantController
+    let notebook: Notebook
+    @AppStorage("notes.language") private var language = "es"
+    @AppStorage("notes.accent") private var accent = ""
+    @State private var editingID: String?
+    @State private var editedText = ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "text.line.first.and.arrowtriangle.forward")
+                Text(language == "en" ? "Queued messages" : "Mensajes en cola").font(.caption.weight(.semibold))
+                Spacer()
+                if !assistant.isRunning(notebook) {
+                    Button(language == "en" ? "Resume" : "Continuar") { model.resumeNotebookQueue() }.buttonStyle(.plain).foregroundStyle(NotebookAccent.color(accent))
+                }
+            }.foregroundStyle(.secondary)
+            ForEach(assistant.queued(notebook)) { item in
+                HStack(spacing: 8) {
+                    if editingID == item.id {
+                        TextField("", text: $editedText, axis: .vertical).textFieldStyle(.plain)
+                        Button { assistant.updateQueued(notebook, id: item.id, text: editedText); editingID = nil } label: { Image(systemName: "checkmark") }
+                        Button { editingID = nil } label: { Image(systemName: "xmark") }
+                    } else {
+                        Text(item.text.isEmpty ? (language == "en" ? "Attached files" : "Archivos adjuntos") : item.text).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
+                        Button { assistant.moveQueued(notebook, id: item.id, offset: -1) } label: { Image(systemName: "chevron.up") }.help(language == "en" ? "Move earlier" : "Mover antes")
+                        Button { assistant.moveQueued(notebook, id: item.id, offset: 1) } label: { Image(systemName: "chevron.down") }.help(language == "en" ? "Move later" : "Mover después")
+                        Button { editedText = item.text; editingID = item.id } label: { Image(systemName: "pencil") }.help(language == "en" ? "Edit" : "Editar")
+                        Button { assistant.promoteQueued(notebook, id: item.id) } label: { Image(systemName: "arrow.up") }.help(language == "en" ? "Steer now" : "Cambiar instrucciones ahora")
+                        Button { assistant.removeQueued(notebook, id: item.id) } label: { Image(systemName: "xmark") }.help(language == "en" ? "Remove" : "Eliminar")
+                    }
+                }.font(.caption).buttonStyle(.plain).padding(8)
+                    .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+            }
+        }.padding(12).modifier(NotebookInputSurface(radius: 14, opaque: true))
+    }
+}
+
+struct NotebookModelControls: View {
     @ObservedObject var ai: AIController
     @StateObject private var preferences: ProviderPreferencesModel
     let disabled: Bool
@@ -362,7 +509,7 @@ private struct NotebookModelControls: View {
     private var selector: some View { AIModelSelector(preferences: preferences, manageProviders: manage) }
     @ViewBuilder private var reasoning: some View {
         if preferences.draft.selectedProvider == .codexCLI, let selected = preferences.selectedModel, !selected.reasoning.isEmpty {
-            AIOptionSelector(title: "Razonamiento", symbol: "brain", options: [.init(id: "auto", title: "Auto")] + selected.reasoning.map { .init(id: $0, title: $0.capitalized) }, selection: Binding(get: { preferences.draft.selected.reasoningEffort ?? "auto" }, set: { preferences.draft.selected.reasoningEffort = $0 == "auto" ? nil : $0 }))
+            AIReasoningSelector(levels: selected.reasoning, modelName: selected.name, fastMode: preferences.supportsFastMode ? Binding(get: { preferences.draft.selected.fastMode == true }, set: { preferences.draft.selected.fastMode = $0 }) : nil, selection: Binding(get: { preferences.draft.selected.reasoningEffort ?? "auto" }, set: { preferences.draft.selected.reasoningEffort = $0 == "auto" ? nil : $0 }))
         }
     }
 }
@@ -376,6 +523,7 @@ struct NotebookManagement: View {
     @State private var tab = "profile"
     @Environment(\.dismiss) private var dismiss
     @AppStorage("notes.language") private var language = "es"
+    @AppStorage("notes.accent") private var accent = ""
     init(model: Workbench, assistant: NotebookAssistantController, notebook: Notebook) {
         self.model = model; self.assistant = assistant; self.notebook = notebook
         _profile = State(initialValue: assistant.state(notebook).profile)
@@ -407,9 +555,13 @@ struct NotebookManagement: View {
                     }.padding(2)
                 }
                 HStack { Spacer(); Button { assistant.saveProfile(profile, notebook: notebook) } label: {
-                    Label(t("Guardar perfil", "Save profile"), systemImage: "checkmark").padding(.horizontal, 12).padding(.vertical, 9)
-                        .modifier(NotebookInputSurface(radius: 8))
-                }.buttonStyle(.plain).accessibilityIdentifier("notebook.saveProfile").disabled(profile == assistant.state(notebook).profile) }
+                    Label(t("Guardar perfil", "Save profile"), systemImage: "checkmark")
+                        .font(.callout.weight(.semibold)).foregroundStyle(.white)
+                        .padding(.horizontal, 18).padding(.vertical, 10)
+                        .background(NotebookAccent.color(accent), in: RoundedRectangle(cornerRadius: 10))
+                }.buttonStyle(.plain).accessibilityIdentifier("notebook.saveProfile")
+                    .disabled(profile == assistant.state(notebook).profile)
+                    .opacity(profile == assistant.state(notebook).profile ? 0.45 : 1) }
             } else { history }
             if let error = assistant.error { Text(NotebookAssistantText.display(error, language: language)).foregroundStyle(.orange).font(.caption) }
         }.padding(24).frame(minWidth: 480, idealWidth: 700, maxWidth: 800, minHeight: 460, idealHeight: 620)
@@ -463,5 +615,21 @@ struct NotebookManagement: View {
         let before = index > 0 ? timeline[index - 1].files[path].flatMap { try? assistant.store.content($0) } ?? "" : ""
         let after = checkpoint.files[path].flatMap { try? assistant.store.content($0) } ?? ""
         return NoteDiff.lines(before: before, after: after).filter { $0.prefix != " " }
+    }
+}
+
+/// Shared study control for Markdown and imported-source previews.
+struct NotebookAssistantToggle: View {
+    @ObservedObject var model: Workbench
+    @AppStorage("notes.language") private var language = "es"
+    private var title: String {
+        language == "en" ? (model.hideStudyComposer ? "Show assistant" : "Hide assistant") :
+            (model.hideStudyComposer ? "Mostrar asistente" : "Ocultar asistente")
+    }
+    var body: some View {
+        Button { model.hideStudyComposer.toggle() } label: {
+            Image(systemName: model.hideStudyComposer ? "bubble.left" : "bubble.left.fill").frame(width: 26, height: 26)
+        }.buttonStyle(.plain).modifier(ControlHoverBackground()).help(title)
+            .accessibilityLabel(title).accessibilityIdentifier("notebook.toggleAssistant")
     }
 }

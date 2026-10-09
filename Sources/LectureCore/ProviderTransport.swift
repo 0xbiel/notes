@@ -53,7 +53,7 @@ public struct NotesProviderTransport: Sendable {
     }
 
     func invoke(_ configuration: AIProviderConfiguration, arguments: [String], input: URL? = nil, directory: URL? = nil) async throws -> Data {
-        let command = NotesProcess()
+        let command = NotesProcess(timeoutInterval: input == nil ? ProviderRequestLimits.diagnostic : ProviderRequestLimits.generation)
         command.process.executableURL = URL(fileURLWithPath: configuration.executablePath)
         command.process.arguments = arguments
         command.process.currentDirectoryURL = directory ?? store.root

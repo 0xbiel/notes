@@ -7,6 +7,7 @@ struct ProviderModelList: View {
     @State private var customID = ""
     @State private var showCustom = false
     @AppStorage("notes.language") private var language = "es"
+    @AppStorage("notes.accent") private var accent = ""
     private func text(_ spanish: String, _ english: String) -> String { language == "en" ? english : spanish }
     private var rows: [AIProviderModel] {
         preferences.models.filter { query.isEmpty || ($0.name + " " + $0.id).localizedCaseInsensitiveContains(query) }
@@ -27,8 +28,19 @@ struct ProviderModelList: View {
                         .font(.callout)
                 }.buttonStyle(.plain).accessibilityIdentifier("provider.model.default")
             }
+            if let chosen, preferences.draft.selectedProvider == .codexCLI, !chosen.reasoning.isEmpty {
+                AIReasoningSelector(levels: chosen.reasoning, modelName: chosen.name, fastMode: preferences.supportsFastMode ? Binding(get: { preferences.draft.selected.fastMode == true }, set: { preferences.draft.selected.fastMode = $0 }) : nil, selection: Binding(get: { preferences.draft.selected.reasoningEffort ?? "auto" }, set: { preferences.draft.selected.reasoningEffort = $0 == "auto" ? nil : $0 }))
+                    .accessibilityIdentifier("provider.reasoning")
+            }
             if !preferences.models.isEmpty {
-                TextField(text("Buscar modelos…", "Search models…"), text: $query).textFieldStyle(.roundedBorder)
+                HStack(spacing: 7) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField(text("Buscar modelos…", "Search models…"), text: $query).textFieldStyle(.plain)
+                    if !query.isEmpty {
+                        Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                            .buttonStyle(.plain).accessibilityLabel(text("Limpiar búsqueda", "Clear search"))
+                    }
+                }.padding(.horizontal, 11).frame(height: 34).modifier(NotebookInputSurface(radius: 9))
                     .accessibilityIdentifier("provider.models.search")
                 VStack(spacing: 0) {
                     ForEach(rows) { model in
@@ -37,34 +49,25 @@ struct ProviderModelList: View {
                     }
                     if rows.isEmpty { Text(text("No hay modelos coincidentes", "No matching models")).font(.callout).foregroundStyle(.secondary).padding(12) }
                 }
-                .background(.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 9))
-                .overlay(RoundedRectangle(cornerRadius: 9).stroke(.separator.opacity(0.3)))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .modifier(NotebookInputSurface(radius: 10, borderOpacity: 0.18))
             } else if !preferences.checking {
                 Text(text("Actualiza para cargar los modelos disponibles.", "Refresh to load available models.")).font(.callout).foregroundStyle(.secondary)
             }
-            if let chosen, preferences.draft.selectedProvider == .codexCLI, !chosen.reasoning.isEmpty {
-                AIOptionSelector(title: text("Razonamiento", "Reasoning"), symbol: "brain", options:
-                    [.init(id: "auto", title: "Auto")] + chosen.reasoning.map { effort in
-                        .init(id: effort, title: effort == "xhigh" ? "Extra High" : effort.capitalized,
-                              badge: effort == chosen.defaultReasoningEffort ? text("Predeterminado", "Default") : nil)
-                    }, selection: Binding(get: { preferences.draft.selected.reasoningEffort ?? "auto" }, set: { preferences.draft.selected.reasoningEffort = $0 == "auto" ? nil : $0 }))
-                    .accessibilityIdentifier("provider.reasoning")
-            }
             if preferences.draft.selectedProvider == .codexCLI {
-                if preferences.supportsFastMode {
-                AIOptionSelector(title: text("Velocidad", "Speed"), symbol: "bolt", options: [
-                    .init(id: "standard", title: text("Estándar", "Standard")), .init(id: "fast", title: "Fast")
-                ], selection: Binding(get: { preferences.draft.selected.fastMode == true ? "fast" : "standard" }, set: { preferences.draft.selected.fastMode = $0 == "fast" }))
-                    .help(text("Fast consume más créditos", "Fast uses more credits")).accessibilityIdentifier("provider.fast-mode")
-                }
                 DisclosureGroup(text("Añadir modelo personalizado", "Add custom model"), isExpanded: $showCustom) {
                     HStack {
-                        TextField(text("Identificador del modelo", "Model identifier"), text: $customID).textFieldStyle(.roundedBorder)
+                        TextField(text("Identificador del modelo", "Model identifier"), text: $customID).textFieldStyle(.plain)
+                            .padding(.horizontal, 11).frame(height: 34).modifier(NotebookInputSurface(radius: 9))
                             .accessibilityIdentifier("provider.custom-model")
-                        Button(text("Añadir", "Add")) {
+                        Button {
                             preferences.addCustomModel(customID.trimmingCharacters(in: .whitespacesAndNewlines))
                             if preferences.error == nil { customID = "" }
-                        }.disabled(customID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        } label: {
+                            Text(text("Añadir", "Add")).font(.callout.weight(.medium))
+                                .foregroundStyle(.white).padding(.horizontal, 12).frame(height: 34)
+                                .background(NotebookAccent.color(accent), in: RoundedRectangle(cornerRadius: 9))
+                        }.buttonStyle(.plain).disabled(customID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }.padding(.top, 8)
                 }.font(.callout)
             }
@@ -81,22 +84,21 @@ struct ProviderModelList: View {
         return HStack(alignment: .top, spacing: 10) {
             Button { preferences.selectModel(model.id) } label: {
                 HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: selected ? "checkmark.circle.fill" : "circle").foregroundStyle(selected ? Color.accentColor : .secondary)
+                    Image(systemName: selected ? "checkmark.circle.fill" : "circle").foregroundStyle(selected ? NotebookAccent.color(accent) : .secondary)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(model.name).font(.callout.weight(.medium)).foregroundStyle(.primary)
                         Text(model.id).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
-                        if !model.reasoning.isEmpty { Text(text("Razonamiento", "Reasoning")).font(.caption2).foregroundStyle(.secondary) }
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }.contentShape(Rectangle())
             }.buttonStyle(.plain).disabled(hidden)
                 .accessibilityLabel(text("Elegir ", "Select ") + model.name).accessibilityIdentifier("provider.model." + model.id)
                 .help(model.detail)
             Button { preferences.favorite(model.id) } label: {
-                Image(systemName: favorite ? "star.fill" : "star").foregroundStyle(favorite ? Color.yellow : .secondary)
-            }.buttonStyle(.plain).help(text("Favorito", "Favorite"))
+                Image(systemName: favorite ? "star.fill" : "star").foregroundStyle(favorite ? NotebookAccent.color(accent) : .secondary)
+            }.buttonStyle(.plain).frame(width: 26, height: 26).modifier(ControlHoverBackground()).help(text("Favorito", "Favorite"))
                 .accessibilityLabel(text("Favorito ", "Favorite ") + model.name)
             Button { preferences.hide(model.id) } label: { Image(systemName: hidden ? "eye.slash" : "eye").foregroundStyle(.secondary) }
-                .buttonStyle(.plain).disabled(selected).help(text("Mostrar u ocultar", "Show or hide"))
+                .buttonStyle(.plain).frame(width: 26, height: 26).modifier(ControlHoverBackground()).disabled(selected).help(text("Mostrar u ocultar", "Show or hide"))
                 .accessibilityLabel(text("Visibilidad ", "Visibility ") + model.name)
             Menu {
                 Button(text("Mover arriba", "Move up")) { preferences.move(model.id, offset: -1) }
@@ -106,6 +108,8 @@ struct ProviderModelList: View {
                 }
             } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                 .accessibilityLabel(text("Opciones de ", "Options for ") + model.name)
-        }.padding(10).opacity(hidden ? 0.55 : 1)
+        }.padding(.horizontal, 12).padding(.vertical, 10)
+            .background(NotebookAccent.color(accent).opacity(selected ? 0.08 : 0))
+            .opacity(hidden ? 0.55 : 1)
     }
 }

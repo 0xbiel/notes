@@ -37,7 +37,7 @@ final class ProviderRPCConnection: @unchecked Sendable {
         try process.run()
         started = true
         let timeout = DispatchSource.makeTimerSource(queue: .global())
-        timeout.schedule(deadline: .now() + 90); timeout.setEventHandler { [weak self] in self?.cancel() }; timeout.resume()
+        timeout.schedule(deadline: .now() + ProviderRequestLimits.generation); timeout.setEventHandler { [weak self] in self?.cancel() }; timeout.resume()
         timer = timeout
     }
 

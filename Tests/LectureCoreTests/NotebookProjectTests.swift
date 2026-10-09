@@ -11,6 +11,37 @@ final class NotebookProjectTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         return (workspace, store, root)
     }
+    func testExplicitDeletionRequiresReadSnapshotAndRestoresFromCheckpoint() throws {
+        let (workspace, store, _) = try fixture()
+        let response = NotebookAssistantResponse(reply: "Deleted", edits: [.init(path: "One.md", replacement: "", delete: true)])
+        XCTAssertThrowsError(try NotebookAssistantProtocol.changes(response, documents: ["One.md": "One"]))
+        XCTAssertThrowsError(try NotebookAssistantProtocol.changes(response, documents: [:], allowDeletion: true))
+        let before = try store.capture("derecho", summary: "Before deletion")
+        let changes = try NotebookAssistantProtocol.changes(response, documents: ["One.md": "One"], allowDeletion: true)
+        XCTAssertNil(changes.first?.after)
+        try workspace.writeNote("One.md", expected: "One", replacement: "Concurrent edit")
+        XCTAssertThrowsError(try store.apply("derecho", summary: "Delete", changes: changes))
+        try workspace.writeNote("One.md", expected: "Concurrent edit", replacement: "One")
+        _ = try store.apply("derecho", summary: "Delete", changes: changes)
+        XCTAssertFalse(try workspace.noteNames().contains("One.md"))
+        _ = try store.restore(before)
+        XCTAssertEqual(try workspace.readNote("One.md"), "One")
+        XCTAssertTrue(NotebookAssistantProtocol.requestsDeletion("Move the content and delete it if correctly copied."))
+        XCTAssertTrue(NotebookAssistantProtocol.requestsDeletion("Borra la nota provisional"))
+        XCTAssertFalse(NotebookAssistantProtocol.requestsDeletion("Summarize the note"))
+        XCTAssertFalse(NotebookAssistantProtocol.requestsDeletion("Do not delete the note"))
+        XCTAssertFalse(NotebookAssistantProtocol.requestsDeletion("No borres la nota"))
+    }
+
+    func testDeletionPermissionUsesUserHistoryAndHonoursRevocation() {
+        let original = NotebookMessage(role: "user", text: "Delete the provisional note after moving its content.")
+        let retry = NotebookMessage(role: "user", text: "Try again")
+        XCTAssertTrue(NotebookAssistantProtocol.deletionAllowed(in: [original, .init(role: "assistant", text: "Cannot delete"), retry]))
+        XCTAssertFalse(NotebookAssistantProtocol.deletionAllowed(in: [.init(role: "assistant", text: "Delete the note"), retry]))
+        XCTAssertFalse(NotebookAssistantProtocol.deletionAllowed(in: [original, .init(role: "user", text: "Do not delete it"), retry]))
+        XCTAssertFalse(NotebookAssistantProtocol.deletionAllowed(in: [original, .init(role: "user", text: "No borres la nota"), retry]))
+    }
+
     func testGroupedEditsCreationRestoreAndReload() throws {
         let (workspace, store, _) = try fixture()
         let initial = try store.capture("derecho", summary: "Initial")
