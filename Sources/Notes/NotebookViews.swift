@@ -30,11 +30,13 @@ extension Workbench {
     }
     func openNote(_ name: String, heading: String? = nil) {
         guard let workspace, projects?.owner(of: name)?.archivedAt == nil else { return }
+        if let selectedNote, selectedNote != name { saveDraft(named: selectedNote) }
         do {
             let disk = try workspace.readNote(name)
             let dirty = drafts[name] != nil && drafts[name] != bases[name]
             if !dirty { drafts[name] = disk; bases[name] = disk }
             selectedNote = name
+            selectedFile = nil; selectedFolder = nil
             draftText = drafts[name] ?? disk
             previewHeading = heading
             if let notebook = notebooks.first(where: { !$0.rootPrefix.isEmpty && name.hasPrefix($0.rootPrefix + "/") }) { selectedNotebookID = notebook.id }
@@ -58,15 +60,32 @@ extension Workbench {
         draftVersion += 1
         statusText = ""
         persistDrafts()
+        autosaveTasks.removeValue(forKey: name)?.cancel()
+        if hasDraft(for: name) {
+            autosaveTasks[name] = Task { [weak self] in
+                do { try await Task.sleep(for: .milliseconds(700)) }
+                catch { return }
+                guard !Task.isCancelled else { return }
+                self?.saveDraft(named: name)
+            }
+        }
     }
     func persistDrafts() {
         do { try workspace?.writeStorage("editor-drafts.json", data: JSONEncoder().encode(DraftArchive(drafts: drafts, bases: bases))) }
         catch { errorText = error.localizedDescription }
     }
     func saveDraft() {
-        guard let editor, let name = selectedNote, let before = bases[name], isDirty else { return }
+        guard let name = selectedNote else { return }
+        saveDraft(named: name)
+    }
+    func flushAutosave() {
+        for name in drafts.keys.sorted() where hasDraft(for: name) { saveDraft(named: name) }
+    }
+    func saveDraft(named name: String) {
+        autosaveTasks.removeValue(forKey: name)?.cancel()
+        guard let editor, let before = bases[name], let after = drafts[name],
+              hasDraft(for: name), projects?.owner(of: name)?.archivedAt == nil else { return }
         perform {
-            let after = draftText
             _ = try editor.save(filename: name, expected: before, replacement: after)
             // Manual edits invalidate pending proposals instead of rebasing them
             // silently onto text the user has changed.
@@ -84,6 +103,7 @@ extension Workbench {
     }
     func undoEditor() {
         guard let editor else { return }
+        flushAutosave()
         perform {
             if isDirty || editor.history.last(where: { !$0.undone && $0.superseded != true }).map({ hasDraft(for: $0.filename) }) == true {
                 throw ReplayError.invalidResponse("Guarda el borrador de la nota afectada antes de deshacer.")
@@ -127,6 +147,7 @@ extension Workbench {
             }
         }
         notes = try workspace.noteNames()
+        libraryFiles = try workspace.fileNames()
         folders = try workspace.folderNames()
         statusText = "Creado"
     }

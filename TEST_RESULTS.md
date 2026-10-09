@@ -1,3 +1,68 @@
+## 2026-10-09 — spreadsheet cell selection and clipboard
+
+- Added click, drag and Shift-click rectangular cell selection, with accent highlighting, arrow/Tab navigation, typing/Enter/double-click editing and Delete to clear cells.
+- Cmd-C/Cmd-V use Excel-compatible tab-separated values, including quoted multiline cells. Paste grows rows/columns as needed, splits intersecting merged cells and preserves surrounding document text. Stale source snapshots reject paste.
+- Right-click row/column deletion targets the clicked cell; the table editing sheet also opens at that cell.
+- `scripts/test.sh`: 157 discovered, 146 passed, 11 optional integrations skipped, zero failures. Added coverage for range copy/paste, quoted multiline/tab content, middle-row and middle-column deletion, surrounding text and stale snapshots.
+- Rebuilt and packaged app; strict code-signature verification passed for the extracted ZIP.
+- Native invented-workspace QA verified drag-selection of a 2×2 block, Cmd-C/Cmd-V into another location with table expansion, and deletion of a middle row and middle column.
+
+## 2026-10-09 — connected source lookup and visual table editing
+
+- Removed the app BOE fetcher, article request schema, profile toggle and source-marker expansion. Notebook Codex requests enable harness web search while retaining read-only execution constraints. Legacy profile data loads without the removed flag. Live provider search was not exercised.
+- Notebook management uses glass Profile/History pills and a matching circular close button, with accessibility transparency/motion fallbacks.
+- Tables stay rendered in Edit mode. Click cells to type, add rows with “+” below and columns with “+” on the right, and use the context menu to delete rows/columns/tables, merge or split cells. Markdown/HTML persistence, undo and autosave remain supported.
+- `scripts/test.sh`: 156 discovered, 145 passed, 11 optional integration tests skipped, zero failures. Coverage includes provider-preserved citations, legacy profiles, harness arguments, visual table cell edits, row/column actions, surrounding text, undo and stale snapshots.
+- Build/package succeeded; strict code-signature verification passed for the app and extracted ZIP.
+- Final icon-only layout: five table tests passed; native checks verified bottom “+” adds a row and right “+” adds a column. Final rebuilt ZIP passed extracted strict signature verification.
+- Native QA with an invented workspace verified inline cell typing, footer row addition, context-menu row deletion, autosaved versions, Profile/History selection and close. A copied stale QA history was reset before the final autosave check.
+
+# Toggle accents — October 9, 2026
+
+- Enabled switches now explicitly draw the notebook accent, including chat-deletion confirmation and provider switches. Checkbox/button toggles also receive the shared accent. Native switch styling previously stayed gray; the compact switch style retains an accessible switch representation, disabled styling and Reduce Motion support.
+- Native invented-demo checks verified a purple confirmation switch, its accessible on/off state and click toggling in both directions. Build passes. The full suite was not repeated for this presentation change; prior width validation remains below.
+
+# Reading-width preview selector — October 9, 2026
+
+- Replaced the dropdown with two clickable horizontal page previews showing Standard and Wide text columns. The wider interiors use the same native text-background color as the document. Selection has an accent border, checkmark and accessibility selected state.
+- Native demo checks verified both previews, clicking Standard and its resulting selected state. Signed build passes; the underlying width behavior retains the preceding 158-test validation. No extra tests were added for this presentation-only change.
+
+# Text-document reading width — October 9, 2026
+
+- Offline suite: 158 discovered tests, 147 passed, 11 opt-in integrations skipped, zero failures. Width regressions cover centered Standard text/table caps, narrow-window wrapping, unchanged Wide margins and exact Markdown preservation. An initial forced text-container resize exposed a reentrant AppKit layout crash; relying on native width tracking resolves it, and the complete suite passes.
+- Native settings checks in a separate invented workspace verified the Wide default, Standard selection, returning to the note, and the centered paragraph/table column. The choice is persisted in `notes.documentWidth` and applies in Edit and View. Narrow viewport sizing is covered by the native text-view regression.
+- Signed build and ZIP/extracted-bundle strict verification pass. Logs: `/tmp/palladium-reading-width-tests.log`, `/tmp/palladium-reading-width-build.log`. No external inference or microphone capture.
+
+# PDF controls and document accent — October 9, 2026
+
+- Offline suite: 157 discovered tests, 146 passed, 11 opt-in integrations skipped, zero failures. Native PDFKit tests cover arbitrary/invalid zoom, both fit modes, resize behavior, page bounds and selection, two-page layout and invalid PDFs. Accent regressions cover AppKit link-display attributes, SwiftUI chat-link colors and text insertion carets, including window isolation.
+- Native checks in an independent invented workspace verified custom 137.5% zoom, page 2 selection, fit height and two-page fit width. The final PDF opens at the first page with two toolbar rows: document title/actions and PDF controls. Open and Show in Finder are also present for Markdown. A custom purple accent visibly matches document links, the editor insertion caret and Send.
+- Signed build and packaged/extracted ZIP verification pass. Current logs: `/tmp/palladium-pdf-final-tests.log`, `/tmp/palladium-document-controls-build.log`. No external AI call or microphone capture was performed.
+
+# Library, tables and chat layout — October 9, 2026
+
+- Offline suite: 154 discovered tests, 143 passed, 11 opt-in integrations skipped, zero failures. Added regressions cover byte-preserving file/folder imports, clipboard drafts, notebook/chat/profile/attachment copies, collisions, ownership boundaries, links, invalid Markdown imports, mixed-file Trash/restore, Markdown/HTML tables, row and column edits, merged cells, layout height, exact source preservation, undo/redo and accent links.
+- Native checks in a separate invented workspace verified ⌘C/⌘V for files and whole notebooks, Finder folder paste including nested binary/PDF/CSV/Markdown files, and the in-app PDF viewer. The supplied salary table renders in documents and notebook chat. Short and long chat names remain grouped with New chat at the top center; long names truncate at the cap.
+- The document chat toggle opens a floating panel above the input with a matching subtle border. The notebook conversation has no surrounding floating card. Composer borders were visually checked in both locations. Table merging and undo are covered by native text-view/model tests; interactive table-sheet actions and a live request cancellation were not rechecked through automation in this pass.
+- The app build and ZIP pass strict signature checks, including the extracted archive. No external AI request or microphone capture was performed for this pass. Local logs: `/tmp/palladium-final-tests.log`, `/tmp/palladium-library-build.log`. Demo workspaces and clipboard/import artifacts remain ignored.
+
+# Document assistant, autosave and model catalogs — October 9, 2026
+
+- Offline suite: 145 discovered tests, 134 passed, 11 opt-in integrations skipped, zero failures. New regressions cover debounced autosave, switching/lifecycle flush, conflict recovery, undo, persisted/coalesced provider catalogs, stale-cache retention, underlining, underscore/nested emphasis, and scroll restoration through initial layout and floating-panel inset changes.
+- Native checks used a separate invented workspace. The document input floats over the note; its chat/activity panel opens above it and toggles closed with the existing button. Notebook profile fields share the input/selector surface. The top-right manual-save control is removed.
+- Inline code uses the fenced block's fill and border as a compact rounded surface. Native light/dark render checks include multiple snippets and wrapping, with the source-preservation suite still passing. The updated app was reopened and visually checked against a fenced block in the invented demo. Render evidence remains ignored under `qa/inline-code/`; suite log: `/tmp/palladium-inline-code-tests.log`.
+- Editing through the native interface saved the exact Markdown to disk without a save command, survived switching notes and relaunch, and retained literal code tags. `<u>organismo autónomo</u>` rendered underlined in the document and chat; `_hola_` rendered italic after the update. A long note starts at its beginning after relaunch.
+- All three installed provider catalogs populated the local cache. Reopening and relaunching preserved its hash and immediately showed saved models. These checks sent no notebook prompt and started no microphone. Hourly refresh and failure backoff use deterministic clock/fetch tests rather than an hour-long native wait.
+- Signed app build, ZIP packaging and strict signature verification for the build and extracted archive pass. Logs remain local under `/tmp/palladium-refinements-final-tests.log` and `/tmp/palladium-refinements-final-build.log`; the invented workspace and provider metadata are ignored by Git.
+
+# Palladium branding validation — October 8, 2026
+
+- Offline suite: 136 discovered tests, 125 passed, 11 opt-in tests skipped, zero failures.
+- Signed `Palladium.app` build and `Palladium-local.zip` packaging pass. Strict code-signature checks pass for both the build and the ZIP extracted with `ditto`.
+- Bundle metadata retains the existing identifier and `Notes` executable, embeds a separate invented demo workspace, and registers `Palladium.icns`. The icon includes all ten standard/Retina representations from 16 to 1024 pixels.
+- Native checks verified the Palladium window name, app menu, About/Hide/Quit labels, About-panel icon and Finder icon. Small-size previews of the mark and icon were inspected at 16, 32, 64 and 128 pixels on light and dark backgrounds. Direct Dock inspection timed out in native automation and remains unverified.
+- The transparent metal artwork was generated with built-in imagegen. AppKit composes the pearl-white tile and system-font wordmark for clean, deterministic exports. Source prompt and reusable export scripts are included; personal workspace data is excluded.
+
 # Notebook workspace validation — October 8, 2026
 
 - Current offline suite: 126 discovered tests, 116 passed, 10 opt-in hardware/external-service tests skipped, zero failures.

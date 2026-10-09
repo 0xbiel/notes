@@ -1,6 +1,6 @@
 # Provider integration and UI handoff
 
-Notes includes native provider setup, provider logos, live model catalogs, favorites, visibility controls, and reasoning selection within its existing preferences layout. The Notes sidebar, top bar, themes, and navigation retain their own styling.
+Palladium includes native provider setup, provider logos, live model catalogs, favorites, visibility controls, and reasoning selection within its existing preferences layout. The Palladium sidebar, top bar, themes, and navigation retain their own styling.
 
 ## Reference reviewed
 
@@ -12,13 +12,14 @@ Read-only T3 Code source checkout: `pingdotgg/t3code`, commit `d6f47ff9725f0902b
 - `apps/server/src/provider/antigravityAuthSupport.ts`: native ACP executable, profile and harness environment, existing personal-account authentication.
 - `packages/effect-acp/test/fixtures/antigravity-initialize.json`: ACP version and agent identity.
 
-Notes adapts these transport patterns to Swift; it does not import T3's SDK, UI, account configuration, or credentials. OpenCode retains Notes' existing CLI adapter and free-router policy rather than adopting T3's SDK transport.
+Palladium adapts these transport patterns to Swift; it does not import T3's SDK, UI, account configuration, or credentials. OpenCode retains Palladium's existing CLI adapter and free-router policy rather than adopting T3's SDK transport.
 
 ## Settings contract for the UI worker
 
 - `AIProviderSettings` holds `selectedProvider` and separate `openCode`, `codexCLI`, and `antigravity` configurations. `selected` reads or updates the selected configuration.
 - Configuration fields: `executablePath`, `model`, `homePath`, `harnessPath`, `accountSendingAllowed`. Paths are absolute, and models are identifiers, not shell arguments. `default` leaves the account provider's model selection to its runtime.
 - `AIController.providerSettings` exposes the local settings. Save through `saveProviderSettings(_:)`, which validates and refuses changes during a running request. Persistence is workspace-local `session-storage/ai-provider-settings.json` with no credential fields.
+- `AIController.modelCatalogs` shares catalogs across selectors and preferences. Last successful metadata persists in `session-storage/ai-model-catalogs.json` and appears immediately after reopening or relaunching. Catalogs refresh after one hour; concurrent requests share a fetch, failures retain the last catalog with a five-minute retry delay, and the installation check forces a refresh. Provider executable, home and harness paths identify matching catalogs; changing the model or reasoning does not invalidate them. Disabled providers are not fetched.
 - `NotesProviderTransport.diagnose(_:)` is asynchronous and read-only: effective-config verification for OpenCode, version/help for Codex, ACP initialize for Antigravity. It does not authenticate, send a prompt, install, or open a browser. A passing diagnostic does not prove login, quota, model availability, or generation.
 - All providers default to enabled in new settings and can be disabled individually in Providers. Existing saved opt-outs are preserved. `accountSendingAllowed` gates every provider, including OpenCode; current settings are checked before queued sends. Account providers retain their own pricing and retention terms.
 - Each queued batch persists its configuration and model. Later settings changes cannot redirect it; old batches without a configuration still use the OpenCode route. Review/apply/undo remains unchanged.
@@ -54,6 +55,6 @@ Thinking, speed, editing autonomy and language use the same compact titled popov
 
 ## Text notebook requests
 
-`NotesProviderTransport.sendNotebook` uses the existing selected account and a separate `NotebookTextRequest` / `NotebookAssistantResponse` protocol. Read requests and BOE article queries are structured data processed by Notes; provider shell, filesystem, browser and MCP tools remain disabled. Only notebook-relative paths and selected text context are sent. The local controller enforces notebook ownership, loaded-file anchors, source markers, cancellation, and unchanged draft/disk snapshots before committing.
+`NotesProviderTransport.sendNotebook` uses the existing selected account and a separate `NotebookTextRequest` / `NotebookAssistantResponse` protocol. Document read requests are structured data processed by Palladium. Notebook Codex requests use the connected harness with live web search enabled; shell execution, direct filesystem writes and MCP tools remain disabled. Other providers retain their own available source capabilities. Only notebook-relative paths and selected text context are sent. The local controller enforces notebook ownership, loaded-file anchors, cancellation, and unchanged draft/disk snapshots before committing.
 
 Codex receives the notebook JSON output schema. Antigravity uses its existing isolated text generation connection. OpenCode verifies a notebook-specific system prompt and 12,000-token output ceiling while retaining its existing privacy/zero-price policy. The transcription prompt, schema and output ceiling remain separate. Successful text edits produce one local checkpoint; provider errors never trigger account or model fallback.

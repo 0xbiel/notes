@@ -6,7 +6,7 @@ public struct NotesProviderTransport: Sendable {
 
     public func diagnose(_ configuration: AIProviderConfiguration) async throws -> AIProviderDiagnostic {
         try configuration.validate()
-        guard FileManager.default.isExecutableFile(atPath: configuration.executablePath) else { throw MediaError.invalid("No se encuentra el ejecutable. Selecciona una instalación existente; Notes no instala proveedores.") }
+        guard FileManager.default.isExecutableFile(atPath: configuration.executablePath) else { throw MediaError.invalid("No se encuentra el ejecutable. Selecciona una instalación existente; Palladium no instala proveedores.") }
         switch configuration.provider {
         case .openCode:
             let harness = OpenRouterHarness(store: store, executablePath: configuration.executablePath)
@@ -15,7 +15,7 @@ public struct NotesProviderTransport: Sendable {
         case .codexCLI:
             let version = try await invoke(configuration, arguments: ["--version"])
             let help = String(decoding: try await invoke(configuration, arguments: ["exec", "--help"]), as: UTF8.self)
-            guard help.contains("--ignore-user-config"), help.contains("--ignore-rules"), help.contains("--ephemeral"), help.contains("--output-schema"), help.contains("--json") else { throw MediaError.invalid("Codex CLI no ofrece el transporte aislado requerido. Actualiza su instalación fuera de Notes.") }
+            guard help.contains("--ignore-user-config"), help.contains("--ignore-rules"), help.contains("--ephemeral"), help.contains("--output-schema"), help.contains("--json") else { throw MediaError.invalid("Codex CLI no ofrece el transporte aislado requerido. Actualiza su instalación fuera de Palladium.") }
             return .init(message: String(decoding: version, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) + " · exec JSON disponible · no comprueba login ni envía texto")
         case .antigravity:
             return try await AntigravityTextTransport(store: store, configuration: configuration).diagnose()
@@ -69,9 +69,9 @@ public struct NotesProviderTransport: Sendable {
         } onCancel: { command.cancel() }
     }
 
-    public static func codexArguments(_ configuration: AIProviderConfiguration, schema: URL, instructions: String = OpenRouterHarness.systemPrompt) -> [String] {
+    public static func codexArguments(_ configuration: AIProviderConfiguration, schema: URL, instructions: String = OpenRouterHarness.systemPrompt, allowWebSearch: Bool = false) -> [String] {
         var arguments = ["exec", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check", "--sandbox", "read-only", "--json", "--color", "never", "--output-schema", schema.path,
-                         "--config", "approval_policy=\"never\"", "--config", "web_search=\"disabled\"", "--config", "mcp_servers={}",
+                         "--config", "approval_policy=\"never\"", "--config", allowWebSearch ? "web_search=\"live\"" : "web_search=\"disabled\"", "--config", "mcp_servers={}",
                          "--config", "project_doc_max_bytes=0", "--config", "skills.bundled.enabled=false", "--config", "skills.include_instructions=false",
                          "--config", "developer_instructions=" + tomlString(instructions)]
         for feature in ["shell_tool", "unified_exec", "multi_agent", "multi_agent_v2", "apps", "hooks", "browser_use", "computer_use", "code_mode", "code_mode_only", "code_mode_prewarm", "skill_search"] {

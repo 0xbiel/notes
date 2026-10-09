@@ -25,6 +25,7 @@ struct AISendControls: View {
                 }.font(.caption)
             }
             Toggle("Enviar automáticamente nuevos fragmentos de esta grabación", isOn: Binding(get: { ai.automaticMediaIDs.contains(job.id) }, set: { ai.setAutomatic($0, media: job) }))
+                .modifier(NotebookToggleAccent())
                 .font(.caption).disabled(job.syntheticFixture || job.asrQualityWarning != nil || (job.transcript.isEmpty && job.stage != .transcribing && job.stage != .recording))
             Text("Prepara propuestas aproximadamente cada 5 minutos, al terminar una frase. Adelanta el envío si hay mucho texto y espera hasta 7,5 minutos si hay poco. Incluye hasta dos fragmentos previos de contexto. Recibe la transcripción local durante la grabación o desde archivos importados. Se desactiva al cerrar, ante un error o si Whisper repite frases.").font(.caption2).foregroundStyle(.secondary)
             if let error = ai.error { Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }

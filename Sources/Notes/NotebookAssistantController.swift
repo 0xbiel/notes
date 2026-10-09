@@ -9,13 +9,13 @@ final class NotebookAssistantController: ObservableObject {
     @Published private(set) var activities: [NotebookActivity] = []
     @Published private(set) var runningChatID: String?
     private func report(_ title: String) { progress = title; activities.append(.init(title)) }
-    @Published var error: String?
+    @Published var error: String? { didSet { recordedErrorNotebookID = nil } }
+    private var recordedErrorNotebookID: String?
     @Published var revision = 0
     @Published private(set) var importingAttachments = false
     let store: NotebookProjectStore
     let transport: NotesProviderTransport
     var generate: ((NotebookTextRequest, AIProviderConfiguration) async throws -> NotebookAssistantResponse)?
-    var fetchArticle: ((NotebookArticleQuery) async throws -> String)?
     private var worker: Task<Void, Never>?
 
     init(store: NotebookProjectStore) throws {
@@ -34,10 +34,19 @@ final class NotebookAssistantController: ObservableObject {
         }
         store.didChange = { [weak self] in self?.revision += 1 }
     }
-    func state(_ notebook: Notebook) -> NotebookProjectState { states[notebook.id] ?? .init(legal: notebook.id == "derecho") }
+    func state(_ notebook: Notebook) -> NotebookProjectState { states[notebook.id] ?? .init() }
     func chat(_ notebook: Notebook) -> NotebookChat? {
         let state = state(notebook)
         return state.chats.first { $0.id == state.activeChatID }
+    }
+    func unrepresentedError(_ notebook: Notebook) -> String? {
+        guard let error else { return nil }
+        if recordedErrorNotebookID != nil { return nil }
+        let last = chat(notebook)?.messages.last
+        return last?.role == "error" && last?.text == error ? nil : error
+    }
+    func composerError(_ notebook: Notebook) -> String? {
+        recordedErrorNotebookID == nil || recordedErrorNotebookID == notebook.id ? error : nil
     }
     private func save(_ state: NotebookProjectState, id: String) throws {
         var persisted = state
@@ -52,7 +61,9 @@ final class NotebookAssistantController: ObservableObject {
         do { var value = state(notebook); value.profile = profile; try save(value, id: notebook.id) }
         catch { self.error = error.localizedDescription }
     }
+    func installCopiedState(_ state: NotebookProjectState, notebook: Notebook) throws { try save(state, id: notebook.id) }
     @discardableResult func newChat(_ notebook: Notebook) throws -> String {
+        error = nil
         var value = state(notebook)
         if let empty = value.chats.first(where: { $0.messages.isEmpty && $0.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && ($0.attachments ?? []).isEmpty }) {
             value.activeChatID = empty.id; try save(value, id: notebook.id); return empty.id
@@ -82,6 +93,7 @@ final class NotebookAssistantController: ObservableObject {
             var value = state(notebook)
             guard value.chats.contains(where: { $0.id == id }) else { return }
             value.activeChatID = id; try save(value, id: notebook.id)
+            error = nil
         } catch { self.error = error.localizedDescription }
     }
     func setDraft(_ text: String, notebook: Notebook) {
@@ -201,7 +213,6 @@ final class NotebookAssistantController: ObservableObject {
                 guard let self else { return }
                 defer { self.runningNotebookID = nil; self.runningChatID = nil; self.progress = ""; self.worker = nil }
                 do {
-                    var fetched: [NotebookArticleQuery] = []
                     var redundantRounds = 0
                     for _ in 0..<6 {
                         try Task.checkCancellation()
@@ -210,7 +221,7 @@ final class NotebookAssistantController: ObservableObject {
                         if let generate = self.generate { response = try await generate(request, configuration) }
                         else { response = try await self.transport.sendNotebook(request, configuration: configuration, images: images) }
                         try Task.checkCancellation()
-                        if !response.readFiles.isEmpty || !response.articles.isEmpty {
+                        if !response.readFiles.isEmpty {
                             guard response.edits.isEmpty else { throw MediaError.invalid("El asistente pidió contexto y cambios a la vez.") }
                             var advanced = false
                             for path in response.readFiles {
@@ -218,23 +229,14 @@ final class NotebookAssistantController: ObservableObject {
                                 guard let text = texts[path] else { throw MediaError.invalid("Documento solicitado inexistente: \(path)") }
                                 if request.documents[path] == nil { self.report("Leyendo · \(path)"); request.documents[path] = text; advanced = true }
                             }
-                            for query in response.articles where !fetched.contains(query) {
-                                guard request.profile.resolveArticles else { throw MediaError.invalid("Activa las fuentes BOE en el perfil del cuaderno.") }
-                                self.report("Consultando BOE · Art. \(query.article)")
-                                let source: String
-                                if let fetch = self.fetchArticle { source = try await fetch(query) }
-                                else { source = try await BOEArticleSource().fetch(query) }
-                                request.sources.append(source); request.sourceQueries.append(query); fetched.append(query); advanced = true
-                            }
-                            request.contextUpdate = "Requested retrieval completed. Full documents available: " + request.documents.keys.sorted().joined(separator: ", ") + ". Verified article sources: \(request.sources.count). Use these contents now; do not request them again. Return edits, or ask the user if the law or task is unclear."
+                            request.contextUpdate = "Requested retrieval completed. Full documents available: " + request.documents.keys.sorted().joined(separator: ", ") + ". Use these contents now; do not request them again. Return edits, or ask the user if the task is unclear."
                             if !advanced {
                                 redundantRounds += 1
                                 guard redundantRounds < 2 else { throw MediaError.invalid("El asistente repitió una petición de contexto. Acota la petición y vuelve a enviar.") }
                             }
                             continue
                         }
-                        let legalReference = prompt.range(of: "(?i)\\b(?:art\\.?|artículo|articulo)\\s*\\d+", options: .regularExpression) != nil
-                        let changes = try NotebookAssistantProtocol.changes(response, documents: request.documents, sources: request.sources, requiresArticle: request.profile.resolveArticles && legalReference)
+                        let changes = try NotebookAssistantProtocol.changes(response, documents: request.documents)
                         try Task.checkCancellation()
                         self.report("Validando y guardando \(changes.count) archivo(s)…")
                         let checkpoint = try apply(changes, request.documents, prompt)
@@ -246,7 +248,10 @@ final class NotebookAssistantController: ObservableObject {
                 } catch {
                     let message = Task.isCancelled ? "Petición cancelada." : error.localizedDescription
                     self.error = message
-                    do { try self.append(.init(role: "error", text: message, activities: self.activities), notebook: notebook, chatID: chat.id) }
+                    do {
+                        try self.append(.init(role: "error", text: message, activities: self.activities), notebook: notebook, chatID: chat.id)
+                        self.recordedErrorNotebookID = notebook.id
+                    }
                     catch { self.error = "\(message) · No se pudo guardar el mensaje: \(error.localizedDescription)" }
                 }
             }
@@ -259,7 +264,8 @@ extension Workbench {
     var currentNotebook: Notebook { activeNotebooks.first { $0.id == selectedNotebookID } ?? activeNotebooks.first ?? Notebook(id: "empty", name: "", rootPrefix: "__empty__") }
     func openNotebook(_ id: String) {
         guard activeNotebooks.contains(where: { $0.id == id }) else { return }
-        persistDrafts(); selectedNotebookID = id; selectedNote = nil; previewHeading = nil; showPreferences = false
+        if let selectedNote { saveDraft(named: selectedNote) }
+        persistDrafts(); selectedNotebookID = id; selectedNote = nil; selectedFile = nil; selectedFolder = nil; previewHeading = nil; showPreferences = false
     }
     func submitNotebookPrompt() {
         guard let assistant, let projects, let ai else { return }
@@ -302,13 +308,14 @@ extension Workbench {
     func refreshProjectFiles(_ paths: [String]) {
         guard let workspace else { return }
         do {
-            notes = try workspace.noteNames(); folders = try workspace.folderNames()
+            notes = try workspace.noteNames(); libraryFiles = try workspace.fileNames(); folders = try workspace.folderNames()
             for path in paths {
                 let text = notes.contains(path) ? try workspace.readNote(path) : nil
                 drafts[path] = text; bases[path] = text
             }
             persistDrafts()
             if let selectedNote, !notes.contains(selectedNote) { openNotebook(selectedNotebookID) }
+            if let selectedFile, !libraryFiles.contains(selectedFile) { openNotebook(selectedNotebookID) }
             refreshEditorFromDisk()
             try reconcileProjectHistory()
             if let target = engine?.session.targetNote, paths.contains(target) {

@@ -28,6 +28,7 @@ copy-*.json
 *.zip
 *.png
 !Resources/ProviderIcons/*.png
+!Resources/Branding/*.png
 *.jpg
 .env*
 credentials*

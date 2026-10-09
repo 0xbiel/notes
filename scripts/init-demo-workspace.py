@@ -14,7 +14,7 @@ if any(p.is_symlink() for p in [root, *root.parents]):
 root.mkdir(parents=True, exist_ok=True)
 for folder in ['copied-course', 'session-storage', 'protected-original']:
     (root / folder).mkdir()
-text = '# Inicio\n\nEsta nota es inventada. Puedes crear cuadernos y notas desde Notes.\n'
+text = '# Inicio\n\nEsta nota es inventada. Puedes crear cuadernos y notas desde Palladium.\n'
 (root / 'copied-course/Inicio.md').write_text(text)
 manifest = {'originalRoot': str(root / 'protected-original'), 'copyRoot': str(root / 'copied-course'),
             'originalHashes': {}, 'copyHashes': {'Inicio.md': hashlib.sha256(text.encode()).hexdigest()}}

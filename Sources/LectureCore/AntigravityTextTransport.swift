@@ -14,7 +14,7 @@ public struct AntigravityTextTransport: Sendable {
                   (attributes[.size] as? NSNumber)?.intValue ?? 64_001 <= 64_000 else { throw MediaError.invalid("Perfil Antigravity con configuración no verificable.") }
             guard let object = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any],
                   let entries = (object[name == "hooks.json" ? "hooks" : "mcpServers"] ?? object) as? [String: Any], entries.isEmpty else {
-                throw MediaError.invalid("Antigravity tiene hooks o MCP globales. Usa un perfil independiente sin herramientas; Notes no modifica tu perfil.")
+                throw MediaError.invalid("Antigravity tiene hooks o MCP globales. Usa un perfil independiente sin herramientas; Palladium no modifica tu perfil.")
             }
         }
     }
@@ -62,7 +62,7 @@ public struct AntigravityTextTransport: Sendable {
     func generate(_ prompt: String, images: [NotebookInputImage] = [], checked: @escaping @Sendable () async -> Void = {}) async throws -> String {
         try configuration.validateSending()
         let token = URL(fileURLWithPath: configuration.homePath).appendingPathComponent("antigravity-acp/acp_token.json")
-        guard FileManager.default.fileExists(atPath: token.path) else { throw MediaError.invalid("Inicia sesión en Antigravity desde su cliente; Notes no abre login ni copia credenciales.") }
+        guard FileManager.default.fileExists(atPath: token.path) else { throw MediaError.invalid("Inicia sesión en Antigravity desde su cliente; Palladium no abre login ni copia credenciales.") }
         let connection = try connection()
         return try await withTaskCancellationHandler {
             let prepared = try await Task.detached {

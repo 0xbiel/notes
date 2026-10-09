@@ -23,6 +23,9 @@ struct WorkbenchView: View {
                     HStack(spacing: 12) {
                         noteLocation
                         Spacer(minLength: 8)
+                        if let path = model.selectedNote ?? model.selectedFile {
+                            DocumentFileActions(model: model, path: path)
+                        }
                         if model.selectedNote != nil { NoteToolbar(model: model) }
                     }
                     .padding(.horizontal, 18).frame(height: 58)
@@ -34,10 +37,6 @@ struct WorkbenchView: View {
                             Divider()
                             SessionInspector(model: model).frame(width: 320)
                         }
-                    }
-                    if model.selectedNote != nil, let assistant = model.assistant, model.layout != "preview" || !model.hideStudyComposer {
-                        NotebookComposer(model: model, assistant: assistant).frame(maxWidth: 740)
-                            .padding(.horizontal, 18).padding(.top, 8).padding(.bottom, 12)
                     }
                     if model.assistant == nil || (model.selectedNote != nil && model.layout == "preview" && model.hideStudyComposer && model.media?.isRecording == true) {
                         HStack { Spacer(); ListeningDock(model: model) }.padding(12)
@@ -55,8 +54,8 @@ struct WorkbenchView: View {
                 .shadow(color: .black.opacity(0.12), radius: 5, y: 2)
                 .padding(8)
                 .overlay(alignment: .top) {
-                    if let media = model.media, let assistant = model.assistant, let ai = model.ai {
-                        NotebookStatusIndicator(media: media, assistant: assistant, ai: ai).padding(.top, 2)
+                    if !model.chatHistoryVisible, let media = model.media, let assistant = model.assistant, let ai = model.ai {
+                        NotebookStatusIndicator(media: media, assistant: assistant, ai: ai).padding(.top, 17)
                     }
                 }
             }
@@ -66,6 +65,13 @@ struct WorkbenchView: View {
                 .frame(maxHeight: .infinity)
                 .background { if chrome.compact { NotebookThemeBackground() } }
                 .clipShape(RoundedRectangle(cornerRadius: chrome.compact ? CompactLayout.sidebarRadius : 0))
+                .overlay {
+                    if chrome.compact {
+                        RoundedRectangle(cornerRadius: CompactLayout.sidebarRadius)
+                            .strokeBorder(.separator.opacity(0.6), lineWidth: 1)
+                            .allowsHitTesting(false)
+                    }
+                }
                 .shadow(color: .black.opacity(chrome.compact ? 0.18 : 0), radius: 14, x: 4)
                 .padding(.horizontal, chrome.compact ? CompactLayout.horizontalInset : 0)
                 .padding(.vertical, chrome.compact ? CompactLayout.verticalInset : 0)
@@ -76,6 +82,7 @@ struct WorkbenchView: View {
 
         }
         .tint(.gray).accentColor(.gray)
+        .background(NotebookAccentCaret())
         .environment(\.locale, Locale(identifier: language))
         .background(NotebookThemeBackground(blendsBehindWindow: true))
         .background(CompactWindowBridge(chrome: chrome, modalPresented: model.showQuickOpen || model.creationKind != nil || model.errorText != nil || model.showNotebookManagement))
@@ -128,12 +135,34 @@ struct WorkbenchView: View {
 
     private var noteLocation: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(model.selectedNote.map { URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent } ?? notebookName)
+            Text(model.selectedLibraryPath.map { URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent } ?? notebookName)
                 .font(.system(size: 13, weight: .medium)).lineLimit(1)
-            if model.selectedNote != nil { Text(notebookName).font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
+            if model.selectedLibraryPath != nil { Text(notebookName).font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
         }.frame(minWidth: 100, alignment: .leading)
     }
 
+}
+
+struct DocumentFileActions: View {
+    @ObservedObject var model: Workbench
+    let path: String
+    @AppStorage("notes.language") private var language = "es"
+    var body: some View {
+        HStack(spacing: 14) {
+            Button {
+                if path == model.selectedNote { model.flushAutosave(); guard !model.isDirty else { return } }
+                if let url = try? model.workspace?.fileURL(path) { NSWorkspace.shared.open(url) }
+            } label: {
+                Label(language == "en" ? "Open" : "Abrir", systemImage: "arrow.up.forward.app")
+            }.help(language == "en" ? "Open in the default app" : "Abrir en la aplicación predeterminada")
+                .accessibilityIdentifier("document.openExternal")
+            Button {
+                if let url = try? model.workspace?.fileURL(path) { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+            } label: {
+                Label(language == "en" ? "Show in Finder" : "Mostrar en Finder", systemImage: "folder")
+            }.accessibilityIdentifier("document.showInFinder")
+        }.buttonStyle(.plain).font(.caption).foregroundStyle(.secondary).fixedSize()
+    }
 }
 
 struct NoteToolbar: View {
@@ -183,8 +212,6 @@ struct NoteToolbar: View {
                         .modifier(ControlHoverBackground()).help(model.hideStudyComposer ? "Mostrar asistente" : "Ocultar asistente")
                         .accessibilityLabel(model.hideStudyComposer ? "Mostrar asistente" : "Ocultar asistente").accessibilityIdentifier("notebook.toggleAssistant")
                 }
-                Button { model.saveDraft() } label: { Label(model.isDirty ? "Guardar cambios" : "Guardado", systemImage: model.isDirty ? "square.and.arrow.down" : "checkmark").frame(width: 26, height: 26) }
-                    .modifier(ControlHoverBackground()).disabled(!model.isDirty).help("Guardar la copia · ⌘S")
                 Menu {
                         Button("Marcar/desmarcar tarea") { NSApp.sendAction(#selector(MarkdownTextView.toggleMarkdownTask(_:)), to: nil, from: nil) }.keyboardShortcut("l", modifiers: [.command, .shift])
                     Section("Formato") {
@@ -192,6 +219,7 @@ struct NoteToolbar: View {
                         Button("Cursiva") { NSApp.sendAction(#selector(MarkdownTextView.toggleMarkdownItalic(_:)), to: nil, from: nil) }.keyboardShortcut("i")
                         Button("Código en línea") { NSApp.sendAction(#selector(MarkdownTextView.toggleMarkdownCode(_:)), to: nil, from: nil) }.keyboardShortcut("k", modifiers: [.command, .shift])
                     }.disabled(model.layout != "edit" || model.selectedNote == nil)
+                    Button("Insertar tabla…") { NSApp.sendAction(#selector(MarkdownTextView.insertMarkdownTable(_:)), to: nil, from: nil) }.disabled(model.layout != "edit" || model.selectedNote == nil)
                     Divider()
                     Button("Revisar edición") { model.inspectorHistoryMode = "editor"; model.selectedTab = "changes"; model.showInspector = true }
                         .disabled(!model.isDirty && model.editor?.history.isEmpty != false)
@@ -208,7 +236,7 @@ struct NoteToolbar: View {
     }
 }
 
-enum NotebookSidebarSelection: Hashable { case notebook(String), note(String) }
+enum NotebookSidebarSelection: Hashable { case notebook(String), note(String), folder(String) }
 
 struct CourseSidebar: View {
     @ObservedObject var model: Workbench
@@ -218,10 +246,6 @@ struct CourseSidebar: View {
     @State private var expanded: Set<String> = ["derecho"]
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("Biblioteca").font(.system(size: 20, weight: .semibold, design: .rounded))
-                Spacer()
-            }.padding(.horizontal, 16).padding(.bottom, 10)
             HStack(spacing: 8) {
                 HStack(spacing: 6) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
@@ -241,17 +265,18 @@ struct CourseSidebar: View {
                 RecordingSidebar(model: model, media: media, query: query, filter: section)
             } else {
             List(selection: Binding<NotebookSidebarSelection?>(get: {
-                model.selectedNote.map { .note($0) } ?? .notebook(model.selectedNotebookID)
+                model.librarySelection
             }, set: { value in
                 switch value {
                 case .notebook(let id): model.openNotebook(id)
-                case .note(let path): if model.notes.contains(path) { model.openNote(path) }
+                case .note(let path): if model.libraryFiles.contains(path) { model.openLibraryFile(path) }
+                case .folder(let path): model.selectLibraryFolder(path)
                 case nil: break
                 }
             })) {
                 ForEach(model.activeNotebooks) { notebook in
                     DisclosureGroup(isExpanded: Binding(get: { expanded.contains(notebook.id) || !query.isEmpty }, set: { value in if value { expanded.insert(notebook.id) } else { expanded.remove(notebook.id) } })) {
-                        let filenames = model.noteNames(in: notebook).filter { query.isEmpty || $0.localizedCaseInsensitiveContains(query) }
+                        let filenames = model.fileNames(in: notebook).filter { query.isEmpty || $0.localizedCaseInsensitiveContains(query) }
                         let relativeNames = filenames.map { notebook.rootPrefix.isEmpty ? $0 : String($0.dropFirst(notebook.rootPrefix.count + 1)) }
                         let folders = query.isEmpty ? model.folderNames(in: notebook).map { notebook.rootPrefix.isEmpty ? $0 : String($0.dropFirst(notebook.rootPrefix.count + 1)) } : []
                         ForEach(NotebookNode.tree(notes: relativeNames, folderNames: folders, prefix: notebook.rootPrefix.isEmpty ? "" : notebook.rootPrefix + "/")) { node in
@@ -263,27 +288,41 @@ struct CourseSidebar: View {
                                 Image(systemName: "book.closed.fill").foregroundStyle(.secondary)
                                 Text(notebook.name).font(.callout.weight(.semibold)).lineLimit(2)
                                 Spacer(minLength: 2)
-                                Text("\(model.noteNames(in: notebook).count)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                                Text("\(model.fileNames(in: notebook).count)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                             }.padding(.vertical, 6).padding(.horizontal, 2).contentShape(Rectangle())
                         }.buttonStyle(.plain)
                             .accessibilityIdentifier("notebook.open." + notebook.id)
-                            .accessibilityAddTraits(model.selectedNotebookID == notebook.id && model.selectedNote == nil ? .isSelected : [])
+                            .accessibilityAddTraits(model.selectedNotebookID == notebook.id && model.selectedLibraryPath == nil ? .isSelected : [])
                         .contextMenu {
                             Button("Nueva nota") { prepareCreation("nota", folder: notebook.rootPrefix, notebook: notebook) }
                             Button("Nueva carpeta") { prepareCreation("carpeta", folder: notebook.rootPrefix, notebook: notebook) }
+                            Button("Importar archivos…") { model.chooseLibraryImport(into: notebook.rootPrefix, notebookID: notebook.id) }.disabled(!model.canManageFiles)
+                            Divider()
+                            Button("Copiar cuaderno") { model.copyLibraryItem(.notebook(notebook.id)) }.disabled(!model.canManageFiles)
+                            Button("Pegar") { model.pasteLibraryItems(into: notebook.rootPrefix, notebookID: notebook.id) }.disabled(!model.canManageFiles)
                             Divider()
                             Button("Eliminar cuaderno", role: .destructive) { model.deleteNotebook(notebook) }.disabled(!model.canManageFiles)
                         }
                     }
                     .tag(NotebookSidebarSelection.notebook(notebook.id))
+                    .dropDestination(for: URL.self) { urls, _ in
+                        guard model.canManageFiles, !urls.isEmpty else { return false }
+                        model.importLibraryFiles(urls, into: notebook.rootPrefix, notebookID: notebook.id); return true
+                    }
                 }
             }.listStyle(.sidebar).scrollContentBackground(.hidden).background(NeutralSidebarSelection())
+                .contextMenu {
+                    Button("Nuevo cuaderno") { model.creationInitialName = ""; model.creationKind = "cuaderno" }
+                    Button("Pegar") { model.pasteLibraryItems(into: model.libraryDestination, notebookID: model.currentNotebook.id) }.disabled(!model.canManageFiles)
+                }
             }
             HStack {
                 Menu {
                     Button("Nueva nota") { model.creationInitialName = ""; model.creationKind = "nota" }
                     Button("Nueva carpeta") { model.creationInitialName = ""; model.creationKind = "carpeta" }
                     Button("Nuevo cuaderno") { model.creationInitialName = ""; model.creationKind = "cuaderno" }
+                    Divider()
+                    Button("Importar archivos…") { model.chooseLibraryImport(into: model.libraryDestination, notebookID: model.currentNotebook.id) }.disabled(!model.canManageFiles || model.activeNotebooks.isEmpty)
                 } label: { Image(systemName: "plus").frame(width: 28, height: 34).contentShape(Rectangle()) }
                     .menuStyle(.borderlessButton).fixedSize()
                     .help("Añadir nota, carpeta o cuaderno").accessibilityLabel("Añadir")
@@ -293,7 +332,9 @@ struct CourseSidebar: View {
                 Spacer()
                 NotebookTrashMenu(model: model)
             }.padding(.horizontal, 20).padding(.vertical, 12)
-        }.onChange(of: model.selectedNotebookID) { _, id in expanded.insert(id) }
+        }.background(NotebookLibraryClipboard(model: model))
+            .contextMenu { Button("Nuevo cuaderno") { model.creationInitialName = ""; model.creationKind = "cuaderno" } }
+            .onChange(of: model.selectedNotebookID) { _, id in expanded.insert(id) }
 
     }
     private var filterMenu: some View {
@@ -338,28 +379,42 @@ struct CourseTreeRow: View {
                         .contextMenu {
                             Button("Nueva nota aquí") { createInFolder(node.path) }
                             Button("Nueva carpeta aquí") { model.createFolderInside(node.path) }
+                            Button("Importar archivos…") { if let owner = model.projects?.owner(of: node.path + "/placeholder") { model.chooseLibraryImport(into: node.path, notebookID: owner.id) } }.disabled(!model.canManageFiles)
+                            Divider()
+                            Button("Copiar carpeta") { model.copyLibraryItem(.folder(node.path)) }.disabled(!model.canManageFiles)
+                            Button("Pegar") { if let owner = model.projects?.owner(of: node.path + "/placeholder") { model.pasteLibraryItems(into: node.path, notebookID: owner.id) } }.disabled(!model.canManageFiles)
+                            LibraryMoveMenu(model: model, path: node.path, folder: true)
                             Divider()
                             Button("Eliminar carpeta", role: .destructive) { model.deleteItem(node.path, folder: true) }.disabled(!model.canManageFiles)
                         }
                 }
+                .tag(NotebookSidebarSelection.folder(node.path))
+                .dropDestination(for: URL.self) { urls, _ in
+                    guard model.canManageFiles, !urls.isEmpty, let owner = model.projects?.owner(of: node.path + "/placeholder") else { return false }
+                    model.importLibraryFiles(urls, into: node.path, notebookID: owner.id); return true
+                }
                 .onAppear { revealSelection() }
-                .onChange(of: model.selectedNote) { _, _ in revealSelection() }
+                .onChange(of: model.selectedLibraryPath) { _, _ in revealSelection() }
                 .onChange(of: expandAll) { _, value in if value { expanded = true } }
             } else {
                 HStack(spacing: 9) {
-                    Image(systemName: model.selectedNote == node.path ? "doc.text.fill" : "doc.text")
-                        .foregroundStyle(model.selectedNote == node.path ? .primary : .secondary)
+                    Image(systemName: LibraryFileIcon.symbol(node.path))
+                        .foregroundStyle(model.selectedLibraryPath == node.path ? .primary : .secondary)
                     Text(node.name).font(.callout).lineLimit(2)
                     Spacer(minLength: 2)
                     if model.hasDraft(for: node.path) { Circle().fill(Color.orange).frame(width: 5, height: 5).accessibilityLabel("Sin guardar") }
                 }.padding(.vertical, 6).padding(.horizontal, 2)
                     .help(node.name).tag(NotebookSidebarSelection.note(node.path))
                     .contextMenu {
-                        Button("Abrir") { model.openNote(node.path) }
-                        Button("Editar") { model.openNote(node.path); model.layout = "edit" }
-                        Button("Ver") { model.openNote(node.path); model.layout = "preview" }
+                        Button("Abrir") { model.openLibraryFile(node.path) }
+                        if node.path.hasSuffix(".md") {
+                            Button("Editar") { model.openNote(node.path); model.layout = "edit" }
+                            Button("Ver") { model.openNote(node.path); model.layout = "preview" }
+                            Button("Sesiones de esta nota") { model.openNote(node.path); model.selectedTab = "library"; model.showInspector = true }
+                        }
                         Divider()
-                        Button("Sesiones de esta nota") { model.openNote(node.path); model.selectedTab = "library"; model.showInspector = true }
+                        Button("Copiar archivo") { model.copyLibraryItem(.note(node.path)) }.disabled(!model.canManageFiles)
+                        LibraryMoveMenu(model: model, path: node.path, folder: false)
                         Divider()
                         Button("Eliminar documento", role: .destructive) { model.deleteItem(node.path, folder: false) }.disabled(!model.canManageFiles)
                     }
@@ -367,12 +422,14 @@ struct CourseTreeRow: View {
         }
     }
     private func revealSelection() {
-        if expandAll || model.selectedNote?.hasPrefix(node.path + "/") == true { expanded = true }
+        if expandAll || model.selectedLibraryPath?.hasPrefix(node.path + "/") == true { expanded = true }
     }
 }
 
 struct NoteWorkspace: View {
     @ObservedObject var model: Workbench
+    @State private var composerHeight: CGFloat = 130
+    private var showsComposer: Bool { model.selectedNote != nil && model.assistant != nil && (model.layout != "preview" || !model.hideStudyComposer) }
     var body: some View {
         Group {
             if model.activeNotebooks.isEmpty {
@@ -381,8 +438,11 @@ struct NoteWorkspace: View {
                 } actions: {
                     Button("Nuevo cuaderno") { model.creationInitialName = ""; model.creationKind = "cuaderno" }
                 }
+            } else if let file = model.selectedFile, let workspace = model.workspace {
+                NotebookFilePreview(workspace: workspace, path: file)
             } else if let note = model.selectedNote {
                 LiveMarkdownEditor(documentID: note, text: model.draftText, editing: model.layout == "edit", heading: model.previewHeading,
+                    bottomInset: showsComposer ? composerHeight : 0,
                     onChange: { model.changeDraft($0) }, onLink: { _ = model.openWikilink($0) }, onTaskToggle: { _ in if model.layout == "preview" { model.saveDraft() } })
             } else {
                 if let assistant = model.assistant { NotebookHome(model: model, assistant: assistant) }
@@ -390,6 +450,13 @@ struct NoteWorkspace: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .bottom) {
+            if showsComposer, let assistant = model.assistant {
+                NotebookComposer(model: model, assistant: assistant).frame(maxWidth: 740)
+                    .padding(.horizontal, 18).padding(.top, 8).padding(.bottom, 16)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
+            }
+        }
         .onAppear { if model.layout == "split" { model.layout = "edit" } }
         .background {
             Button("") { model.layout = model.layout == "edit" ? "preview" : "edit" }
@@ -451,7 +518,7 @@ struct QuickOpenSheet: View {
     @FocusState private var focused: Bool
     private let preferencesAction = "notes-action://preferences"
     private var matches: [String] {
-        let notes = model.visibleNotes.filter { query.isEmpty || $0.localizedCaseInsensitiveContains(query) }
+        let notes = model.libraryFiles.filter { model.projects?.owner(of: $0)?.archivedAt == nil && (query.isEmpty || $0.localizedCaseInsensitiveContains(query)) }
         let showPreferences = query.isEmpty || ["Preferences", "Settings", "Preferencias", "Ajustes", "Theme", "Tema"].contains { $0.localizedCaseInsensitiveContains(query) }
         return notes + (showPreferences ? [preferencesAction] : [])
     }
@@ -501,7 +568,7 @@ struct QuickOpenSheet: View {
         guard let name else { return }
         model.showQuickOpen = false
         if name == preferencesAction { model.showPreferences = true }
-        else { model.showPreferences = false; model.openNote(name) }
+        else { model.showPreferences = false; model.openLibraryFile(name) }
     }
     private func moveSelection(_ offset: Int) {
         guard !matches.isEmpty else { return }

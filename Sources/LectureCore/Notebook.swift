@@ -29,7 +29,7 @@ public struct NotebookNode: Identifiable, Sendable {
         for note in notes {
             let components = note.components(separatedBy: "/")
             if components.count == 1 {
-                files.append(NotebookNode(name: String(note.dropLast(3)), path: prefix + note, children: nil))
+                files.append(NotebookNode(name: note.hasSuffix(".md") ? String(note.dropLast(3)) : note, path: prefix + note, children: nil))
             } else { folders[components[0], default: []].append(components.dropFirst().joined(separator: "/")) }
         }
         return folders.keys.sorted().map { name in

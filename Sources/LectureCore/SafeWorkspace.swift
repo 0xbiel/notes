@@ -67,6 +67,56 @@ public final class SafeWorkspace {
         return try validated(courseRoot.appendingPathComponent(filename), under: courseRoot)
     }
 
+    /// Library assets use the same containment and link checks as editable notes.
+    public func fileURL(_ filename: String) throws -> URL {
+        let components = filename.components(separatedBy: "/")
+        guard !filename.hasPrefix("/"), components.allSatisfy({ !$0.isEmpty && !$0.hasPrefix(".") }) else {
+            throw ReplayError.unsafePath(filename)
+        }
+        return try validated(courseRoot.appendingPathComponent(filename), under: courseRoot)
+    }
+
+    public func fileNames() throws -> [String] {
+        try rejectLinks(courseRoot)
+        guard let iterator = fm.enumerator(at: courseRoot, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else { return [] }
+        var names: [String] = []
+        for case let url as URL in iterator {
+            try rejectLinks(url)
+            if try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true { continue }
+            let name = String(url.path.dropFirst(courseRoot.path.count + 1))
+            _ = try fileURL(name); names.append(name)
+        }
+        return names.sorted()
+    }
+
+    public func readFile(_ filename: String) throws -> Data { try Data(contentsOf: fileURL(filename)) }
+    public func createAsset(_ filename: String, data: Data) throws {
+        guard !filename.hasSuffix(".md") else { throw ReplayError.unsafePath(filename) }
+        let url = try fileURL(filename)
+        if filename.contains("/") { try createFolder(filename.components(separatedBy: "/").dropLast().joined(separator: "/")) }
+        _ = try fileURL(filename)
+        try data.write(to: url, options: .withoutOverwriting)
+    }
+    public func removeAsset(_ filename: String, expected: Data) throws {
+        guard !filename.hasSuffix(".md"), try readFile(filename) == expected else { throw ReplayError.conflict }
+        try fm.removeItem(at: fileURL(filename))
+    }
+
+    /// Includes all files; deletion must archive every byte before removing a folder.
+    public func libraryFolderTree(_ relative: String) throws -> [String] {
+        let directory = try fileURL(relative + "/placeholder").deletingLastPathComponent()
+        guard fm.fileExists(atPath: directory.path), let iterator = fm.enumerator(at: directory, includingPropertiesForKeys: [.isDirectoryKey]) else { throw ReplayError.unsafePath(relative) }
+        var folders = [relative]
+        for case let url as URL in iterator {
+            try rejectLinks(url)
+            let name = String(url.path.dropFirst(courseRoot.path.count + 1))
+            if try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true {
+                _ = try fileURL(name + "/placeholder"); folders.append(name)
+            } else { _ = try fileURL(name) }
+        }
+        return folders
+    }
+
     public func noteNames() throws -> [String] {
         try rejectLinks(courseRoot)
         guard let iterator = fm.enumerator(at: courseRoot, includingPropertiesForKeys: [.isSymbolicLinkKey], options: [.skipsHiddenFiles]) else { return [] }
