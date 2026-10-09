@@ -119,7 +119,7 @@ struct NotebookWorkLog: View {
         VStack(alignment: .leading, spacing: 8) {
             Button { withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() } } label: {
                 HStack(spacing: 8) {
-                    if running { ProgressView().controlSize(.mini).frame(width: 18) }
+                    if running { ChatWorkingIndicator().frame(width: 18) }
                     else { Image(systemName: failed ? "exclamationmark.circle" : "checkmark").frame(width: 18) }
                     Text(running ? (language == "en" ? "Working" : "Trabajando") : (language == "en" ? "Worked through \(activities.count) steps" : "\(activities.count) pasos realizados"))
                     if running, let start = activities.first?.date { Text(start, style: .timer).monospacedDigit().foregroundStyle(.tertiary) }

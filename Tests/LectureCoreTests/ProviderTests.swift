@@ -2,6 +2,27 @@ import XCTest
 @testable import LectureCore
 
 final class ProviderTests: XCTestCase {
+    func testGenerationDeadlineAndExplicitCancellation() throws {
+        XCTAssertEqual(ProviderRequestLimits.generation, 600)
+        XCTAssertEqual(ProviderRequestLimits.diagnostic, 90)
+        let cancelled = NotesProcess()
+        cancelled.cancel()
+        XCTAssertThrowsError(try cancelled.run()) { XCTAssertTrue($0 is CancellationError) }
+    }
+
+    func testProcessDeadlineStopsHelperAndReportsTimeoutSeparately() throws {
+        let command = NotesProcess(timeoutInterval: 0.05)
+        command.process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        command.process.arguments = ["5"]
+        let start = Date()
+        XCTAssertThrowsError(try command.run()) { error in
+            XCTAssertTrue(error.localizedDescription.contains("agotó el tiempo"))
+            XCTAssertFalse(error is CancellationError)
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(start), 3)
+        XCTAssertFalse(command.process.isRunning)
+    }
+
     private func environment() throws -> (SafeWorkspace, URL) {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent(".test-workspaces/Provider-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root.appendingPathComponent("copied-course"), withIntermediateDirectories: true)

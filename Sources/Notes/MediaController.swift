@@ -59,10 +59,6 @@ final class MediaController: ObservableObject {
         if previous?.transcript != job.transcript || previous?.stage != job.stage { onTranscriptUpdate?(job) }
     }
     func select(_ id: String) { player?.pause(); player = nil; playing = false; position = 0; selectedID = id }
-    func addAIDemo(_ job: MediaJob) throws {
-        guard job.syntheticFixture, job.notebookID == "synthetic", job.transcript == SyntheticAIFixture.segments, try SafeWorkspace(root: store.root, originalRoot: store.originalRoot).readNote(job.targetNote) == SyntheticAIFixture.note else { throw MediaError.invalid("Demo inventada inválida.") }
-        try store.save(job); jobs.insert(job, at: 0); select(job.id)
-    }
     func tags(date: Date, units: String, exams: String, mode: InputMode) {
         guard var job = selected else { return }
         job.classDate = date; job.inputMode = mode; job.unitTags = split(units); job.examTags = split(exams); update(job)

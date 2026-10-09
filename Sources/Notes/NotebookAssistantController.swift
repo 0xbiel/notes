@@ -4,19 +4,48 @@ import LectureCore
 @MainActor
 final class NotebookAssistantController: ObservableObject {
     @Published private(set) var states: [String: NotebookProjectState] = [:]
-    @Published private(set) var runningNotebookID: String?
-    @Published private(set) var progress = ""
-    @Published private(set) var activities: [NotebookActivity] = []
-    @Published private(set) var runningChatID: String?
-    private func report(_ title: String) { progress = title; activities.append(.init(title)) }
-    @Published var error: String? { didSet { recordedErrorNotebookID = nil } }
+    struct RunKey: Hashable {
+        let notebookID: String
+        let chatID: String
+    }
+    struct RunState {
+        var progress = ""
+        var activities: [NotebookActivity] = []
+    }
+    @Published private(set) var runs: [RunKey: RunState] = [:]
+    // Aggregate accessors are used only by workspace-wide status and file-management guards.
+    var runningNotebookID: String? { runs.keys.first?.notebookID }
+    var runningChatID: String? { runs.keys.first?.chatID }
+    var progress: String { runs.values.first?.progress ?? "" }
+    var activities: [NotebookActivity] { runs.values.first?.activities ?? [] }
+    var runningCount: Int { runs.count }
+    func runningCount(in notebook: Notebook) -> Int { runs.keys.filter { $0.notebookID == notebook.id }.count }
+    func isRunning(_ notebook: Notebook, chatID: String? = nil) -> Bool {
+        guard let id = chatID ?? chat(notebook)?.id else { return false }
+        return runs[RunKey(notebookID: notebook.id, chatID: id)] != nil
+    }
+    func activities(for notebook: Notebook) -> [NotebookActivity] {
+        guard let id = chat(notebook)?.id else { return [] }
+        return runs[RunKey(notebookID: notebook.id, chatID: id)]?.activities ?? []
+    }
+    private func report(_ title: String, run: RunKey) {
+        guard var state = runs[run] else { return }
+        state.progress = title
+        state.activities.append(.init(title))
+        runs[run] = state
+    }
+    @Published var error: String? { didSet { recordedErrorNotebookID = nil; recordedErrorChatID = nil } }
     private var recordedErrorNotebookID: String?
+    private var recordedErrorChatID: String?
     @Published var revision = 0
     @Published private(set) var importingAttachments = false
     let store: NotebookProjectStore
     let transport: NotesProviderTransport
     var generate: ((NotebookTextRequest, AIProviderConfiguration) async throws -> NotebookAssistantResponse)?
-    private var worker: Task<Void, Never>?
+    var dispatchQueued: ((Notebook, String, NotebookQueuedPrompt) -> Void)?
+    private var heldQueues: Set<RunKey> = []
+    private var steering: Set<RunKey> = []
+    private var workers: [RunKey: Task<Void, Never>] = [:]
 
     init(store: NotebookProjectStore) throws {
         self.store = store; transport = NotesProviderTransport(store: LocalMediaStore(workspace: store.workspace))
@@ -24,13 +53,16 @@ final class NotebookAssistantController: ObservableObject {
             var state = try store.loadState(notebook)
             state.chats += state.pendingDrafts ?? []
             state.pendingDrafts = nil
-            state.chats.removeAll { $0.messages.isEmpty && $0.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && ($0.attachments ?? []).isEmpty }
+            state.chats.removeAll { $0.messages.isEmpty && $0.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && ($0.attachments ?? []).isEmpty && ($0.queuedPrompts ?? []).isEmpty }
             if !state.chats.contains(where: { $0.id == state.activeChatID }) { state.activeChatID = state.chats.last?.id }
             for i in state.chats.indices where state.chats[i].messages.last?.role == "user" {
                 state.chats[i].messages.append(.init(role: "error", text: "Petición interrumpida. Revisa el historial antes de volver a enviar."))
                 try store.saveState(state, notebookID: notebook.id)
             }
             try save(state, id: notebook.id)
+            for chat in state.chats where !(chat.queuedPrompts ?? []).isEmpty {
+                heldQueues.insert(RunKey(notebookID: notebook.id, chatID: chat.id))
+            }
         }
         store.didChange = { [weak self] in self?.revision += 1 }
     }
@@ -39,6 +71,9 @@ final class NotebookAssistantController: ObservableObject {
         let state = state(notebook)
         return state.chats.first { $0.id == state.activeChatID }
     }
+    func isEmptyChat(_ notebook: Notebook) -> Bool {
+        chat(notebook)?.messages.isEmpty != false && unrepresentedError(notebook) == nil
+    }
     func unrepresentedError(_ notebook: Notebook) -> String? {
         guard let error else { return nil }
         if recordedErrorNotebookID != nil { return nil }
@@ -46,12 +81,12 @@ final class NotebookAssistantController: ObservableObject {
         return last?.role == "error" && last?.text == error ? nil : error
     }
     func composerError(_ notebook: Notebook) -> String? {
-        recordedErrorNotebookID == nil || recordedErrorNotebookID == notebook.id ? error : nil
+        recordedErrorNotebookID == nil || (recordedErrorNotebookID == notebook.id && recordedErrorChatID == chat(notebook)?.id) ? error : nil
     }
     private func save(_ state: NotebookProjectState, id: String) throws {
         var persisted = state
         persisted.chats = state.chats.filter { !$0.messages.isEmpty }
-        persisted.pendingDrafts = state.chats.filter { $0.messages.isEmpty && (!$0.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !($0.attachments ?? []).isEmpty) }
+        persisted.pendingDrafts = state.chats.filter { $0.messages.isEmpty && (!$0.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !($0.attachments ?? []).isEmpty || !($0.queuedPrompts ?? []).isEmpty) }
         if !persisted.chats.contains(where: { $0.id == persisted.activeChatID }) && !(persisted.pendingDrafts ?? []).contains(where: { $0.id == persisted.activeChatID }) {
             persisted.activeChatID = persisted.chats.last?.id
         }
@@ -65,7 +100,7 @@ final class NotebookAssistantController: ObservableObject {
     @discardableResult func newChat(_ notebook: Notebook) throws -> String {
         error = nil
         var value = state(notebook)
-        if let empty = value.chats.first(where: { $0.messages.isEmpty && $0.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && ($0.attachments ?? []).isEmpty }) {
+        if let empty = value.chats.first(where: { $0.messages.isEmpty && $0.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && ($0.attachments ?? []).isEmpty && ($0.queuedPrompts ?? []).isEmpty }) {
             value.activeChatID = empty.id; try save(value, id: notebook.id); return empty.id
         }
         let chat = NotebookChat(title: UserDefaults.standard.string(forKey: "notes.language") == "en" ? "New chat" : "Nuevo chat")
@@ -80,7 +115,7 @@ final class NotebookAssistantController: ObservableObject {
         }
     }
     func deleteChat(_ id: String, notebook: Notebook) throws {
-        guard !(runningNotebookID == notebook.id && runningChatID == id) else {
+        guard !isRunning(notebook, chatID: id) else {
             throw MediaError.invalid(UserDefaults.standard.string(forKey: "notes.language") == "en" ? "Stop the request before deleting this chat." : "Detén la petición antes de eliminar este chat.")
         }
         var value = state(notebook)
@@ -183,12 +218,84 @@ final class NotebookAssistantController: ObservableObject {
         value.chats[i].messages.append(message)
         try save(value, id: notebook.id)
     }
-    func stop() { worker?.cancel() }
-    func waitUntilFinished() async { await worker?.value }
+    func stop() { heldQueues.formUnion(workers.keys); workers.values.forEach { $0.cancel() } }
+    func stop(notebook: Notebook) {
+        guard let id = chat(notebook)?.id else { return }
+        let key = RunKey(notebookID: notebook.id, chatID: id)
+        heldQueues.insert(key)
+        workers[key]?.cancel()
+    }
+    func waitUntilFinished() async {
+        while !workers.isEmpty {
+            let pending = Array(workers.values)
+            for worker in pending { await worker.value }
+        }
+    }
 
-    func send(notebook: Notebook, document: String?, texts: [String: String], configuration: AIProviderConfiguration,
+    func queued(_ notebook: Notebook) -> [NotebookQueuedPrompt] { chat(notebook)?.queuedPrompts ?? [] }
+    func enqueue(_ notebook: Notebook, configuration: AIProviderConfiguration, document: String?, steer: Bool = false) {
+        guard let chat = chat(notebook), !importingAttachments else { return }
+        let text = chat.draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty || !(chat.attachments ?? []).isEmpty else { return }
+        do {
+            try configuration.validateSending()
+            var value = state(notebook)
+            guard let i = value.chats.firstIndex(where: { $0.id == chat.id }) else { return }
+            let item = NotebookQueuedPrompt(text: text, attachments: chat.attachments ?? [], configuration: configuration, document: document)
+            var queue = value.chats[i].queuedPrompts ?? []
+            if steer { queue.insert(item, at: 0) } else { queue.append(item) }
+            value.chats[i].queuedPrompts = queue
+            value.chats[i].draft = ""; value.chats[i].attachments = nil
+            try save(value, id: notebook.id)
+            let key = RunKey(notebookID: notebook.id, chatID: chat.id)
+            if steer, isRunning(notebook) { steering.insert(key); heldQueues.remove(key); workers[key]?.cancel() }
+        } catch { self.error = error.localizedDescription }
+    }
+    func updateQueued(_ notebook: Notebook, id: String, text: String) {
+        mutateQueue(notebook) { queue in if let i = queue.firstIndex(where: { $0.id == id }) { queue[i].text = text } }
+    }
+    func removeQueued(_ notebook: Notebook, id: String) { mutateQueue(notebook) { $0.removeAll { $0.id == id } } }
+    func moveQueued(_ notebook: Notebook, id: String, offset: Int) {
+        mutateQueue(notebook) { queue in
+            guard let i = queue.firstIndex(where: { $0.id == id }), queue.indices.contains(i + offset) else { return }
+            queue.swapAt(i, i + offset)
+        }
+    }
+    private func mutateQueue(_ notebook: Notebook, change: (inout [NotebookQueuedPrompt]) -> Void) {
+        do {
+            var value = state(notebook)
+            guard let i = value.chats.firstIndex(where: { $0.id == value.activeChatID }) else { return }
+            var queue = value.chats[i].queuedPrompts ?? []; change(&queue); value.chats[i].queuedPrompts = queue
+            try save(value, id: notebook.id)
+        } catch { self.error = error.localizedDescription }
+    }
+    func promoteQueued(_ notebook: Notebook, id: String) {
+        mutateQueue(notebook) { queue in
+            guard let i = queue.firstIndex(where: { $0.id == id }) else { return }
+            queue.insert(queue.remove(at: i), at: 0)
+        }
+        guard let chat = chat(notebook) else { return }
+        let key = RunKey(notebookID: notebook.id, chatID: chat.id)
+        heldQueues.remove(key)
+        if isRunning(notebook) { steering.insert(key); workers[key]?.cancel() }
+        else { advanceQueue(notebook, chatID: chat.id) }
+    }
+    func resumeQueue(_ notebook: Notebook) {
+        guard let chat = chat(notebook) else { return }
+        heldQueues.remove(RunKey(notebookID: notebook.id, chatID: chat.id))
+        advanceQueue(notebook, chatID: chat.id)
+    }
+    private func advanceQueue(_ notebook: Notebook, chatID: String) {
+        let key = RunKey(notebookID: notebook.id, chatID: chatID)
+        guard !heldQueues.contains(key), !isRunning(notebook, chatID: chatID),
+              let item = state(notebook).chats.first(where: { $0.id == chatID })?.queuedPrompts?.first else { return }
+        dispatchQueued?(notebook, chatID, item)
+    }
+
+    func send(notebook: Notebook, document: String?, texts: [String: String], configuration: AIProviderConfiguration, chatID: String? = nil, queuedInput: NotebookQueuedPrompt? = nil,
               apply: @escaping ([NotebookFileChange], [String: String], String) throws -> NotebookCheckpoint?) {
-        guard runningNotebookID == nil, !importingAttachments, let chat = chat(notebook) else { return }
+        guard !isRunning(notebook, chatID: chatID), !importingAttachments, var chat = state(notebook).chats.first(where: { $0.id == (chatID ?? state(notebook).activeChatID) }) else { return }
+        if let queuedInput { chat.draft = queuedInput.text; chat.attachments = queuedInput.attachments }
         let prompt = chat.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty || !(chat.attachments ?? []).isEmpty else { return }
         do {
@@ -202,27 +309,35 @@ final class NotebookAssistantController: ObservableObject {
             message.attachments = chat.attachments
             value.chats[i].messages.append(message)
             if value.chats[i].messages.count == 1 { value.chats[i].title = String(message.text.prefix(65)) }
-            value.chats[i].draft = ""; value.chats[i].attachments = nil
+            if let queuedInput { value.chats[i].queuedPrompts?.removeAll { $0.id == queuedInput.id } }
+            else { value.chats[i].draft = ""; value.chats[i].attachments = nil }
             let library = NotebookFileLibrary(projects: store)
             let libraryFiles = try store.workspace.fileNames().filter { store.owner(of: $0)?.id == notebook.id }
             let language = UserDefaults.standard.string(forKey: "notes.language") ?? "es"
             let candidate = NotebookTextRequest(notebook: notebook, profile: value.profile, messages: value.chats[i].messages, currentDocument: document, texts: texts, language: language, libraryFiles: libraryFiles)
             _ = try candidate.prompt()
             try save(value, id: notebook.id)
-            runningNotebookID = notebook.id; runningChatID = chat.id; activities = []; report("Leyendo el cuaderno…"); error = nil
+            let run = RunKey(notebookID: notebook.id, chatID: chat.id)
+            runs[run] = RunState()
+            report("Leyendo el cuaderno…", run: run)
+            error = nil
             var request = candidate
-            for path in request.documents.keys.sorted() { report("Leyendo · \(path)") }
-            worker = Task { [weak self] in
+            for path in request.documents.keys.sorted() { report("Leyendo · \(path)", run: run) }
+            let generate = self.generate
+            workers[run] = Task { [weak self] in
                 guard let self else { return }
-                defer { self.runningNotebookID = nil; self.runningChatID = nil; self.progress = ""; self.worker = nil }
+                defer {
+                    self.runs.removeValue(forKey: run); self.workers.removeValue(forKey: run)
+                    self.advanceQueue(notebook, chatID: chat.id)
+                }
                 do {
                     var redundantRounds = 0
                     var repairRounds = 0
                     for _ in 0..<6 {
                         try Task.checkCancellation()
-                        self.report("Preparando cambios…")
+                        self.report("Preparando cambios…", run: run)
                         let response: NotebookAssistantResponse
-                        if let generate = self.generate { response = try await generate(request, configuration) }
+                        if let generate { response = try await generate(request, configuration) }
                         else { response = try await self.transport.sendNotebook(request, configuration: configuration, images: images) }
                         try Task.checkCancellation()
                         if !response.readFiles.isEmpty {
@@ -232,7 +347,7 @@ final class NotebookAssistantController: ObservableObject {
                                 try library.validate(path, notebookID: notebook.id)
                                 guard request.catalog[path] != nil else { throw MediaError.invalid("Documento solicitado inexistente: \(path)") }
                                 if request.documents[path] == nil {
-                                    self.report("Leyendo · \(path)")
+                                    self.report("Leyendo · \(path)", run: run)
                                     if let text = texts[path] { request.documents[path] = text }
                                     else {
                                         do {
@@ -257,7 +372,7 @@ final class NotebookAssistantController: ObservableObject {
                             continue
                         }
                         let changes: [NotebookFileChange]
-                        do { changes = try NotebookAssistantProtocol.changes(response, documents: request.documents) }
+                        do { changes = try NotebookAssistantProtocol.changes(response, documents: request.documents, allowDeletion: NotebookAssistantProtocol.deletionAllowed(in: request.messages)) }
                         catch let validation as NotebookEditValidationError {
                             guard repairRounds < 2, let original = texts[validation.path] else { throw validation }
                             try self.store.validate(validation.path, notebookID: notebook.id)
@@ -269,23 +384,26 @@ final class NotebookAssistantController: ObservableObject {
                                 + validation.path + ". " + (request.language == "en"
                                 ? "Repair the response using this source. For a full translation/rewrite, return one edit with create=false, replaceEntireFile=true, find=empty string, replacement=the complete updated Markdown. For partial edits, use unique non-overlapping exact passages from this source. Continue the user's task; do not repeat the rejected edit or ask the user to split it."
                                 : "Corrige la respuesta usando este original. Para traducir/reescribir la nota completa devuelve un cambio con create=false, replaceEntireFile=true, find=cadena vacía y replacement=Markdown actualizado completo. Para cambios parciales usa fragmentos exactos, únicos y no solapados del original. Continúa la petición del usuario sin repetir el cambio rechazado ni pedir que divida la tarea.")
-                            self.report("Corrigiendo cambios…")
+                            self.report("Corrigiendo cambios…", run: run)
                             continue
                         }
                         try Task.checkCancellation()
-                        self.report("Validando y guardando \(changes.count) archivo(s)…")
+                        self.report("Validando y guardando \(changes.count) archivo(s)…", run: run)
                         let checkpoint = try apply(changes, request.documents, prompt)
                         let reply = response.reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? (changes.isEmpty ? "Sin cambios." : "Cambios guardados · \(changes.count) archivo(s).") : response.reply
-                        try self.append(.init(role: "assistant", text: reply, files: changes.map(\.path), checkpointID: checkpoint?.id, activities: self.activities, appGenerated: response.reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), notebook: notebook, chatID: chat.id)
+                        try self.append(.init(role: "assistant", text: reply, files: changes.map(\.path), checkpointID: checkpoint?.id, activities: self.runs[run]?.activities ?? [], appGenerated: response.reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), notebook: notebook, chatID: chat.id)
                         return
                     }
                     throw MediaError.invalid("La petición necesita demasiado contexto. Acótala para continuar.")
                 } catch {
+                    if Task.isCancelled, self.steering.remove(run) != nil { return }
+                    self.heldQueues.insert(run)
                     let message = Task.isCancelled ? "Petición cancelada." : error.localizedDescription
                     self.error = message
                     do {
-                        try self.append(.init(role: "error", text: message, activities: self.activities), notebook: notebook, chatID: chat.id)
+                        try self.append(.init(role: "error", text: message, activities: self.runs[run]?.activities ?? []), notebook: notebook, chatID: chat.id)
                         self.recordedErrorNotebookID = notebook.id
+                        self.recordedErrorChatID = chat.id
                     }
                     catch { self.error = "\(message) · No se pudo guardar el mensaje: \(error.localizedDescription)" }
                 }
@@ -302,15 +420,44 @@ extension Workbench {
         if let selectedNote { saveDraft(named: selectedNote) }
         persistDrafts(); selectedNotebookID = id; selectedNote = nil; selectedFile = nil; selectedFolder = nil; previewHeading = nil; showPreferences = false
     }
+    @discardableResult func openNotebookForNewChat(_ id: String) -> Bool {
+        guard let notebook = activeNotebooks.first(where: { $0.id == id }), let assistant else { return false }
+        do {
+            try assistant.newChat(notebook)
+            openNotebook(id)
+            notebookRevealRequest += 1
+            return true
+        } catch { errorText = error.localizedDescription; return false }
+    }
     func submitNotebookPrompt() {
-        guard let assistant, let projects, let ai else { return }
+        guard let assistant, projects != nil, let ai else { return }
         let notebook = currentNotebook
+        assistant.dispatchQueued = { [weak self] notebook, chatID, item in
+            self?.dispatchNotebookPrompt(notebook: notebook, chatID: chatID, item: item)
+        }
+        if assistant.isRunning(notebook) {
+            assistant.enqueue(notebook, configuration: ai.providerSettings.selected, document: selectedLibraryPath)
+            return
+        }
+        dispatchNotebookPrompt(notebook: notebook, chatID: nil, item: nil)
+    }
+    func resumeNotebookQueue() {
+        guard let assistant else { return }
+        assistant.dispatchQueued = { [weak self] notebook, chatID, item in self?.dispatchNotebookPrompt(notebook: notebook, chatID: chatID, item: item) }
+        assistant.resumeQueue(currentNotebook)
+    }
+    func steerNotebookPrompt() {
+        guard let assistant, let ai else { return }
+        assistant.enqueue(currentNotebook, configuration: ai.providerSettings.selected, document: selectedLibraryPath, steer: true)
+    }
+    func dispatchNotebookPrompt(notebook: Notebook, chatID: String?, item: NotebookQueuedPrompt?) {
+        guard let assistant, let projects, let ai else { return }
         do {
             let disk = try projects.texts(notebook.id)
             var effective = disk
             for (path, text) in drafts where projects.owner(of: path)?.id == notebook.id && hasDraft(for: path) { effective[path] = text }
             let snapshot = effective
-            assistant.send(notebook: notebook, document: selectedNote, texts: snapshot, configuration: ai.providerSettings.selected) { [weak self] changes, read, prompt in
+            assistant.send(notebook: notebook, document: item == nil ? selectedLibraryPath : item?.document, texts: snapshot, configuration: item?.configuration ?? ai.providerSettings.selected, chatID: chatID, queuedInput: item) { [weak self] changes, read, prompt in
                 guard let self else { throw CancellationError() }
                 guard !changes.isEmpty else { return nil }
                 for (path, original) in read where disk[path] != nil {
@@ -354,7 +501,7 @@ extension Workbench {
             refreshEditorFromDisk()
             try reconcileProjectHistory()
             if let target = engine?.session.targetNote, paths.contains(target) {
-                replayTask?.cancel(); busy = false; engine = nil
+                busy = false; engine = nil
             }
             ai?.refresh()
         } catch { errorText = error.localizedDescription }

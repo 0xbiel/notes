@@ -185,6 +185,24 @@ public final class SafeWorkspace {
         try Data(text.utf8).write(to: url, options: .withoutOverwriting)
     }
 
+    public func renameFile(_ source: String, to destination: String) throws {
+        guard source.components(separatedBy: "/").dropLast() == destination.components(separatedBy: "/").dropLast() else { throw ReplayError.unsafePath(destination) }
+        let from = try fileURL(source), to = try fileURL(destination)
+        guard try from.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true,
+              !fm.fileExists(atPath: to.path) else { throw ReplayError.conflict }
+        try fm.moveItem(at: from, to: to)
+    }
+
+    public func renameFolder(_ source: String, to destination: String) throws {
+        guard !source.isEmpty, !destination.isEmpty,
+              source.components(separatedBy: "/").dropLast() == destination.components(separatedBy: "/").dropLast() else { throw ReplayError.unsafePath(destination) }
+        _ = try libraryFolderTree(source)
+        let from = try fileURL(source + "/placeholder").deletingLastPathComponent()
+        let to = try fileURL(destination + "/placeholder").deletingLastPathComponent()
+        guard !fm.fileExists(atPath: to.path) else { throw ReplayError.conflict }
+        try fm.moveItem(at: from, to: to)
+    }
+
     public func folderNames() throws -> [String] {
         try rejectLinks(courseRoot)
         guard let iterator = fm.enumerator(at: courseRoot, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else { return [] }

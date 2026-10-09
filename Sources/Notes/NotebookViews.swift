@@ -118,11 +118,14 @@ extension Workbench {
             statusText = "Edición deshecha"
         }
     }
-    func createNotebookItem(kind: String, name: String) throws {
+    func createNotebookItem(kind: String, name: String, notebookID: String? = nil, folder: String? = nil) throws {
         guard let workspace else { throw ReplayError.missingWorkspace }
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { throw ReplayError.invalidResponse("Introduce un nombre.") }
-        let notebook = notebooks.first { $0.id == selectedNotebookID } ?? .copiedCourse
+        if let notebookID, !activeNotebooks.contains(where: { $0.id == notebookID }) {
+            throw ReplayError.invalidResponse("El cuaderno ya no está disponible.")
+        }
+        let notebook = notebooks.first { $0.id == (notebookID ?? selectedNotebookID) } ?? .copiedCourse
         if kind == "cuaderno" {
             guard !clean.contains("/"), !clean.hasPrefix("."), !notebooks.contains(where: { $0.name.lowercased() == clean.lowercased() }) else {
                 throw ReplayError.invalidResponse("Usa un nombre de cuaderno único, sin barras.")
@@ -137,7 +140,16 @@ extension Workbench {
             openNotebook(created.id)
         } else {
             guard activeNotebooks.contains(where: { $0.id == notebook.id }) else { throw ReplayError.invalidResponse("Crea o restaura un cuaderno primero.") }
-            let relative = (notebook.rootPrefix.isEmpty ? "" : notebook.rootPrefix + "/") + clean
+            let directory: String
+            if let folder {
+                guard !clean.contains("/"), !clean.hasPrefix("."),
+                      folder == notebook.rootPrefix || folderNames(in: notebook).contains(folder) else {
+                    throw ReplayError.invalidResponse("Elige una carpeta del cuaderno y un nombre sin barras.")
+                }
+                directory = folder
+            } else { directory = notebook.rootPrefix }
+            let relative = (directory.isEmpty ? "" : directory + "/") + clean
+            try projects?.validate(relative.hasSuffix(".md") ? relative : relative + ".md", notebookID: notebook.id)
             if kind == "carpeta" { try workspace.createFolder(relative) }
             else {
                 let filename = relative.hasSuffix(".md") ? relative : relative + ".md"

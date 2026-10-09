@@ -94,6 +94,10 @@ import LectureCore
         let atBottom = contentView.bounds.minY > 0 && contentView.bounds.maxY >= view.frame.height - 1
         let current = atBottom ? sectionState.sections.last : (sectionState.sections.last { sectionY($0, view: view) <= top } ?? sectionState.sections.first)
         if sectionState.currentID != current?.id { sectionState.currentID = current?.id }
+        let positions = sectionState.sections.map { sectionY($0, view: view) }
+        let visible = MarkdownSectionNavigation.visibleIDs(sections: sectionState.sections, positions: positions,
+                                                          documentHeight: view.frame.height, viewport: contentView.bounds)
+        if sectionState.visibleIDs != visible { sectionState.visibleIDs = visible }
         positionSectionIndicator()
     }
 
@@ -114,7 +118,7 @@ import LectureCore
 
     private func positionSectionIndicator() {
         let available = max(0, bounds.height - contentInsets.bottom)
-        let height = min(max(40, CGFloat(sectionState.overview.count) * 11 + 47), min(280, available))
+        let height = min(max(112, CGFloat(sectionState.overview.count) * 11 + 47), min(280, available))
         let y = (available - height) / 2 + (isFlipped ? 0 : contentInsets.bottom)
         sectionHost?.frame = NSRect(x: bounds.maxX - 302, y: y, width: 280, height: height)
     }

@@ -31,15 +31,9 @@ struct NotesApp: App {
             }
             CommandGroup(replacing: .newItem) {
                 Button("Nueva nota") { model.creationInitialName = ""; model.creationKind = "nota" }.keyboardShortcut("n")
-                Button("Nueva sesión sintética") { model.perform { try model.createSession() } }.keyboardShortcut("n", modifiers: [.command, .shift]).disabled(model.busy)
             }
             CommandGroup(after: .saveItem) {
                 Button("Guardar nota en la copia") { model.saveDraft() }.keyboardShortcut("s").disabled(!model.isDirty)
-            }
-            CommandMenu("Demo") {
-                Button("Crear demo IA inventada (permite retención)") { model.createAIDemo() }
-                Button(model.busy ? "Detener escucha simulada" : "Iniciar escucha simulada") { model.toggleDemo() }.keyboardShortcut("l", modifiers: [.command, .shift])
-                Button("Siguiente fragmento") { model.nextStep() }.keyboardShortcut(".", modifiers: [.command]).disabled(model.busy)
             }
             CommandMenu("Notas") {
                 Button("Abrir nota…") { model.showQuickOpen = true }.keyboardShortcut("p")
@@ -70,12 +64,14 @@ final class Workbench: ObservableObject {
     @Published var showQuickOpen = false
     @Published var showPreferences = false
     @Published var creationKind: String?
+    @Published var renamingItem: NotebookSidebarSelection?
     @Published var creationInitialName = ""
     @Published var layout = "preview"
     @Published var hideStudyComposer = false
     @Published var inspectorHistoryMode = "session"
     @Published var trash: [NotebookTrashEntry] = []
     @Published var notebooks: [Notebook] = [.copiedCourse] { didSet { projects?.notebooks = notebooks } }
+    @Published var notebookOrdering = NotebookOrdering()
     @Published var selectedNotebookID = "derecho"
     @Published var notebookRevealRequest = 0
     @Published var selectedNote: String?
@@ -87,7 +83,6 @@ final class Workbench: ObservableObject {
     var autosaveTasks: [String: Task<Void, Never>] = [:]
     var bases: [String: String] = [:]
     var editor: NotebookEditor?
-    var replayTask: Task<Void, Never>?
     var workspace: SafeWorkspace?
     @Published var media: MediaController?
     @Published var ai: AIController?
@@ -136,10 +131,14 @@ final class Workbench: ObservableObject {
             if FileManager.default.fileExists(atPath: workspace.storageRoot.appendingPathComponent("notebooks.json").path) {
                 notebooks = try JSONDecoder().decode([Notebook].self, from: workspace.readStorage("notebooks.json"))
             }
+            try loadNotebookOrdering()
             let projects = try NotebookProjectStore(workspace: workspace, notebooks: notebooks)
             self.projects = projects
             notes = try workspace.noteNames(); libraryFiles = try workspace.fileNames(); folders = try workspace.folderNames()
             assistant = try NotebookAssistantController(store: projects)
+            assistant?.dispatchQueued = { [weak self] notebook, chatID, item in
+                self?.dispatchNotebookPrompt(notebook: notebook, chatID: chatID, item: item)
+            }
             try loadTrash()
             for notebook in notebooks { try projects.capture(notebook.id, summary: "Inicio") }
             projects.installWriteTracking()
@@ -150,8 +149,7 @@ final class Workbench: ObservableObject {
             }
             sessions = try workspace.loadSessions()
             selectedNotebookID = activeNotebooks.first?.id ?? ""
-            if sessions.isEmpty { if !visibleNotes.isEmpty { try createSession() } }
-            else if let session = sessions.first(where: { visibleNotes.contains($0.targetNote) }) { select(session.id) }
+            if let session = sessions.first(where: { visibleNotes.contains($0.targetNote) }) { select(session.id) }
             if let first = visibleNotes.first(where: { $0.hasPrefix("Tema 1") }) ?? visibleNotes.first { openNote(first) }
             else { selectedNote = nil; selectedNotebookID = activeNotebooks.first?.id ?? "" }
         } catch {
@@ -173,21 +171,6 @@ final class Workbench: ObservableObject {
         if media.isRecording { media.stopMicrophone() }
         else { guard !activeNotebooks.isEmpty else { return }; media.startMicrophone(notebook: currentNotebook, note: selectedNote) }
         selectedTab = "library"; showInspector = true
-    }
-
-    func createSession() throws {
-        guard let workspace else { throw ReplayError.missingWorkspace }
-        let notebook = currentNotebook
-        let candidates = noteNames(in: notebook)
-        guard let note = selectedNote.flatMap({ candidates.contains($0) ? $0 : nil }) ?? candidates.first(where: { $0.hasPrefix("Provisional") }) ?? candidates.first else {
-            throw ReplayError.invalidResponse("Crea una nota en este cuaderno antes de iniciar una sesión.")
-        }
-        var session = try SyntheticFixtures.newSession(workspace: workspace, note: note)
-        session.notebookID = notebook.id
-        session.metadata.subject = notebook.name
-        try workspace.save(session)
-        sessions.insert(session, at: 0)
-        select(session.id)
     }
 
     func select(_ id: String) {
@@ -212,28 +195,4 @@ final class Workbench: ObservableObject {
         catch { errorText = error.localizedDescription; refresh() }
     }
 
-    func replayAll() {
-        guard !busy else { return }
-        guard let replayID = engine?.session.id else { return }
-        busy = true
-        replayTask = Task { @MainActor in
-            defer { busy = false }
-            while !Task.isCancelled, let engine, engine.session.id == replayID, engine.session.replayCursor < SyntheticFixtures.steps.count {
-                do { try engine.replayNext(deferApplication: targetHasDraft); refresh() }
-                catch { errorText = error.localizedDescription; break }
-                try? await Task.sleep(for: .milliseconds(450))
-            }
-        }
-    }
-
-    func nextStep() { perform { try engine?.replayNext(deferApplication: targetHasDraft) } }
-    func toggleDemo() {
-        if busy { replayTask?.cancel(); statusText = "Simulación detenida. No se ha usado el micrófono." }
-        else {
-            if selectedNotebookID != engine?.session.notebookID || selectedNote != engine?.session.targetNote || engine?.session.replayCursor == SyntheticFixtures.steps.count {
-                do { try createSession() } catch { errorText = error.localizedDescription; return }
-            }
-            selectedTab = "replay"; replayAll()
-        }
-    }
 }

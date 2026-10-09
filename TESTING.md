@@ -50,3 +50,31 @@ Automatic generation targets five minutes of transcript, with up to 30 seconds t
 `AdaptiveBatchingTests` covers incremental delivery, sentence grace, sparse speech, dense text, segment limits and lossless final flushing. Optionally set `NOTES_BATCHING_JOB` to an existing local media-job JSON to inspect actual batch sizes without invoking a provider.
 
 `NOTES_CONNECTION_PROBE=1 swift test --build-system native --disable-sandbox --scratch-path .build-native --filter GenerationIntegrationTests/testLiveConnectionProbeWithSelectedModel` checks the same disposable connection probe used by General preferences with GPT-6 Luna, low reasoning and fast mode. Only a fixed 46-byte acknowledgement prompt is sent, through the existing Codex account. Offline preferences tests cover failed probes, unchanged outbox and hiding stale results after a model change.
+
+## Notebook media and imported-source previews
+
+Audio and video filters keep the notebook outline and nested imported-file folders, and list transcription jobs under their owning notebook. `RefinementTests` checks imported formats, original-video classification, notebook ownership and tag search. Native QA uses invented WAV/MP4 files in two separate notebooks.
+
+`NotebookAssistantTests` checks preview composer visibility, selected-source retrieval through a mocked provider, and PDF/DOCX render snapshots in `qa/imported-previews`. Imported previews share the floating composer and chat toggle with Markdown; only the rounded composer has a background. Native QA also checks hiding/restoring the PDF composer and opening DOCX chat history. These checks do not send documents to an external provider.
+
+Provider generation permits up to ten minutes per helper invocation; CLI metadata/configuration diagnostics keep their 90-second limit. `ProviderTests` exercises an accelerated real process deadline and verifies timeout termination separately from explicit cancellation. A multi-step notebook request can make several provider invocations. This is a local deadline test, not a ten-minute live-provider generation test.
+
+## New-note destination and section hover labels
+
+New-note and new-folder sheets use the notebook input styling. Choose a notebook, then browse the folder picker: click a folder to enter it, use Back to visit its parent, and confirm with Use this folder. The picker supports empty folders and arbitrarily nested existing folders; changing notebooks resets the destination to that notebook's root. `NotebookWorkflowTests/testNewNoteDestinationIsExplicitAndConfinedToChosenNotebook` checks cross-notebook creation, nested and root destinations, collisions and invalid destinations. Native QA checks folder entry, Back, destination confirmation and creation in an invented nested folder. Profile Save uses the same accent action style as Create.
+
+Section hover labels render outside the overview scroll area and clamp their vertical position to the rail edges. `MarkdownSectionTests` checks top/bottom placement and saves rendered first/last long-heading labels to `qa/section-hover`. These snapshots verify label layout without relying on synthetic mouse hover delivery.
+
+### Demo removal
+
+- The app no longer offers fictional AI demos, synthetic-session creation, or replay controls in menus or inspectors, and opening a workspace no longer generates a synthetic session.
+- Fictional AI creation helpers live in `Tests/NotesUITests/DemoTestFixtures.swift`; existing stored data is preserved. Real recordings, transcript review, and editor history work without a replay session.
+- `NotebookWorkflowTests.testOpeningWorkspaceDoesNotCreateSyntheticSession` checks startup leaves session storage empty and note edits still save into version history.
+
+### Notebook order
+
+- The sidebar offers manual, alphabetical and latest-modified sorting, persisted per workspace in `notebook-order.json`.
+- Notebook reordering uses a local pointer monitor with a five-point drag threshold. It consumes the header press, motion and release; only release updates the saved order. There is no notebook pasteboard payload, DropDelegate, native drag session, or replacement outline delegate/data source.
+- A single accent insertion line uses native row geometry and places a notebook after the target's entire expanded subtree. Escape, leaving the sidebar, and window deactivation cancel. Disclosure arrows, contextual menus, file imports and keyboard navigation retain their normal handlers.
+- `NotebookPointerReorderTests` checks click/drag separation, repeated release transactions, upward/downward movement, expanded boundaries, cancellation and one commit per gesture. `NotebookWorkflowTests.testNotebookOrderingPersistenceAndModificationDates` checks saved order, sort modes and unchanged file contents. `RefinementTests.testSidebarSelectionSurvivesResizeAndRowReuse` checks stable selection and eight-point side margins.
+- Live pointer QA on the rebuilt app moved IPC from third position to immediately below Derecho; all notebook rows remained collapsed. Further reverse-drag automation was blocked by the computer-use service reporting `noWindowsAvailable`, despite accessibility reads still returning the window. Repeated live pointer and autoscroll QA remain unverified.

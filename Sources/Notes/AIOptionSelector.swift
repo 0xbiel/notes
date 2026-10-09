@@ -10,18 +10,25 @@ struct AIOptionSelector: View {
     let title: String
     let symbol: String
     let options: [AIOption]
+    var iconOnly = false
+    @AppStorage("notes.accent") private var accent = ""
     @Binding var selection: String
     @State private var presented = false
     @State private var hovered: String?
 
     var body: some View {
         Button { presented.toggle() } label: {
-            HStack(spacing: 6) {
-                Image(systemName: symbol).foregroundStyle(.secondary)
-                Text(options.first { $0.id == selection }?.title ?? selection)
-                Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
-            }.font(.callout).padding(.horizontal, 9).frame(height: 34)
-                .modifier(NotebookInputSurface(radius: 7))
+            if iconOnly {
+                Image(systemName: symbol).frame(width: 28, height: 28).contentShape(Rectangle())
+                    .modifier(ControlHoverBackground())
+            } else {
+                HStack(spacing: 6) {
+                    Image(systemName: symbol).foregroundStyle(.secondary)
+                    Text(options.first { $0.id == selection }?.title ?? selection)
+                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                }.font(.callout).padding(.horizontal, 9).frame(height: 34)
+                    .modifier(NotebookInputSurface(radius: 7))
+            }
         }.buttonStyle(.plain).accessibilityLabel(title).accessibilityValue(selection)
             .popover(isPresented: $presented, arrowEdge: .bottom) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -36,7 +43,11 @@ struct AIOptionSelector: View {
                                     Text(badge).font(.system(size: 9)).padding(.horizontal, 4).padding(.vertical, 1)
                                         .overlay(RoundedRectangle(cornerRadius: 3).stroke(.primary.opacity(0.2)))
                                 }
-                                Spacer(minLength: 0)
+                                Spacer(minLength: 8)
+                                if iconOnly && selection == option.id {
+                                    Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold))
+                                        .foregroundStyle(NotebookAccent.color(accent))
+                                }
                             }.padding(.horizontal, 8).padding(.vertical, 6).contentShape(Rectangle())
                                 .background(selection == option.id || hovered == option.id ? Color.primary.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 5))
                         }.buttonStyle(.plain).onHover { hovered = $0 ? option.id : nil }
@@ -44,6 +55,7 @@ struct AIOptionSelector: View {
                     }
                 }.padding(5).frame(minWidth: 154).fixedSize(horizontal: true, vertical: true)
                     .background(Color(nsColor: .windowBackgroundColor))
+                    .background(NotebookAccentCaret()).tint(NotebookAccent.color(accent))
                     .onExitCommand { presented = false }
             }
     }

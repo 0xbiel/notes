@@ -5,7 +5,6 @@ import UniformTypeIdentifiers
 struct WorkbenchView: View {
     @ObservedObject var model: Workbench
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    private var notebookName: String { model.notebooks.first { $0.id == model.selectedNotebookID }?.name ?? "Cuadernos" }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var chrome = CompactChrome()
@@ -20,17 +19,11 @@ struct WorkbenchView: View {
             HStack(spacing: 0) {
                 Color.clear.frame(width: chrome.compact ? 0 : sidebarWidth)
                 VStack(spacing: 0) {
-                    HStack(spacing: 12) {
-                        noteLocation
-                        Spacer(minLength: 8)
-                        if let path = model.selectedNote ?? model.selectedFile {
-                            DocumentFileActions(model: model, path: path)
-                        }
-                        if model.selectedNote != nil { NoteToolbar(model: model) }
+                    if model.selectedNote == nil && model.selectedFile == nil, let assistant = model.assistant {
+                        NotebookChatTitleBar(model: model, assistant: assistant)
+                    } else {
+                        WorkspaceTitleBar(model: model)
                     }
-                    .padding(.horizontal, 18).frame(height: 58)
-                    .background(WindowDragRegion())
-                    Divider().opacity(0.4)
                     HStack(spacing: 0) {
                         NoteWorkspace(model: model)
                         if model.showInspector {
@@ -40,7 +33,7 @@ struct WorkbenchView: View {
                     }
                     if model.assistant == nil {
                         HStack { Spacer(); ListeningDock(model: model) }.padding(12)
-                    } else if model.selectedNote != nil && model.layout == "preview" && model.hideStudyComposer, let media = model.media {
+                    } else if model.selectedLibraryPath != nil && (model.selectedFile != nil || model.layout == "preview") && model.hideStudyComposer, let media = model.media {
                         RecordingOnlyDock(model: model, media: media)
                     }
                 }
@@ -86,9 +79,10 @@ struct WorkbenchView: View {
         }
         .tint(.gray).accentColor(.gray)
         .background(NotebookAccentCaret())
+        .background(AppScrollbarAppearance())
         .environment(\.locale, Locale(identifier: language))
         .background(NotebookThemeBackground(blendsBehindWindow: true))
-        .background(CompactWindowBridge(chrome: chrome, modalPresented: model.showQuickOpen || model.creationKind != nil || model.errorText != nil || model.showNotebookManagement))
+        .background(CompactWindowBridge(chrome: chrome, modalPresented: model.showQuickOpen || model.creationKind != nil || model.renamingItem != nil || model.errorText != nil || model.showNotebookManagement))
         .focusedSceneObject(chrome)
         .onGeometryChange(for: Bool.self) { $0.size.width < 900 } action: { narrow in
             if narrow && !chrome.compact { chrome.toggleCompact() }
@@ -105,6 +99,9 @@ struct WorkbenchView: View {
         .sheet(isPresented: $model.showQuickOpen) { QuickOpenSheet(model: model) }
         .sheet(isPresented: Binding(get: { model.creationKind != nil }, set: { if !$0 { model.creationKind = nil } })) {
             NotebookCreationSheet(model: model, kind: model.creationKind ?? "nota") { model.creationKind = nil }
+        }
+        .sheet(isPresented: Binding(get: { model.renamingItem != nil }, set: { if !$0 { model.renamingItem = nil } })) {
+            if let item = model.renamingItem { LibraryRenameSheet(model: model, item: item) }
         }
         .alert("No se aplicó el cambio", isPresented: Binding(get: { model.errorText != nil }, set: { if !$0 { model.errorText = nil } })) {
             Button("Cerrar", role: .cancel) { model.errorText = nil }
@@ -134,6 +131,40 @@ struct WorkbenchView: View {
                 CourseSidebar(model: model)
             }
         }
+    }
+
+
+}
+
+/// Observe chat changes directly so the title bar appears when the first message is added.
+struct NotebookChatTitleBar: View {
+    @ObservedObject var model: Workbench
+    @ObservedObject var assistant: NotebookAssistantController
+    var body: some View {
+        if !assistant.isEmptyChat(model.currentNotebook) {
+            WorkspaceTitleBar(model: model)
+        }
+    }
+}
+
+struct WorkspaceTitleBar: View {
+    @ObservedObject var model: Workbench
+    private var notebookName: String { model.currentNotebook.name }
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                noteLocation
+                Spacer(minLength: 8)
+                if let path = model.selectedNote ?? model.selectedFile {
+                    DocumentFileActions(model: model, path: path)
+                }
+                if model.selectedNote != nil { NoteToolbar(model: model) }
+                else if model.selectedFile != nil { NotebookAssistantToggle(model: model) }
+            }
+            .padding(.horizontal, 18).frame(height: 58)
+            .background(WindowDragRegion())
+            Divider().opacity(0.4)
+        }.accessibilityElement(children: .contain).accessibilityIdentifier("workspace.titleBar")
     }
 
     private var noteLocation: some View {
@@ -211,9 +242,7 @@ struct NoteToolbar: View {
         HStack(spacing: 7) {
                 modeSelector
                 if model.layout == "preview" {
-                    Button { model.hideStudyComposer.toggle() } label: { Image(systemName: model.hideStudyComposer ? "bubble.left" : "bubble.left.fill").frame(width: 26, height: 26) }
-                        .modifier(ControlHoverBackground()).help(model.hideStudyComposer ? "Mostrar asistente" : "Ocultar asistente")
-                        .accessibilityLabel(model.hideStudyComposer ? "Mostrar asistente" : "Ocultar asistente").accessibilityIdentifier("notebook.toggleAssistant")
+                    NotebookAssistantToggle(model: model)
                 }
                 Menu {
                         Button("Marcar/desmarcar tarea") { NSApp.sendAction(#selector(MarkdownTextView.toggleMarkdownTask(_:)), to: nil, from: nil) }.keyboardShortcut("l", modifiers: [.command, .shift])
@@ -247,6 +276,7 @@ struct CourseSidebar: View {
     @State private var section = LibraryContentFilter.notes
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var expanded: Set<String> = ["derecho"]
+    @AppStorage("notes.accent") private var accent = ""
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
@@ -264,9 +294,6 @@ struct CourseSidebar: View {
                     Image(systemName: "square.and.pencil").frame(width: 28, height: 34)
                 }.buttonStyle(.plain).modifier(ControlHoverBackground()).help("Nueva nota · ⌘N").accessibilityLabel("Nueva nota")
             }.padding(.horizontal, 12)
-            if section != .notes, let media = model.media {
-                RecordingSidebar(model: model, media: media, query: query, filter: section)
-            } else {
             ScrollViewReader { proxy in
             List(selection: Binding<NotebookSidebarSelection?>(get: {
                 model.librarySelection
@@ -280,48 +307,66 @@ struct CourseSidebar: View {
             })) {
                 ForEach(model.activeNotebooks) { notebook in
                     DisclosureGroup(isExpanded: Binding(get: { expanded.contains(notebook.id) || !query.isEmpty }, set: { value in if value { expanded.insert(notebook.id) } else { expanded.remove(notebook.id) } })) {
-                        let filenames = model.fileNames(in: notebook).filter { query.isEmpty || $0.localizedCaseInsensitiveContains(query) }
+                        let filenames = model.fileNames(in: notebook).filter { section.includes(path: $0) && (query.isEmpty || $0.localizedCaseInsensitiveContains(query)) }
                         let relativeNames = filenames.map { notebook.rootPrefix.isEmpty ? $0 : String($0.dropFirst(notebook.rootPrefix.count + 1)) }
-                        let folders = query.isEmpty ? model.folderNames(in: notebook).map { notebook.rootPrefix.isEmpty ? $0 : String($0.dropFirst(notebook.rootPrefix.count + 1)) } : []
+                        let folders = query.isEmpty && section == .notes ? model.folderNames(in: notebook).map { notebook.rootPrefix.isEmpty ? $0 : String($0.dropFirst(notebook.rootPrefix.count + 1)) } : []
                         ForEach(NotebookNode.tree(notes: relativeNames, folderNames: folders, prefix: notebook.rootPrefix.isEmpty ? "" : notebook.rootPrefix + "/")) { node in
                             CourseTreeRow(model: model, node: node, expandAll: !query.isEmpty) { folder in prepareCreation("nota", folder: folder, notebook: notebook) }
+                        }
+                        if section != .notes, let media = model.media {
+                            NotebookRecordingRows(model: model, media: media, notebookID: notebook.id, query: query, filter: section)
+                        }
+                        if section != .notes && filenames.isEmpty && model.media?.jobs.contains(where: { $0.notebookID == notebook.id && section.includes($0) }) != true {
+                            Text(section == .video ? "Sin vídeos" : "Sin audio").font(.caption).foregroundStyle(.secondary)
                         }
                     } label: {
                         Button { model.openNotebook(notebook.id) } label: {
                             HStack(spacing: 9) {
-                                Image(systemName: "book.closed.fill").foregroundStyle(.secondary).frame(width: 14)
+                                Image(systemName: "book.closed.fill").foregroundStyle(.secondary).frame(width: 18, height: 20, alignment: .center)
                                 Text(notebook.name).font(.callout.weight(.semibold))
                                     .lineLimit(2).truncationMode(.tail).fixedSize(horizontal: false, vertical: true)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 Spacer(minLength: 2)
-                                Text("\(model.fileNames(in: notebook).count)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                            }.padding(.vertical, 6).padding(.horizontal, 2).contentShape(Rectangle())
+                                Text("\(model.fileNames(in: notebook).filter { section.includes(path: $0) }.count + (model.media?.jobs.filter { $0.notebookID == notebook.id && section.includes($0) }.count ?? 0))").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                            }.padding(.vertical, 6).padding(.leading, 8).padding(.trailing, 2).contentShape(Rectangle())
                                 // The native outline arrow follows the label baseline; anchor it to the row center.
                                 .alignmentGuide(.firstTextBaseline) { dimensions in dimensions[VerticalAlignment.center] + 2 }
                         }.buttonStyle(.plain)
                             .accessibilityIdentifier("notebook.open." + notebook.id)
                             .accessibilityAddTraits(model.selectedNotebookID == notebook.id && model.selectedLibraryPath == nil ? .isSelected : [])
+
                         .contextMenu {
                             Button("Nueva nota") { prepareCreation("nota", folder: notebook.rootPrefix, notebook: notebook) }
                             Button("Nueva carpeta") { prepareCreation("carpeta", folder: notebook.rootPrefix, notebook: notebook) }
                             Button("Importar archivos…") { model.chooseLibraryImport(into: notebook.rootPrefix, notebookID: notebook.id) }.disabled(!model.canManageFiles)
                             FolderImportOptions(model: model, notebookID: notebook.id)
                             Divider()
+                            Button(UserDefaults.standard.string(forKey: "notes.language") == "en" ? "Rename…" : "Renombrar…") { model.renamingItem = .notebook(notebook.id) }.disabled(!model.canManageFiles)
                             Button("Copiar cuaderno") { model.copyLibraryItem(.notebook(notebook.id)) }.disabled(!model.canManageFiles)
                             Button("Pegar") { model.pasteLibraryItems(into: notebook.rootPrefix, notebookID: notebook.id) }.disabled(!model.canManageFiles)
+                            Divider()
+                            Button("Mover cuaderno arriba") {
+                                let ids = model.activeNotebooks.map(\.id)
+                                if let index = ids.firstIndex(of: notebook.id), index > 0 { model.reorderNotebook(notebook.id, relativeTo: ids[index - 1]) }
+                            }.disabled(model.activeNotebooks.first?.id == notebook.id)
+                            Button("Mover cuaderno abajo") {
+                                let ids = model.activeNotebooks.map(\.id)
+                                if let index = ids.firstIndex(of: notebook.id), index + 1 < ids.count { model.reorderNotebook(notebook.id, relativeTo: ids[index + 1], after: true) }
+                            }.disabled(model.activeNotebooks.last?.id == notebook.id)
                             Divider()
                             Button("Eliminar cuaderno", role: .destructive) { model.deleteNotebook(notebook) }.disabled(!model.canManageFiles)
                         }
                     }
-                    .tag(NotebookSidebarSelection.notebook(notebook.id))
-                    .id(notebook.id)
                     .dropDestination(for: URL.self) { urls, _ in
                         guard model.canManageFiles, !urls.isEmpty else { return false }
-                        model.importLibraryFiles(urls, into: notebook.rootPrefix, notebookID: notebook.id); return true
+                        model.importLibraryFiles(urls, into: notebook.rootPrefix, notebookID: notebook.id)
+                        return true
                     }
+                    .tag(NotebookSidebarSelection.notebook(notebook.id))
+                    .id(notebook.id)
 
                 }
-            }.listStyle(.sidebar).scrollContentBackground(.hidden).background(NeutralSidebarSelection())
+            }.listStyle(.sidebar).scrollContentBackground(.hidden).background(NeutralSidebarSelection(model: model))
                 .onChange(of: model.notebookRevealRequest) { _, _ in
                     DispatchQueue.main.async { proxy.scrollTo(model.selectedNotebookID, anchor: .center) }
                 }
@@ -335,7 +380,6 @@ struct CourseSidebar: View {
                     ImportFolderAsNotebookButton(model: model)
                     Button("Pegar") { model.pasteLibraryItems(into: model.libraryDestination, notebookID: model.currentNotebook.id) }.disabled(!model.canManageFiles)
                 }
-            }
             }
             HStack {
                 Menu {
@@ -351,6 +395,7 @@ struct CourseSidebar: View {
                 Button { model.showPreferences = true } label: {
                     Image(systemName: "gearshape").frame(width: 28, height: 28)
                 }.buttonStyle(.plain).modifier(ControlHoverBackground()).help("Preferencias · ⌘,").accessibilityLabel("Preferencias")
+                NotebookSortSelector(model: model)
                 Spacer()
                 NotebookTrashMenu(model: model)
             }.padding(.horizontal, 20).padding(.vertical, 12)
@@ -380,6 +425,7 @@ struct CourseSidebar: View {
             .font(.system(size: 14, weight: .medium))
             .frame(width: 34, height: 34)
             .modifier(ControlHoverBackground())
+            .accessibilityIdentifier("notebook.contentFilter")
             .accessibilityLabel("Filtrar por tipo: \(section.title)")
             .help("Texto, audio o vídeos importados")
     }
@@ -404,18 +450,19 @@ struct CourseTreeRow: View {
                     ForEach(children) { child in CourseTreeRow(model: model, node: child, expandAll: expandAll, createInFolder: createInFolder) }
                 } label: {
                     HStack(spacing: 9) {
-                        Image(systemName: "folder").frame(width: 14)
+                        Image(systemName: "folder").frame(width: 18, height: 20, alignment: .center)
                         Text(node.name).lineLimit(2).truncationMode(.tail)
                             .fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 2)
                     }.foregroundStyle(.secondary).font(.callout)
-                        .padding(.vertical, 6).padding(.horizontal, 2)
+                        .padding(.vertical, 6).padding(.leading, 8).padding(.trailing, 2)
                         .alignmentGuide(.firstTextBaseline) { dimensions in dimensions[VerticalAlignment.center] + 2 }
                         .contextMenu {
                             Button("Nueva nota aquí") { createInFolder(node.path) }
                             Button("Nueva carpeta aquí") { model.createFolderInside(node.path) }
                             Button("Importar archivos…") { if let owner = model.projects?.owner(of: node.path + "/placeholder") { model.chooseLibraryImport(into: node.path, notebookID: owner.id) } }.disabled(!model.canManageFiles)
                             Divider()
+                            Button(UserDefaults.standard.string(forKey: "notes.language") == "en" ? "Rename…" : "Renombrar…") { model.renamingItem = .folder(node.path) }.disabled(!model.canManageFiles)
                             Button("Copiar carpeta") { model.copyLibraryItem(.folder(node.path)) }.disabled(!model.canManageFiles)
                             Button("Pegar") { if let owner = model.projects?.owner(of: node.path + "/placeholder") { model.pasteLibraryItems(into: node.path, notebookID: owner.id) } }.disabled(!model.canManageFiles)
                             LibraryMoveMenu(model: model, path: node.path, folder: true)
@@ -448,6 +495,7 @@ struct CourseTreeRow: View {
                             Button("Sesiones de esta nota") { model.openNote(node.path); model.selectedTab = "library"; model.showInspector = true }
                         }
                         Divider()
+                        Button(UserDefaults.standard.string(forKey: "notes.language") == "en" ? "Rename…" : "Renombrar…") { model.renamingItem = .note(node.path) }.disabled(!model.canManageFiles)
                         Button("Copiar archivo") { model.copyLibraryItem(.note(node.path)) }.disabled(!model.canManageFiles)
                         LibraryMoveMenu(model: model, path: node.path, folder: false)
                         Divider()
@@ -464,7 +512,7 @@ struct CourseTreeRow: View {
 struct NoteWorkspace: View {
     @ObservedObject var model: Workbench
     @State private var composerHeight: CGFloat = 130
-    private var showsComposer: Bool { model.selectedNote != nil && model.assistant != nil && (model.layout != "preview" || !model.hideStudyComposer) }
+    private var showsComposer: Bool { model.showsDocumentComposer }
     var body: some View {
         Group {
             if model.activeNotebooks.isEmpty {
@@ -534,9 +582,6 @@ struct ListeningDock: View {
                 }
                 Divider()
                 Button("Importar audio o MP4…") { model.importMedia() }
-                Button("Crear demo IA inventada (permite retención)") { model.createAIDemo() }
-                Button("Iniciar/detener demo sintética") { model.toggleDemo() }
-                Button("Nueva sesión sintética") { model.perform { try model.createSession() }; model.selectedTab = "replay"; model.showInspector = true }.disabled(model.busy)
             } label: {
                 if let media = model.media { RecordingMenuIcon(media: media) }
                 else { Image(systemName: "waveform").foregroundStyle(.secondary).frame(width: 34, height: 32) }
@@ -640,38 +685,13 @@ struct QuickOpenSheet: View {
     }
 }
 
-struct NotebookCreationSheet: View {
-    @ObservedObject var model: Workbench
-    let kind: String
-    var close: () -> Void
-    @State private var name = ""
-    @State private var error: String?
-    @FocusState private var focused: Bool
-    var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text(kind == "cuaderno" ? "Nuevo cuaderno" : kind == "carpeta" ? "Nueva carpeta" : "Nueva nota").font(.title2.bold())
-            TextField("Nombre", text: $name).textFieldStyle(.roundedBorder).focused($focused)
-            if let error { Text(error).font(.callout).foregroundStyle(.red) }
-            HStack {
-                Text("Copia local").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button("Cancelar", role: .cancel) { close() }.keyboardShortcut(.cancelAction)
-                Button("Crear") {
-                    do { try model.createNotebookItem(kind: kind, name: name); close(); model.layout = "edit" }
-                    catch { self.error = error.localizedDescription }
-                }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }.padding(24).frame(width: 440).onAppear { name = model.creationInitialName; focused = true }
-    }
-}
-
 struct MicrophoneButton: View {
     @ObservedObject var model: Workbench
     @ObservedObject var media: MediaController
     var compact = false
     var body: some View {
         Button { model.toggleMicrophone() } label: {
-            HStack(spacing: 8) { Image(systemName: media.isRecording ? "stop.fill" : "mic.fill"); if !compact { Text(media.isRecording ? "Grabando · Detener" : "Grabar").font(.callout.weight(.medium)) } }.padding(.horizontal, 12).padding(.vertical, 8)
+            HStack(spacing: 8) { Image(systemName: media.isRecording ? "stop.fill" : "mic.fill"); if !compact { Text(LocalizedStringKey(media.isRecording ? "Grabando · Detener" : "Grabar")).font(.callout.weight(.medium)) } }.padding(.horizontal, 12).padding(.vertical, 8)
         }.accessibilityLabel(media.isRecording ? "Detener grabación" : "Grabar y transcribir").buttonStyle(.plain).foregroundStyle(media.isRecording ? Color.red : Color.primary).disabled(!media.isRecording && (media.busy || model.busy)).help(media.isRecording ? "Detener grabación local" : "Iniciar micrófono · solo al pulsar este botón")
     }
 }
@@ -710,70 +730,64 @@ enum LibraryContentFilter: String, CaseIterable, Identifiable {
         switch self { case .notes: "doc.text"; case .audio: "waveform"; case .video: "film" }
     }
     func includes(_ job: MediaJob) -> Bool {
-        let ext = URL(fileURLWithPath: job.sourceName).pathExtension.lowercased()
-        let isVideo = !job.isMicrophone && (UTType(filenameExtension: ext)?.conforms(to: .movie) == true
-            || ["mp4", "mov", "m4v", "webm", "mkv", "avi"].contains(ext))
+        guard !job.syntheticFixture else { return false }
+        if job.isMicrophone { return self == .audio }
+        return self != .notes && includes(path: job.sourceName)
+    }
+    func includes(path: String) -> Bool {
+        let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
+        let type = UTType(filenameExtension: ext)
+        let video = type?.conforms(to: .movie) == true || ["mp4", "mov", "m4v", "webm", "mkv", "avi"].contains(ext)
+        let audio = !video && (type?.conforms(to: .audio) == true || ["mp3", "wav", "m4a", "aac", "flac", "ogg", "opus", "aiff", "caf"].contains(ext))
         switch self {
-        case .notes: return false
-        case .audio: return !isVideo
-        case .video: return isVideo
+        case .notes: return !video && !audio
+        case .audio: return audio
+        case .video: return video
         }
+    }
+    func recordings(_ jobs: [MediaJob], notebookID: String, query: String) -> [MediaJob] {
+        jobs.filter {
+            $0.notebookID == notebookID && includes($0) &&
+            (query.isEmpty || ([$0.sourceName, $0.targetNote, $0.subject] + $0.unitTags + $0.examTags).joined(separator: " ").localizedCaseInsensitiveContains(query))
+        }.sorted { $0.classDate == $1.classDate ? $0.id < $1.id : $0.classDate > $1.classDate }
     }
 }
 
-private struct RecordingSidebar: View {
+struct NotebookRecordingRows: View {
     @ObservedObject var model: Workbench
     @ObservedObject var media: MediaController
+    let notebookID: String
     let query: String
     let filter: LibraryContentFilter
     private var jobs: [MediaJob] {
-        media.jobs.filter { filter.includes($0) && (query.isEmpty || ($0.sourceName + " " + $0.targetNote + " " + $0.subject).localizedCaseInsensitiveContains(query)) }
-            .sorted { $0.classDate > $1.classDate }
+        filter.recordings(media.jobs, notebookID: notebookID, query: query)
     }
     var body: some View {
-        Group {
-            if jobs.isEmpty {
-                VStack(spacing: 12) {
-                    Image(systemName: query.isEmpty ? filter.symbol : "magnifyingglass").font(.title2).foregroundStyle(.tertiary)
-                    Text(query.isEmpty ? (filter == .video ? "Sin vídeos" : "Sin audio") : "Sin resultados").font(.callout).foregroundStyle(.secondary)
-                    if query.isEmpty {
-                        Button(filter == .video ? "Importar vídeo…" : "Importar audio…") { model.importMedia() }
+        ForEach(jobs) { job in
+            let status = RecordingPresentation(job: job)
+            Button {
+                guard !media.isRecording else { return }
+                model.openNote(job.targetNote)
+                media.select(job.id)
+                model.selectedTab = job.transcript.isEmpty ? "library" : "replay"
+                model.showInspector = true
+            } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: filter.symbol).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(job.sourceName).font(.callout).lineLimit(2)
+                        HStack(spacing: 4) {
+                            Text(job.classDate, format: .dateTime.day().month(.abbreviated))
+                            Text("· " + timestamp(job.duration)).monospacedDigit()
+                            (Text("· ") + Text(LocalizedStringKey(status.title))).foregroundStyle(status.color)
+                        }.font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                     }
-                }.frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 6) {
-                        ForEach(jobs) { job in
-                            let status = RecordingPresentation(job: job)
-                            Button {
-                                model.openNote(job.targetNote)
-                                media.select(job.id)
-                                model.selectedTab = job.transcript.isEmpty ? "library" : "replay"
-                                model.showInspector = true
-                            } label: {
-                                VStack(alignment: .leading, spacing: 7) {
-                                    HStack(spacing: 7) {
-                                        Image(systemName: status.symbol).foregroundStyle(status.color)
-                                        Text(job.sourceName).font(.callout.weight(.medium)).lineLimit(1)
-                                    }
-                                    Text(URL(fileURLWithPath: job.targetNote).deletingPathExtension().lastPathComponent)
-                                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                                    HStack(spacing: 5) {
-                                        Text(job.classDate, format: .dateTime.day().month(.abbreviated))
-                                        Text("·")
-                                        Text(timestamp(job.duration)).monospacedDigit()
-                                        Spacer(minLength: 0)
-                                        Text(status.title).foregroundStyle(status.color).lineLimit(1)
-                                    }.font(.system(size: 10))
-                                }.padding(11).frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(media.selectedID == job.id ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor).opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
-                                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(media.selectedID == job.id ? Color.accentColor.opacity(0.25) : .clear))
-                            }.buttonStyle(.plain).help(status.detail)
-                                .accessibilityLabel("\(job.sourceName), \(status.title), \(timestamp(job.duration))")
-                        }
-                    }.padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 12)
-                }
-            }
+                    Spacer(minLength: 2)
+                }.padding(.vertical, 6).contentShape(Rectangle())
+            }.buttonStyle(.plain).disabled(media.isRecording).help(status.detail)
+                .accessibilityIdentifier("notebook.recording." + job.id)
+                .accessibilityLabel("\(job.sourceName), \(status.title), \(timestamp(job.duration))")
+                .accessibilityAddTraits(media.selectedID == job.id ? .isSelected : [])
         }
     }
 }
@@ -781,7 +795,7 @@ private struct RecordingSidebar: View {
 struct NoteRecordingStatus: View {
     @ObservedObject var model: Workbench
     @ObservedObject var media: MediaController
-    private var linked: [MediaJob] { media.jobs.filter { $0.targetNote == model.selectedNote }.sorted { $0.importedAt > $1.importedAt } }
+    private var linked: [MediaJob] { media.jobs.filter { !$0.syntheticFixture && $0.targetNote == model.selectedNote }.sorted { $0.importedAt > $1.importedAt } }
     private var selected: MediaJob? { linked.first(where: { $0.id == media.selectedID }) ?? linked.first }
     var body: some View {
         if let job = selected {
@@ -795,10 +809,10 @@ struct NoteRecordingStatus: View {
                     Image(systemName: status.symbol).foregroundStyle(status.color)
                     ViewThatFits(in: .horizontal) {
                         HStack(spacing: 5) {
-                            Text(status.title).foregroundStyle(status.color)
+                            Text(LocalizedStringKey(status.title)).foregroundStyle(status.color)
                             Text("· \(timestamp(job.duration))").foregroundStyle(.secondary).monospacedDigit()
                         }
-                        Text(status.title).foregroundStyle(status.color)
+                        Text(LocalizedStringKey(status.title)).foregroundStyle(status.color)
                     }
                     Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold)).foregroundStyle(.tertiary)
                 }.font(.caption).lineLimit(1)

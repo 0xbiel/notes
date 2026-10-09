@@ -18,6 +18,10 @@ struct NotebookClipboardArchive: Codable {
 extension Workbench {
     static let libraryClipboardType = NSPasteboard.PasteboardType("local.palladium.library-items")
     var selectedLibraryPath: String? { selectedNote ?? selectedFile }
+    var showsDocumentComposer: Bool {
+        selectedLibraryPath != nil && assistant != nil &&
+        ((selectedNote != nil && layout != "preview") || !hideStudyComposer)
+    }
     var chatHistoryVisible: Bool { selectedLibraryPath == nil || documentChatVisible }
     var librarySelection: NotebookSidebarSelection {
         selectedFolder.map { .folder($0) } ?? selectedLibraryPath.map { .note($0) } ?? .notebook(selectedNotebookID)
@@ -236,6 +240,61 @@ extension Workbench {
             statusText = "Pegado"
         } catch { throw error }
     }
+    func refreshCreationLocations() throws {
+        guard let workspace else { throw ReplayError.missingWorkspace }
+        folders = try workspace.folderNames()
+        libraryFiles = try workspace.fileNames()
+    }
+    private func validatedRename(_ name: String) throws -> String {
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty, !clean.hasPrefix("."), !clean.contains("/"), !clean.contains("\\"), !clean.contains(":"), !clean.contains("\n"), !clean.contains("\0") else {
+            throw MediaError.invalid(UserDefaults.standard.string(forKey: "notes.language") == "en" ? "Choose a name without slashes or reserved characters." : "Elige un nombre sin barras ni caracteres reservados.")
+        }
+        return clean
+    }
+    func renameNotebook(_ id: String, name: String) throws {
+        guard canManageFiles, let workspace, let i = notebooks.firstIndex(where: { $0.id == id && $0.archivedAt == nil }) else { throw ReplayError.conflict }
+        let clean = try validatedRename(name)
+        guard !notebooks.contains(where: { $0.id != id && $0.name.localizedCaseInsensitiveCompare(clean) == .orderedSame }) else {
+            throw MediaError.invalid(UserDefaults.standard.string(forKey: "notes.language") == "en" ? "A notebook with this name already exists." : "Ya existe un cuaderno con este nombre.")
+        }
+        var updated = notebooks; updated[i].name = clean
+        try workspace.writeStorage("notebooks.json", data: JSONEncoder().encode(updated))
+        notebooks = updated
+    }
+    func renameLibraryFolder(_ path: String, name: String) throws { try renameLibraryItem(path, name: name, folder: true) }
+    func renameLibraryFile(_ path: String, name: String) throws { try renameLibraryItem(path, name: name, folder: false) }
+    private func renameLibraryItem(_ path: String, name: String, folder: Bool) throws {
+        guard canManageFiles, let workspace, let projects else { throw ReplayError.conflict }
+        var clean = try validatedRename(name)
+        if !folder {
+            let suffix = (path as NSString).pathExtension
+            if !suffix.isEmpty && !clean.lowercased().hasSuffix("." + suffix.lowercased()) { clean += "." + suffix }
+        }
+        guard !notebooks.contains(where: { $0.rootPrefix == path || $0.rootPrefix.hasPrefix(path + "/") }),
+              let owner = projects.owner(of: folder ? path + "/placeholder.md" : path), owner.archivedAt == nil else { throw ReplayError.unsafePath(path) }
+        let parent = path.components(separatedBy: "/").dropLast().joined(separator: "/")
+        let destination = (parent.isEmpty ? "" : parent + "/") + clean
+        if destination == path { return }
+        try NotebookFileLibrary(projects: projects).validate(folder ? destination + "/placeholder.md" : destination, notebookID: owner.id)
+        let affected = folder ? try workspace.fileNames().filter { $0.hasPrefix(path + "/") } : [path]
+        try checkpointDrafts(owner.id, paths: Set(affected))
+        _ = try projects.capture(owner.id, summary: "Before renaming " + path)
+        let selected = selectedLibraryPath
+        let previousFolder = selectedFolder
+        func move(_ from: String, _ to: String) throws {
+            if folder { try workspace.renameFolder(from, to: to) } else { try workspace.renameFile(from, to: to) }
+        }
+        try move(path, destination)
+        do { _ = try projects.capture(owner.id, summary: "Rename " + path + " → " + destination, invalidatesProposals: true) }
+        catch { try move(destination, path); throw error }
+        let moved = affected.map { destination + String($0.dropFirst(path.count)) }
+        refreshProjectFiles(affected + moved)
+        if let selected, selected == path || (folder && selected.hasPrefix(path + "/")) { openLibraryFile(destination + String(selected.dropFirst(path.count))) }
+        else if folder, let previousFolder, previousFolder == path || previousFolder.hasPrefix(path + "/") { selectLibraryFolder(destination + String(previousFolder.dropFirst(path.count))) }
+        notebookRevealRequest += 1
+    }
+
     func moveLibraryItem(_ path: String, folder: Bool, into destination: String, notebookID: String) {
         guard canManageFiles, let projects else { return }
         perform {

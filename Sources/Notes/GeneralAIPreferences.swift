@@ -7,6 +7,7 @@ struct GeneralAIPreferences: View {
     @State private var connectionTask: Task<Void, Never>?
     let manageProviders: () -> Void
     @AppStorage("notes.language") private var language = "es"
+    @AppStorage("notes.accent") private var accent = ""
     init(ai: AIController, manageProviders: @escaping () -> Void) {
         self.ai = ai; self.manageProviders = manageProviders
         _preferences = StateObject(wrappedValue: ProviderPreferencesModel(ai: ai))
@@ -17,33 +18,58 @@ struct GeneralAIPreferences: View {
             HStack {
                 Text(text("Inteligencia artificial", "Artificial intelligence")).font(.headline)
                 Spacer()
-                Button(action: manageProviders) { Image(systemName: "gearshape") }
+                Button(action: manageProviders) {
+                    Image(systemName: "gearshape").font(.system(size: 13))
+                        .foregroundStyle(.secondary).frame(width: 30, height: 30)
+                        .modifier(ControlHoverBackground())
+                }.buttonStyle(.plain)
                     .help(text("Gestionar proveedores y modelos", "Manage providers and models"))
                     .accessibilityLabel(text("Gestionar proveedores", "Manage providers"))
             }
-            Text(text("En uso: ", "In use: ") + ai.providerSettings.selectedProvider.title + " · " + ai.providerSettings.selected.model)
-                .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 16) {
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 8) {
                         modelControl.fixedSize()
+                        thinkingControl.fixedSize()
+                        Spacer(minLength: 0)
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        modelControl
+                        thinkingControl
+                    }
+                }
+                Divider().opacity(0.35)
+                ViewThatFits(in: .horizontal) {
+                    HStack {
+                        Text(text("Permiso de edición", "Editing permission"))
+                            .font(.callout).foregroundStyle(.secondary)
                         Spacer(minLength: 8)
                         permissionsControl.fixedSize()
                     }
-                    VStack(alignment: .leading, spacing: 12) {
-                        modelControl
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(text("Permiso de edición", "Editing permission"))
+                            .font(.callout).foregroundStyle(.secondary)
                         permissionsControl
                     }
                 }
-                HStack(spacing: 8) { thinkingControl; fastControl }
-            }.padding(18).background(.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 12))
+            }.padding(16).modifier(NotebookInputSurface(radius: 14, borderOpacity: 0.22))
             HStack {
                 Button {
                     connectionTask = Task { await preferences.testConnection() }
-                } label: { Label(text("Probar conexión", "Test connection"), systemImage: "bolt.horizontal.circle") }
+                } label: {
+                    Label(text("Probar conexión", "Test connection"), systemImage: "bolt.horizontal.circle")
+                        .font(.callout.weight(.medium)).foregroundStyle(NotebookAccent.color(accent))
+                        .padding(.horizontal, 12).frame(height: 34)
+                        .modifier(NotebookInputSurface(radius: 9))
+                }.buttonStyle(.plain)
                     .disabled(preferences.testingConnection)
                     .accessibilityIdentifier("general.ai.test")
-                Button(text("Actualizar modelos", "Refresh models")) { Task { await preferences.checkInstallation() } }
+                Button { Task { await preferences.checkInstallation() } } label: {
+                    Label(text("Actualizar modelos", "Refresh models"), systemImage: "arrow.clockwise")
+                        .font(.callout).foregroundStyle(.secondary)
+                        .padding(.horizontal, 10).frame(height: 34)
+                        .modifier(ControlHoverBackground())
+                }.buttonStyle(.plain)
                     .accessibilityIdentifier("general.ai.refresh")
                 if preferences.checking { ProgressView().controlSize(.small) }
                 Spacer()
@@ -69,6 +95,7 @@ struct GeneralAIPreferences: View {
         .onChange(of: ai.providerSettings) { old, updated in
             if preferences.draft == old { preferences.draft = updated }
         }
+        .tint(NotebookAccent.color(accent))
         .disabled(ai.running)
         .task(id: preferences.catalogIdentity) { await preferences.refreshCatalogPeriodically() }
         .onDisappear { connectionTask?.cancel() }
@@ -76,21 +103,8 @@ struct GeneralAIPreferences: View {
     private var modelControl: some View { AIModelSelector(preferences: preferences, manageProviders: manageProviders) }
     @ViewBuilder private var thinkingControl: some View {
         if preferences.draft.selectedProvider == .codexCLI, let selected = preferences.selectedModel, !selected.reasoning.isEmpty {
-            AIOptionSelector(title: text("Razonamiento", "Reasoning"), symbol: "brain", options:
-                [.init(id: "auto", title: "Auto")] + selected.reasoning.map { effort in
-                    .init(id: effort, title: effort == "xhigh" ? text("Extra alto", "Extra High") : effort.capitalized,
-                          badge: effort == selected.defaultReasoningEffort ? text("Predeterminado", "Default") : nil)
-                }, selection: Binding(get: { preferences.draft.selected.reasoningEffort ?? "auto" }, set: { preferences.draft.selected.reasoningEffort = $0 == "auto" ? nil : $0 }))
+            AIReasoningSelector(levels: selected.reasoning, modelName: selected.name, fastMode: preferences.supportsFastMode ? Binding(get: { preferences.draft.selected.fastMode == true }, set: { preferences.draft.selected.fastMode = $0 }) : nil, selection: Binding(get: { preferences.draft.selected.reasoningEffort ?? "auto" }, set: { preferences.draft.selected.reasoningEffort = $0 == "auto" ? nil : $0 }))
                 .accessibilityIdentifier("general.ai.thinking")
-        }
-    }
-    @ViewBuilder private var fastControl: some View {
-        if preferences.supportsFastMode {
-            AIOptionSelector(title: text("Velocidad", "Speed"), symbol: "bolt", options: [
-                .init(id: "standard", title: text("Estándar", "Standard")), .init(id: "fast", title: "Fast")
-            ], selection: Binding(get: { preferences.draft.selected.fastMode == true ? "fast" : "standard" }, set: { preferences.draft.selected.fastMode = $0 == "fast" }))
-                .accessibilityIdentifier("general.ai.fast")
-                .help(text("Modo rápido: mayor consumo de créditos", "Fast mode: higher credit usage"))
         }
     }
     private var permissionsControl: some View {

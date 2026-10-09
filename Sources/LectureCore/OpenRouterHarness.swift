@@ -14,10 +14,20 @@ extension Process {
     }
 }
 
+enum ProviderRequestLimits {
+    // Full-document and multi-file requests can spend minutes reasoning or generating JSON.
+    static let generation: TimeInterval = 10 * 60
+    static let diagnostic: TimeInterval = 90
+}
+
 final class NotesProcess: @unchecked Sendable {
     let process = Process()
     private let lock = NSLock()
     private var cancelled = false
+    private var timedOut = false
+    let timeoutInterval: TimeInterval
+    init(timeoutInterval: TimeInterval = ProviderRequestLimits.generation) { self.timeoutInterval = timeoutInterval }
+    private func expire() { lock.lock(); timedOut = true; cancelled = true; process.stopProviderHelper(); lock.unlock() }
     func cancel() { lock.lock(); cancelled = true; process.stopProviderHelper(); lock.unlock() }
     func run() throws -> Data {
         let output = Pipe(); process.standardOutput = output; process.standardError = FileHandle.nullDevice
@@ -26,7 +36,7 @@ final class NotesProcess: @unchecked Sendable {
         do { try process.run() } catch { lock.unlock(); throw error }
         lock.unlock()
         let timer = DispatchSource.makeTimerSource(queue: .global())
-        timer.schedule(deadline: .now() + 90); timer.setEventHandler { [self] in cancel() }; timer.resume()
+        timer.schedule(deadline: .now() + timeoutInterval); timer.setEventHandler { [self] in expire() }; timer.resume()
         defer {
             timer.cancel()
             if process.isRunning { process.stopProviderHelper(); process.waitUntilExit() }
@@ -37,8 +47,9 @@ final class NotesProcess: @unchecked Sendable {
             data.append(chunk)
         }
         process.waitUntilExit()
-        lock.lock(); let stopped = cancelled; lock.unlock()
-        if stopped { throw MediaError.invalid("Petición cancelada o agotó 90 segundos; el lote sigue guardado. Reintenta explícitamente.") }
+        lock.lock(); let stopped = cancelled, expired = timedOut; lock.unlock()
+        if expired { throw MediaError.invalid("El proveedor agotó el tiempo de espera; la petición sigue guardada. Reintenta explícitamente.") }
+        if stopped { throw CancellationError() }
         guard process.terminationStatus == 0 else { throw MediaError.invalid("El proveedor no pudo completar la petición. No se ha cambiado la nota.") }
         return data
     }
@@ -123,7 +134,7 @@ public struct OpenRouterHarness: Sendable {
         return (directory, env)
     }
     private func invoke(_ args: [String], input: URL? = nil, syntheticDemo: Bool = false) async throws -> Data {
-        let context = try environment(syntheticDemo: syntheticDemo); let command = NotesProcess()
+        let context = try environment(syntheticDemo: syntheticDemo); let command = NotesProcess(timeoutInterval: input == nil ? ProviderRequestLimits.diagnostic : ProviderRequestLimits.generation)
         command.process.executableURL = URL(fileURLWithPath: executablePath)
         command.process.arguments = ["--pure"] + args; command.process.environment = context.variables
         command.process.currentDirectoryURL = context.directory

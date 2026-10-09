@@ -1,4 +1,6 @@
 import XCTest
+import AppKit
+import UniformTypeIdentifiers
 import LectureCore
 @testable import Notes
 
@@ -11,6 +13,130 @@ final class NotebookWorkflowTests: XCTestCase {
         let model = Workbench(workspaceRoot: root)
         XCTAssertNil(model.errorText)
         return (model, root)
+    }
+
+    @MainActor func testNotebookRenamePersistsIdentityAndContents() throws {
+        let (model, root) = try environment()
+        defer { model.media?.shutdown(); model.ai?.stop(); try? FileManager.default.removeItem(at: root) }
+        try model.createNotebookItem(kind: "cuaderno", name: "Original")
+        let notebook = model.currentNotebook
+        try model.createNotebookItem(kind: "nota", name: "Kept", notebookID: notebook.id, folder: notebook.rootPrefix)
+        try model.renameNotebook(notebook.id, name: "Renamed notebook")
+        XCTAssertEqual(model.currentNotebook.name, "Renamed notebook")
+        XCTAssertEqual(model.currentNotebook.id, notebook.id)
+        XCTAssertEqual(try model.workspace!.readNote(notebook.rootPrefix + "/Kept.md"), "# Kept\n\n")
+        let saved = try JSONDecoder().decode([Notebook].self, from: model.workspace!.readStorage("notebooks.json"))
+        XCTAssertEqual(saved.first { $0.id == notebook.id }?.name, "Renamed notebook")
+        XCTAssertThrowsError(try model.renameNotebook(notebook.id, name: model.notebooks.first { $0.id != notebook.id }!.name))
+    }
+
+    @MainActor func testDocumentRenamePreservesExtensionsContentsAndSelection() throws {
+        let (model, root) = try environment()
+        defer { model.media?.shutdown(); model.ai?.stop(); try? FileManager.default.removeItem(at: root) }
+        let workspace = try XCTUnwrap(model.workspace)
+        model.openNote("Inicio.md")
+        model.drafts["Inicio.md"] = "# Updated draft"
+        try model.renameLibraryFile("Inicio.md", name: "Renamed")
+        XCTAssertEqual(model.selectedNote, "Renamed.md")
+        XCTAssertEqual(try workspace.readNote("Renamed.md"), "# Updated draft")
+        XCTAssertFalse(model.notes.contains("Inicio.md"))
+        try workspace.createAsset("Source.pdf", data: Data("Original bytes".utf8))
+        model.refreshProjectFiles(["Source.pdf"])
+        model.openLibraryFile("Source.pdf")
+        try model.renameLibraryFile("Source.pdf", name: "Reference.pdf")
+        XCTAssertEqual(model.selectedFile, "Reference.pdf")
+        XCTAssertEqual(try workspace.readFile("Reference.pdf"), Data("Original bytes".utf8))
+        try workspace.createAsset("Taken.pdf", data: Data("Other bytes".utf8))
+        XCTAssertThrowsError(try model.renameLibraryFile("Reference.pdf", name: "Taken"))
+        XCTAssertEqual(try workspace.readFile("Taken.pdf"), Data("Other bytes".utf8))
+    }
+
+    @MainActor func testFolderRenamePreservesNestedFilesDraftAndSelection() throws {
+        let (model, root) = try environment()
+        defer { model.media?.shutdown(); model.ai?.stop(); try? FileManager.default.removeItem(at: root) }
+        let workspace = try XCTUnwrap(model.workspace)
+        try workspace.createFolder("Unit/Nested/Empty")
+        try workspace.createNote("Unit/Nested/Note.md", text: "# Original")
+        try workspace.createAsset("Unit/Nested/Source.pdf", data: Data("PDF fixture bytes".utf8))
+        model.refreshProjectFiles(["Unit/Nested/Note.md", "Unit/Nested/Source.pdf"])
+        model.openNote("Unit/Nested/Note.md")
+        model.drafts["Unit/Nested/Note.md"] = "# Unsaved edit"
+        try model.renameLibraryFolder("Unit", name: "Renamed")
+        XCTAssertEqual(try workspace.readNote("Renamed/Nested/Note.md"), "# Unsaved edit")
+        XCTAssertEqual(try workspace.readFile("Renamed/Nested/Source.pdf"), Data("PDF fixture bytes".utf8))
+        XCTAssertTrue(model.folders.contains("Renamed/Nested/Empty"))
+        XCTAssertFalse(model.folders.contains("Unit"))
+        XCTAssertEqual(model.selectedNote, "Renamed/Nested/Note.md")
+        XCTAssertNil(model.drafts["Unit/Nested/Note.md"])
+        try workspace.createFolder("Taken")
+        XCTAssertThrowsError(try model.renameLibraryFolder("Renamed", name: "Taken"))
+        XCTAssertThrowsError(try model.renameLibraryFolder("Renamed", name: "../Escape"))
+        XCTAssertEqual(try workspace.readNote("Renamed/Nested/Note.md"), "# Unsaved edit")
+    }
+
+    @MainActor func testCreationRefreshDiscoversEmptyAndNestedFoldersAndCreatesInSelectedNotebook() throws {
+        let (model, root) = try environment()
+        defer { model.media?.shutdown(); model.ai?.stop(); try? FileManager.default.removeItem(at: root) }
+        try model.createNotebookItem(kind: "cuaderno", name: "Second")
+        let second = model.currentNotebook
+        let nested = second.rootPrefix + "/Unit/Nested/Empty"
+        try model.workspace!.createFolder(nested)
+        XCTAssertFalse(model.folders.contains(nested))
+        try model.refreshCreationLocations()
+        XCTAssertTrue(model.folderNames(in: second).contains(nested))
+        try model.createNotebookItem(kind: "nota", name: "New note", notebookID: second.id, folder: nested)
+        XCTAssertEqual(model.selectedNote, nested + "/New note.md")
+        XCTAssertTrue(model.notes.contains(nested + "/New note.md"))
+        XCTAssertFalse(model.folderNames(in: .copiedCourse).contains(nested))
+    }
+
+    @MainActor func testNotebookOrderingPersistenceAndModificationDates() throws {
+        let (model, root) = try environment()
+        defer { model.media?.shutdown(); model.ai?.stop(); try? FileManager.default.removeItem(at: root) }
+        try model.createNotebookItem(kind: "cuaderno", name: "Zeta")
+        let zeta = model.currentNotebook
+        try model.createNotebookItem(kind: "cuaderno", name: "Álgebra")
+        let algebra = model.currentNotebook
+        model.setNotebookSort(.alphabetical)
+        XCTAssertEqual(model.activeNotebooks.map(\.name), ["Álgebra", "Derecho del Trabajo", "Zeta"])
+        XCTAssertTrue(model.reorderNotebook(zeta.id, relativeTo: algebra.id))
+        XCTAssertEqual(model.notebookOrdering.sort, .manual)
+        XCTAssertEqual(model.activeNotebooks.map(\.id), [zeta.id, algebra.id, "derecho"])
+        XCTAssertTrue(model.reorderNotebook(zeta.id, relativeTo: "derecho", after: true))
+        XCTAssertEqual(model.activeNotebooks.map(\.id), [algebra.id, "derecho", zeta.id])
+        XCTAssertFalse(model.reorderNotebook("missing", relativeTo: algebra.id))
+        let workspace = try XCTUnwrap(model.workspace)
+        try workspace.createNote(zeta.rootPrefix + "/Lecture.md", text: "# Lecture")
+        try workspace.createNote(algebra.rootPrefix + "/Lecture.md", text: "# Lecture")
+        model.libraryFiles = try workspace.fileNames()
+        let newest = Date().addingTimeInterval(120)
+        try FileManager.default.setAttributes([.modificationDate: newest], ofItemAtPath: workspace.fileURL(zeta.rootPrefix + "/Lecture.md").path)
+        model.setNotebookSort(.modified)
+        XCTAssertEqual(model.activeNotebooks.first?.id, zeta.id)
+        try FileManager.default.setAttributes([.modificationDate: newest.addingTimeInterval(60)], ofItemAtPath: workspace.fileURL(algebra.rootPrefix + "/Lecture.md").path)
+        XCTAssertEqual(model.activeNotebooks.first?.id, algebra.id)
+        let reopened = Workbench(workspaceRoot: root)
+        defer { reopened.media?.shutdown(); reopened.ai?.stop() }
+        XCTAssertNil(reopened.errorText)
+        XCTAssertEqual(reopened.notebookOrdering.sort, .modified)
+        XCTAssertEqual(reopened.activeNotebooks.first?.id, algebra.id)
+        reopened.setNotebookSort(.manual)
+        XCTAssertEqual(reopened.activeNotebooks.map(\.id), [algebra.id, "derecho", zeta.id])
+        XCTAssertEqual(try workspace.readNote(zeta.rootPrefix + "/Lecture.md"), "# Lecture")
+    }
+
+    @MainActor func testOpeningWorkspaceDoesNotCreateSyntheticSession() throws {
+        let (model, root) = try environment()
+        defer { model.media?.shutdown(); model.ai?.stop(); try? FileManager.default.removeItem(at: root) }
+        XCTAssertTrue(model.sessions.isEmpty)
+        XCTAssertNil(model.document)
+        XCTAssertTrue(try XCTUnwrap(model.workspace).loadSessions().isEmpty)
+        XCTAssertEqual(model.selectedNote, "Inicio.md")
+        model.changeDraft("# Inicio\n\nEdición real.\n")
+        model.saveDraft()
+        XCTAssertFalse(model.isDirty)
+        XCTAssertEqual(try XCTUnwrap(model.workspace).readNote("Inicio.md"), "# Inicio\n\nEdición real.\n")
+        XCTAssertFalse(try XCTUnwrap(model.editor).history.isEmpty)
     }
 
     @MainActor func testProviderPreferencesDraftValidationSaveDiscardAndFailure() async throws {
@@ -124,6 +250,31 @@ final class NotebookWorkflowTests: XCTestCase {
         ai.running = true
         XCTAssertThrowsError(try ai.saveProviderSettings(settings))
         ai.running = false
+    }
+
+    @MainActor func testNewNoteDestinationIsExplicitAndConfinedToChosenNotebook() throws {
+        let (model, root) = try environment()
+        defer { model.media?.shutdown(); model.ai?.stop(); try? FileManager.default.removeItem(at: root) }
+        let first = model.currentNotebook
+        try model.createNotebookItem(kind: "cuaderno", name: "Algorithms")
+        let target = model.currentNotebook
+        try model.createNotebookItem(kind: "carpeta", name: "Unit/Exercises")
+        model.openNotebook(first.id)
+        let folder = target.rootPrefix + "/Unit/Exercises"
+        try model.createNotebookItem(kind: "nota", name: "Transitions", notebookID: target.id, folder: folder)
+        XCTAssertEqual(model.selectedNotebookID, target.id)
+        XCTAssertEqual(model.selectedNote, folder + "/Transitions.md")
+        XCTAssertEqual(try model.workspace!.readNote(folder + "/Transitions.md"), "# Transitions\n\n")
+        let selected = model.selectedNote
+        XCTAssertThrowsError(try model.createNotebookItem(kind: "nota", name: "Transitions", notebookID: target.id, folder: folder))
+        XCTAssertThrowsError(try model.createNotebookItem(kind: "nota", name: "Outside", notebookID: first.id, folder: folder))
+        XCTAssertThrowsError(try model.createNotebookItem(kind: "nota", name: "../Outside", notebookID: target.id, folder: folder))
+        XCTAssertThrowsError(try model.createNotebookItem(kind: "nota", name: "Missing", notebookID: "missing", folder: ""))
+        XCTAssertEqual(model.selectedNote, selected)
+        try model.createNotebookItem(kind: "nota", name: "Root note", notebookID: first.id, folder: first.rootPrefix)
+        XCTAssertEqual(model.selectedNote, "Root note.md")
+        XCTAssertEqual(model.selectedNotebookID, first.id)
+        XCTAssertFalse(try model.workspace!.noteNames().contains("Outside.md"))
     }
 
     @MainActor func testNotebookFolderDraftSwitchSaveAndReload() throws {

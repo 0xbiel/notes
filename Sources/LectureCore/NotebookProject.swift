@@ -31,11 +31,23 @@ public struct NotebookMessage: Codable, Identifiable, Equatable, Sendable {
     }
 }
 
+public struct NotebookQueuedPrompt: Codable, Identifiable, Equatable, Sendable {
+    public var id = UUID().uuidString
+    public var text: String
+    public var attachments: [NotebookAttachment]
+    public var configuration: AIProviderConfiguration
+    public var document: String?
+    public init(text: String, attachments: [NotebookAttachment], configuration: AIProviderConfiguration, document: String?) {
+        self.text = text; self.attachments = attachments; self.configuration = configuration; self.document = document
+    }
+}
+
 public struct NotebookChat: Codable, Identifiable, Equatable, Sendable {
     public var id = UUID().uuidString
     public var title: String
     public var messages: [NotebookMessage] = []
     public var draft = ""
+    public var queuedPrompts: [NotebookQueuedPrompt]?
     public var attachments: [NotebookAttachment]?
     public init(title: String = "Nuevo chat") { self.title = title }
 }
@@ -60,7 +72,7 @@ public struct NotebookCheckpoint: Codable, Identifiable, Equatable, Sendable {
 
 public struct NotebookFileChange: Codable, Equatable, Sendable {
     public var path: String
-    /// nil represents creation/deletion. Deletion is reserved for checkpoint restoration.
+    /// nil represents creation/deletion. Deletions and edits are recoverable through checkpoint restoration.
     public var before: String?
     public var after: String?
     public init(path: String, before: String?, after: String?) { self.path = path; self.before = before; self.after = after }
@@ -132,11 +144,11 @@ public final class NotebookProjectStore {
     private func manifest(_ texts: [String: String]) throws -> [String: String] { try texts.mapValues { try blob($0) } }
     private func persistIndex() throws { try workspace.writeStorage(index, data: JSONEncoder().encode(checkpoints)) }
     public func timeline(_ id: String) -> [NotebookCheckpoint] { checkpoints.filter { $0.notebookID == id } }
-    @discardableResult public func capture(_ id: String, summary: String) throws -> NotebookCheckpoint {
+    @discardableResult public func capture(_ id: String, summary: String, invalidatesProposals: Bool = false) throws -> NotebookCheckpoint {
         let files = try manifest(texts(id)), previous = timeline(id).last
         if let previous, previous.files == files { return previous }
         let changed = Set(files.keys).union(previous?.files.keys.map { $0 } ?? []).filter { files[$0] != previous?.files[$0] }.sorted()
-        let checkpoint = NotebookCheckpoint(notebookID: id, summary: summary, files: files, changedFiles: changed)
+        let checkpoint = NotebookCheckpoint(notebookID: id, summary: summary, files: files, changedFiles: changed, invalidatesProposals: invalidatesProposals)
         checkpoints.append(checkpoint)
         do { try persistIndex() } catch { checkpoints.removeLast(); throw error }
         didChange?(); return checkpoint
