@@ -3,6 +3,7 @@ import SwiftUI
 import LectureCore
 
 @MainActor private final class FoldingLayoutManager: NSLayoutManager, @preconcurrency NSLayoutManagerDelegate {
+    var math: [Int: RenderedMarkdownMath] = [:]
     var foldedRanges: [NSRange] = [] {
         didSet {
             guard foldedRanges != oldValue, let textStorage else { return }
@@ -23,12 +24,12 @@ import LectureCore
     }
 
     func layoutManager(_ layoutManager: NSLayoutManager, shouldGenerateGlyphs glyphs: UnsafePointer<CGGlyph>, properties props: UnsafePointer<NSLayoutManager.GlyphProperty>, characterIndexes charIndexes: UnsafePointer<Int>, font aFont: NSFont, forGlyphRange glyphRange: NSRange) -> Int {
-        guard !foldedRanges.isEmpty else { return 0 }
+        guard !foldedRanges.isEmpty || !math.isEmpty else { return 0 }
         var properties = Array(UnsafeBufferPointer(start: props, count: glyphRange.length))
         var changed = false
-        for index in properties.indices where foldedRanges.contains(where: { NSLocationInRange(charIndexes[index], $0) }) {
-            properties[index].insert(.null)
-            changed = true
+        for index in properties.indices {
+            if math[charIndexes[index]] != nil { properties[index] = .controlCharacter; changed = true }
+            else if foldedRanges.contains(where: { NSLocationInRange(charIndexes[index], $0) }) { properties[index].insert(.null); changed = true }
         }
         guard changed else { return 0 }
         properties.withUnsafeBufferPointer { buffer in
@@ -36,9 +37,88 @@ import LectureCore
         }
         return glyphRange.length
     }
+    func layoutManager(_ layoutManager: NSLayoutManager, shouldUse action: NSLayoutManager.ControlCharacterAction, forControlCharacterAt charIndex: Int) -> NSLayoutManager.ControlCharacterAction {
+        math[charIndex] == nil ? action : .whitespace
+    }
+    func layoutManager(_ layoutManager: NSLayoutManager, boundingBoxForControlGlyphAt glyphIndex: Int, for textContainer: NSTextContainer, proposedLineFragment proposedRect: NSRect, glyphPosition: NSPoint, characterIndex charIndex: Int) -> NSRect {
+        guard let render = math[charIndex] else { return .zero }
+        return NSRect(x: 0, y: -render.descent, width: render.size.width + 2, height: render.size.height)
+    }
+
 }
 
 @MainActor final class MarkdownScrollView: NSScrollView {
+    let sectionState = MarkdownSectionState()
+    private var sectionHost: MarkdownSectionHostingView?
+    private var sectionSource: String?
+    private var sectionRefreshPending = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        let host = MarkdownSectionHostingView(rootView: MarkdownSectionIndicator(state: sectionState))
+        host.setAccessibilityIdentifier("document.sectionIndicator")
+        addSubview(host)
+        sectionHost = host
+        contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(sectionBoundsChanged), name: NSView.boundsDidChangeNotification, object: contentView)
+        sectionState.navigate = { [weak self] section in self?.navigate(to: section) }
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    @objc private func sectionBoundsChanged() { scheduleSectionRefresh() }
+
+    func scheduleSectionRefresh() {
+        guard !sectionRefreshPending else { return }
+        sectionRefreshPending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.sectionRefreshPending = false
+            self.refreshSectionIndicator()
+        }
+    }
+
+    func refreshSectionIndicator() {
+        guard let view = documentView as? MarkdownTextView,
+              let manager = view.layoutManager, let container = view.textContainer else {
+            sectionHost?.isHidden = true; return
+        }
+        if sectionSource != view.string {
+            sectionSource = view.string
+            sectionState.sections = MarkdownSection.parse(view.string)
+        }
+        sectionHost?.isHidden = sectionState.sections.isEmpty
+        if sectionState.accent != view.taskAccent { sectionState.accent = view.taskAccent }
+        manager.ensureLayout(for: container)
+        let top = contentView.bounds.minY + 32
+        let atBottom = contentView.bounds.minY > 0 && contentView.bounds.maxY >= view.frame.height - 1
+        let current = atBottom ? sectionState.sections.last : (sectionState.sections.last { sectionY($0, view: view) <= top } ?? sectionState.sections.first)
+        if sectionState.currentID != current?.id { sectionState.currentID = current?.id }
+        positionSectionIndicator()
+    }
+
+    private func sectionY(_ section: MarkdownSection, view: MarkdownTextView) -> CGFloat {
+        guard let manager = view.layoutManager else { return 0 }
+        let glyphs = manager.glyphRange(forCharacterRange: NSRange(location: section.range.location, length: 1), actualCharacterRange: nil)
+        return manager.lineFragmentRect(forGlyphAt: glyphs.location, effectiveRange: nil).minY + view.textContainerOrigin.y
+    }
+
+    func navigate(to section: MarkdownSection) {
+        guard let view = documentView as? MarkdownTextView else { return }
+        let y = max(0, sectionY(section, view: view) - 28)
+        let maxY = max(0, view.frame.height - contentView.bounds.height + contentInsets.bottom)
+        contentView.scroll(to: NSPoint(x: contentView.bounds.minX, y: min(y, maxY)))
+        reflectScrolledClipView(contentView)
+        refreshSectionIndicator()
+    }
+
+    private func positionSectionIndicator() {
+        let available = max(0, bounds.height - contentInsets.bottom)
+        let height = min(max(40, CGFloat(sectionState.overview.count) * 11 + 47), min(280, available))
+        let y = (available - height) / 2 + (isFlipped ? 0 : contentInsets.bottom)
+        sectionHost?.frame = NSRect(x: bounds.maxX - 302, y: y, width: 280, height: height)
+    }
+
     private var pendingOrigin: NSPoint?
     private var restoring = false
     private var restorationGeneration = 0
@@ -58,6 +138,8 @@ import LectureCore
     override func layout() {
         super.layout()
         _ = applyPendingScroll()
+        positionSectionIndicator()
+        scheduleSectionRefresh()
     }
 
     @discardableResult private func applyPendingScroll() -> Bool {
@@ -246,6 +328,7 @@ struct LiveMarkdownEditor: NSViewRepresentable {
     private var codeBlocks: [CodeBlock] = []
     private var inlineCode: [NSRange] = []
     private(set) var tableBlocks: [MarkdownTableBlock] = []
+    private(set) var renderedMath: [RenderedMarkdownMath] = []
     private(set) var renderedTables: [RenderedMarkdownTable] = []
     var contextTable: MarkdownTableBlock?
     var contextTableSource = ""
@@ -330,7 +413,7 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         renderMarkdown()
         (layoutManager as? FoldingLayoutManager)?.foldedRanges = codeBlocks.compactMap {
             collapsedBlocks.contains($0.id) ? foldedRange(for: $0) : nil
-        } + renderedTables.compactMap(\.foldedRange)
+        } + renderedTables.compactMap(\.foldedRange) + renderedMath.map(\.foldedRange)
         needsDisplay = true
         window?.invalidateCursorRects(for: self)
     }
@@ -446,6 +529,11 @@ struct LiveMarkdownEditor: NSViewRepresentable {
             }
         }
         super.draw(dirtyRect)
+        for render in renderedMath {
+            if let rect = mathRect(render), rect.intersects(dirtyRect) {
+                render.image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+            }
+        }
         for table in renderedTables {
             if let rect = tableRect(table), rect.intersects(dirtyRect) { table.layout.draw(at: rect.origin); drawTableSelection(table, at: rect) }
         }
@@ -461,6 +549,17 @@ struct LiveMarkdownEditor: NSViewRepresentable {
                 NSColor.white.setStroke(); check.lineWidth = 1.7; check.lineCapStyle = .round; check.stroke()
             }
         }
+    }
+    func mathRect(_ render: RenderedMarkdownMath) -> NSRect? {
+        guard let manager = layoutManager, let container = textContainer else { return nil }
+        manager.ensureLayout(for: container)
+        let glyph = manager.glyphIndexForCharacter(at: render.span.range.location)
+        let line = manager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        let location = manager.location(forGlyphAt: glyph)
+        let y = render.span.display ? max(0, (line.height - render.size.height) / 2) : max(0, min(location.y - render.ascent, line.height - render.size.height))
+        return NSRect(x: textContainerOrigin.x + line.minX + location.x,
+                      y: textContainerOrigin.y + line.minY + y,
+                      width: render.size.width, height: render.size.height)
     }
     private func taskRect(_ item: TaskItem) -> NSRect? {
         guard let layoutManager, let textContainer, item.content.location < (string as NSString).length else { return nil }
@@ -673,7 +772,7 @@ struct LiveMarkdownEditor: NSViewRepresentable {
     func renderMarkdown() {
         guard !styling, !hasMarkedText(), let storage = textStorage else { return }
         styling = true
-        defer { styling = false }
+        defer { styling = false; (enclosingScrollView as? MarkdownScrollView)?.scheduleSectionRefresh() }
         let source = string as NSString
         let full = NSRange(location: 0, length: source.length)
         let active = liveEditing ? selectedRange() : NSRange(location: NSNotFound, length: 0)
@@ -755,7 +854,12 @@ struct LiveMarkdownEditor: NSViewRepresentable {
             storage.addAttribute(.paragraphStyle, value: strut, range: firstLine)
         }
         codeRanges += tableBlocks.map(\.range)
-        func inCode(_ range: NSRange) -> Bool { codeRanges.contains { NSIntersectionRange($0, range).length > 0 } }
+        var mathRanges: [NSRange] = []
+        func inCode(_ range: NSRange) -> Bool {
+            codeRanges.contains { NSIntersectionRange($0, range).length > 0 } || mathRanges.contains {
+                NSIntersectionRange($0, range).length > 0 && !(range.location <= $0.location && NSMaxRange(range) >= NSMaxRange($0))
+            }
+        }
         for block in blocks {
             storage.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: 14, weight: .regular), range: block.range)
             let header = NSMutableParagraphStyle()
@@ -824,6 +928,16 @@ struct LiveMarkdownEditor: NSViewRepresentable {
             }
             codeRanges.append(match.range)
         }
+        let mathSpans = MarkdownMath.spans(in: string, excluding: codeRanges)
+        mathRanges = mathSpans.map(\.range)
+        let formatSource = NSMutableString(string: string)
+        for span in mathSpans {
+            let masked = source.substring(with: span.range).utf16.map { $0 == 10 ? "\n" : " " }.joined()
+            formatSource.replaceCharacters(in: span.range, with: masked)
+        }
+        func formatMatches(_ pattern: String) -> [NSTextCheckingResult] {
+            (try? NSRegularExpression(pattern: pattern, options: [.anchorsMatchLines]))?.matches(in: formatSource as String, range: full) ?? []
+        }
         let boldItalic = NSFontManager.shared.convert(.systemFont(ofSize: 16), toHaveTrait: [.boldFontMask, .italicFontMask])
         let formats: [(String, NSAttributedString.Key, Any, Int)] = [
             (#"(?<![\\*])\*\*\*([^*\n]+)\*\*\*(?!\*)"#, .font, boldItalic, 3),
@@ -835,7 +949,7 @@ struct LiveMarkdownEditor: NSViewRepresentable {
             ("(?<!\\\\)~~([^~\\n]+)~~", .strikethroughStyle, NSUnderlineStyle.single.rawValue, 2)
         ]
         for (pattern, key, value, count) in formats {
-            for match in matches(pattern) where !inCode(match.range) {
+            for match in formatMatches(pattern) where !inCode(match.range) {
                 let body = source.substring(with: match.range(at: 1))
                 guard body.first?.isWhitespace == false, body.last?.isWhitespace == false else { continue }
                 if key == .font, let requested = value as? NSFont {
@@ -872,11 +986,29 @@ struct LiveMarkdownEditor: NSViewRepresentable {
             hide(NSRange(location: match.range.location, length: labelStart - match.range.location), context: match.range)
             hide(NSRange(location: NSMaxRange(label), length: 2), context: match.range)
         }
+        renderedMath = []
+        for span in mathSpans where !visible(span.range) {
+            let font = storage.attribute(.font, at: span.range.location, effectiveRange: nil) as? NSFont
+            guard let render = MarkdownMathRenderer.render(span, source: string, fontSize: span.display ? 20 : (font?.pointSize ?? 16)) else { continue }
+            renderedMath.append(render)
+            storage.addAttribute(.foregroundColor, value: NSColor.clear, range: span.range)
+            if span.display {
+                let style = NSMutableParagraphStyle(); style.alignment = .center
+                style.paragraphSpacingBefore = 10; style.paragraphSpacing = 10
+                style.minimumLineHeight = render.size.height + 16
+                storage.addAttribute(.paragraphStyle, value: style, range: source.lineRange(for: span.range))
+            } else if render.size.height > (font?.ascender ?? 16) - (font?.descender ?? -4) {
+                let style = (storage.attribute(.paragraphStyle, at: span.range.location, effectiveRange: nil) as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
+                style.minimumLineHeight = max(style.minimumLineHeight, render.size.height + 6)
+                storage.addAttribute(.paragraphStyle, value: style, range: source.lineRange(for: span.range))
+            }
+        }
+        (layoutManager as? FoldingLayoutManager)?.math = Dictionary(uniqueKeysWithValues: renderedMath.map { ($0.span.range.location, $0) })
         storage.endEditing()
         documentUndo.enableUndoRegistration()
         (layoutManager as? FoldingLayoutManager)?.foldedRanges = blocks.compactMap {
             collapsedBlocks.contains($0.id) ? foldedRange(for: $0) : nil
-        } + renderedTables.compactMap(\.foldedRange)
+        } + renderedTables.compactMap(\.foldedRange) + renderedMath.map(\.foldedRange)
         // Selection callbacks can restyle text during an AppKit character edit.
         // In that path, font changes outside the edited paragraph can retain
         // glyph IDs from the previous font. Regenerate them after styling.

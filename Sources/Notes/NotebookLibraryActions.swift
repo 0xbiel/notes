@@ -52,6 +52,44 @@ extension Workbench {
             panel.beginSheetModal(for: window, completionHandler: completion)
         } else { panel.begin(completionHandler: completion) }
     }
+    func chooseFolderImport(notebookID: String, asNotebook: Bool) {
+        guard canManageFiles else { return }
+        let english = UserDefaults.standard.string(forKey: "notes.language") == "en"
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false
+        panel.prompt = english ? "Import" : "Importar"
+        panel.message = asNotebook
+            ? (english ? "Import folder as a new notebook" : "Importar carpeta como nuevo cuaderno")
+            : (english ? "Import folder contents into the notebook" : "Importar contenido de carpeta al cuaderno")
+        let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            self?.importFolderContents(url, notebookID: notebookID, asNotebook: asNotebook)
+        }
+        if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+            panel.beginSheetModal(for: window, completionHandler: completion)
+        } else { panel.begin(completionHandler: completion) }
+    }
+    func importFolderContents(_ url: URL, notebookID: String, asNotebook: Bool) {
+        guard canManageFiles, let projects else { return }
+        perform {
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            guard try FileManager.default.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType == .typeDirectory else {
+                throw ReplayError.unsafePath(url.path)
+            }
+            let library = NotebookFileLibrary(projects: projects)
+            let snapshot = try library.externalSnapshot(url, destination: "Imported")
+            func relative(_ path: String) -> String { String(path.dropFirst("Imported/".count)) }
+            let archive = NotebookClipboardArchive(name: url.lastPathComponent, notebook: asNotebook,
+                files: Dictionary(uniqueKeysWithValues: snapshot.files.map { (relative($0.key), $0.value) }),
+                folders: snapshot.folders.filter { $0 != "Imported" }.map(relative), state: nil)
+            guard asNotebook || activeNotebooks.contains(where: { $0.id == notebookID }) else { throw ReplayError.conflict }
+            let destination = notebooks.first { $0.id == notebookID }?.rootPrefix ?? ""
+            try pasteLibraryArchive(archive, into: destination, notebookID: notebookID, library: library, importedNotebook: asNotebook)
+            notebookRevealRequest += 1
+            statusText = UserDefaults.standard.string(forKey: "notes.language") == "en" ? "Imported" : "Importado"
+        }
+    }
     func importLibraryFiles(_ urls: [URL], into folder: String, notebookID: String) {
         guard canManageFiles, let projects else { return }
         perform {
@@ -134,14 +172,15 @@ extension Workbench {
             importLibraryFiles(urls, into: folder, notebookID: notebookID)
         }
     }
-    private func pasteLibraryArchive(_ archive: NotebookClipboardArchive, into folder: String, notebookID: String, library: NotebookFileLibrary) throws {
+    private func pasteLibraryArchive(_ archive: NotebookClipboardArchive, into folder: String, notebookID: String, library: NotebookFileLibrary, importedNotebook: Bool = false) throws {
         guard let workspace, let projects else { throw ReplayError.missingWorkspace }
         var destination = folder, targetID = notebookID
         var createdNotebook: Notebook?
         if archive.notebook {
-            var name = archive.name + " copy", index = 2
+            let baseName = archive.name + (importedNotebook ? "" : " copy")
+            var name = baseName, index = 2
             while notebooks.contains(where: { $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame }) || FileManager.default.fileExists(atPath: workspace.courseRoot.appendingPathComponent("Cuadernos/" + name).path) {
-                name = archive.name + " copy \(index)"; index += 1
+                name = baseName + " \(index)"; index += 1
             }
             let notebook = Notebook(name: name, rootPrefix: "Cuadernos/" + name)
             _ = try workspace.fileURL(notebook.rootPrefix + "/placeholder")

@@ -65,23 +65,31 @@ struct NotebookStatusIndicator: View {
     @ObservedObject var ai: AIController
     @AppStorage("notes.accent") private var stored = ""
     @AppStorage("notes.language") private var language = "es"
-    private var active: Bool { media.isRecording || media.busy || assistant.runningNotebookID != nil || ai.running }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private var active: Bool { media.isRecording || media.busy || assistant.runningNotebookID != nil || assistant.importingAttachments || ai.running }
     private var color: Color { media.isRecording ? .red : NotebookAccent.color(stored) }
     private var title: String {
         if media.isRecording { return language == "en" ? "Recording" : "Grabando" }
         if assistant.runningNotebookID != nil { return NotebookAssistantText.display(assistant.progress, language: language) }
         if media.busy { return language == "en" ? "Processing recording…" : "Procesando grabación…" }
+        if assistant.importingAttachments { return language == "en" ? "Preparing attachments…" : "Preparando archivos…" }
         return language == "en" ? "Working…" : "Trabajando…"
     }
     var body: some View {
         if active {
-            HStack(spacing: 6) {
-                if media.isRecording { Circle().fill(color).frame(width: 6, height: 6) }
-                else { ProgressView().controlSize(.mini) }
-                Text(title).font(.caption).lineLimit(1).truncationMode(.middle)
-            }.padding(.horizontal, 11).padding(.vertical, 6)
-                .frame(maxWidth: 300).fixedSize(horizontal: true, vertical: true)
-                .modifier(NotebookInputSurface(radius: 100))
+            Group {
+                if reduceMotion { Capsule().fill(color) }
+                else {
+                    TimelineView(.animation(minimumInterval: 1.0 / 30)) { timeline in
+                        let phase = timeline.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.8) / 1.8
+                        Capsule().fill(color.opacity(0.3))
+                            .overlay {
+                                LinearGradient(colors: [.clear, color, .clear], startPoint: .leading, endPoint: .trailing)
+                                    .frame(width: 48).offset(x: (phase * 2 - 1) * 80)
+                            }.clipShape(Capsule())
+                    }
+                }
+            }.frame(width: 112, height: 4)
                 .accessibilityElement(children: .ignore).accessibilityLabel(title)
                 .accessibilityIdentifier("notebook.status")
                 .allowsHitTesting(false)

@@ -17,9 +17,14 @@ try:
     executable.parent.mkdir(parents=True)
     shutil.copyfile(root/'.build-native/debug/Notes',executable);executable.chmod(0o755)
     shutil.copytree(root/'Resources', app/'Contents/Resources', dirs_exist_ok=True, ignore=shutil.ignore_patterns('Branding'))
+    for bundle in (root/'.build-native/debug').glob('*.bundle'):
+        shutil.copytree(bundle, app/'Contents/Resources'/bundle.name, dirs_exist_ok=True)
     shutil.copyfile(root/'Resources/Branding/Palladium.icns', app/'Contents/Resources/Palladium.icns')
     info={"CFBundleExecutable":"Notes","CFBundleIdentifier":"local.biel.DerechoReplayPrototype","CFBundleName":"Palladium","CFBundleDisplayName":"Palladium","CFBundleIconFile":"Palladium.icns","CFBundlePackageType":"APPL","CFBundleShortVersionString":"0.3.0","CFBundleVersion":"3","LSMinimumSystemVersion":"14.0","NSHighResolutionCapable":True,"NSMicrophoneUsageDescription":"Grabar la clase únicamente cuando pulses Grabar; el audio permanece en este Mac.","PrototypeWorkspace":str(workspace)}
     (app/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
+    # SwiftPM resources can arrive read-only; make staged copies writable for signing cleanup.
+    for file in app.rglob('*'):
+        if file.is_file(): file.chmod(file.stat().st_mode | 0o200)
     subprocess.run(['xattr','-cr',str(app)],check=True)
     subprocess.run(['codesign','--force','--sign','-','--timestamp=none',str(app)],check=True)
     subprocess.run(['codesign','--verify','--deep','--strict',str(app)],check=True)

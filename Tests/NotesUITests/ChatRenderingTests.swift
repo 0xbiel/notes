@@ -1,6 +1,7 @@
 import XCTest
 import AppKit
 import SwiftUI
+import LectureCore
 @testable import Notes
 
 final class ChatRenderingTests: XCTestCase {
@@ -57,6 +58,42 @@ final class ChatRenderingTests: XCTestCase {
         XCTAssertTrue(NotebookAssistantText.display(error, language: "en").hasPrefix("The assistant"))
         XCTAssertEqual(NotebookAssistantText.display(error, language: "es"), error)
         XCTAssertEqual(NotebookAssistantText.display("Consultando BOE · Art. 1", language: "en"), "Looking up BOE · Art. 1")
+    }
+
+    func testProviderErrorsTranslateBothWaysAndPreserveHTTPStatus() {
+        let rejection = "Antigravity intentó usar herramientas; respuesta rechazada."
+        let english = "Antigravity tried to use tools; response rejected."
+        XCTAssertEqual(NotebookAssistantText.display(rejection, language: "en"), english)
+        XCTAssertEqual(NotebookAssistantText.display(english, language: "es"), rejection)
+        let spanish = "OpenRouter devolvió un error (HTTP 429). No se relajaron privacidad/precio ni se cambió de proveedor. El lote se conserva para revisar o reintentar."
+        let translated = NotebookAssistantText.display(spanish, language: "en")
+        XCTAssertEqual(translated, "OpenRouter returned an error (HTTP 429). Privacy and cost restrictions were preserved, and the provider was not changed. The batch is saved for review or retry.")
+        XCTAssertEqual(NotebookAssistantText.display(translated, language: "es"), spanish)
+        let attachment = "Attachments must be 20 MB or smaller."
+        let localized = NotebookAssistantText.display(attachment, language: "es")
+        XCTAssertEqual(localized, "Los archivos adjuntos no pueden superar 20 MB.")
+        XCTAssertEqual(NotebookAssistantText.display(localized, language: "en"), attachment)
+        XCTAssertEqual(NotebookAssistantText.display("Codex devolvió un evento no permitido (tool_call); respuesta rechazada.", language: "en"),
+                       "Codex returned a disallowed event (tool_call); response rejected.")
+    }
+
+    func testSavedMessagesAndStatusesRelocalizeWithoutChangingConversationText() throws {
+        let error = NotebookMessage(role: "error", text: "Antigravity intentó usar herramientas; respuesta rechazada.")
+        let saved = try JSONDecoder().decode(NotebookMessage.self, from: JSONEncoder().encode(error))
+        XCTAssertEqual(NotebookAssistantText.message(saved, language: "en"), "Antigravity tried to use tools; response rejected.")
+        XCTAssertEqual(NotebookAssistantText.message(saved, language: "es"), error.text)
+        let text = "Antigravity intentó usar herramientas; respuesta rechazada."
+        XCTAssertEqual(NotebookAssistantText.message(.init(role: "user", text: text), language: "en"), text)
+        XCTAssertEqual(NotebookAssistantText.message(.init(role: "assistant", text: text), language: "en"), text)
+        XCTAssertEqual(NotebookAssistantText.message(.init(role: "assistant", text: "Sin cambios.", appGenerated: false), language: "en"), "Sin cambios.")
+        let status = NotebookMessage(role: "assistant", text: "Cambios guardados · 2 archivo(s).", appGenerated: true)
+        XCTAssertEqual(NotebookAssistantText.message(status, language: "en"), "Changes saved · 2 file(s).")
+        XCTAssertEqual(NotebookAssistantText.message(.init(role: "assistant", text: "Sin cambios."), language: "en"), "No changes.")
+        let activity = "Validando y guardando 3 archivo(s)…"
+        let translated = NotebookAssistantText.display(activity, language: "en")
+        XCTAssertEqual(translated, "Validating and saving 3 file(s)…")
+        XCTAssertEqual(NotebookAssistantText.display(translated, language: "es"), activity)
+        XCTAssertEqual(NotebookAssistantText.display("Reading · Cuadernos/English.md", language: "es"), "Leyendo · Cuadernos/English.md")
     }
 
 }

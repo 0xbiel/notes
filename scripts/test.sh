@@ -11,7 +11,7 @@ fi
 export CLANG_MODULE_CACHE_PATH="$prototype_root/.build/module-cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$prototype_root/.build/module-cache"
 # The native backend avoids file-provider FinderInfo on SwiftBuild's signed
-# XCTest bundle on this Mac. No dependencies are downloaded by this package.
+# XCTest bundle on this Mac.
 test_status=0
 swift test --build-system native --disable-sandbox --scratch-path .build-native --cache-path .build/cache --config-path .build/config --security-path .build/security || test_status=$?
 if [[ "$verify_originals" == 1 ]]; then
