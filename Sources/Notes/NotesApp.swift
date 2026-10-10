@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import LectureCore
 
 @main
@@ -38,8 +39,6 @@ struct NotesApp: App {
             CommandMenu("Notas") {
                 Button("Abrir nota…") { model.showQuickOpen = true }.keyboardShortcut("p")
                 Button("Buscar nota…") { model.showQuickOpen = true }.keyboardShortcut("t")
-                Button("Mostrar inspector") { model.showInspector.toggle() }.keyboardShortcut("i", modifiers: [.command, .option])
-                Button("Revisar edición") { model.inspectorHistoryMode = "editor"; model.selectedTab = "changes"; model.showInspector = true }.keyboardShortcut("d", modifiers: [.command, .shift])
             }
         }
     }
@@ -59,16 +58,14 @@ final class Workbench: ObservableObject {
     @Published var noteText = ""
     @Published var errorText: String?
     @Published var busy = false
-    @Published var selectedTab = "library"
-    @Published var showInspector = false
     @Published var showQuickOpen = false
     @Published var showPreferences = false
+    var requestedPreferencesSection: NotebookPreferencesSection = .general
     @Published var creationKind: String?
     @Published var renamingItem: NotebookSidebarSelection?
     @Published var creationInitialName = ""
     @Published var layout = "preview"
     @Published var hideStudyComposer = false
-    @Published var inspectorHistoryMode = "session"
     @Published var trash: [NotebookTrashEntry] = []
     @Published var notebooks: [Notebook] = [.copiedCourse] { didSet { projects?.notebooks = notebooks } }
     @Published var notebookOrdering = NotebookOrdering()
@@ -85,6 +82,8 @@ final class Workbench: ObservableObject {
     var editor: NotebookEditor?
     var workspace: SafeWorkspace?
     @Published var media: MediaController?
+    @Published var dictationActive = false
+    private var dictationObservation: AnyCancellable?
     @Published var ai: AIController?
     var projects: NotebookProjectStore?
     @Published var assistant: NotebookAssistantController?
@@ -107,6 +106,11 @@ final class Workbench: ObservableObject {
             let workspace = try SafeWorkspace(root: root, originalRoot: URL(fileURLWithPath: original))
             self.workspace = workspace
             media = try MediaController(workspace: workspace)
+            if let media {
+                dictationObservation = media.$isRecording.combineLatest(media.$busy)
+                    .map { $0 || $1 }.removeDuplicates()
+                    .sink { [weak self] active in self?.dictationActive = active }
+            }
             notes = try workspace.noteNames()
             folders = try workspace.folderNames()
             editor = try NotebookEditor(workspace: workspace)
@@ -120,7 +124,7 @@ final class Workbench: ObservableObject {
                     do { try self.engine?.acknowledgeEditorSave(filename: change.filename, before: change.before, after: change.after) }
                     catch { self.statusText = "Nota guardada; la sesión de simulación tiene un conflicto." }
                 }
-                media?.onTranscriptUpdate = { [weak self] job in self?.ai?.receive(job) }
+                media?.onTranscriptUpdate = { [weak self] job in self?.receiveDictation(job) }
             }
             if FileManager.default.fileExists(atPath: workspace.storageRoot.appendingPathComponent("editor-drafts.json").path) {
                 let archive = try JSONDecoder().decode(DraftArchive.self, from: workspace.readStorage("editor-drafts.json"))
@@ -161,16 +165,39 @@ final class Workbench: ObservableObject {
         }
     }
 
-    func importMedia() {
-        let notebook = currentNotebook
-        media?.chooseImport(notebook: notebook, note: selectedNote)
-        selectedTab = "library"; showInspector = true
+    struct DictationTarget {
+        var notebook: Notebook
+        var chatID: String
+        var jobID: String
+        var delivered: Set<String> = []
     }
+    var dictationTarget: DictationTarget?
     func toggleMicrophone() {
-        guard let media else { return }
-        if media.isRecording { media.stopMicrophone() }
-        else { guard !activeNotebooks.isEmpty else { return }; media.startMicrophone(notebook: currentNotebook, note: selectedNote) }
-        selectedTab = "library"; showInspector = true
+        guard let media, let assistant else { return }
+        if media.isRecording { media.stopMicrophone(); return }
+        guard !media.busy, !activeNotebooks.isEmpty else { return }
+        guard media.available(for: nil) else {
+            requestedPreferencesSection = .transcription; showPreferences = true; return
+        }
+        do {
+            let notebook = currentNotebook
+            let chatID = try assistant.chat(notebook)?.id ?? assistant.newChat(notebook)
+            let jobID = UUID().uuidString
+            dictationTarget = DictationTarget(notebook: notebook, chatID: chatID, jobID: jobID)
+            hideStudyComposer = false
+            media.startMicrophone(notebook: notebook, note: "", dictationID: jobID)
+        } catch { errorText = error.localizedDescription }
+    }
+    func receiveDictation(_ job: MediaJob) {
+        guard var target = dictationTarget, target.jobID == job.id, let assistant else { return }
+        let fresh = job.transcript.filter { !target.delivered.contains($0.id) }
+        do {
+            if !fresh.isEmpty {
+                try assistant.appendDictation(fresh.map(\.text).joined(separator: " "), notebook: target.notebook, chatID: target.chatID)
+                target.delivered.formUnion(fresh.map(\.id))
+            }
+            dictationTarget = job.stage == .transcribed ? nil : target
+        } catch { dictationTarget = nil; media?.error = error.localizedDescription; media?.stopMicrophone() }
     }
 
     func select(_ id: String) {

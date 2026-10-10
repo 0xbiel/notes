@@ -17,6 +17,60 @@ final class NotebookAssistantTests: XCTestCase {
         addTeardownBlock { @MainActor in model.assistant?.stop(); model.ai?.stop(); model.media?.shutdown(); try? FileManager.default.removeItem(at: root) }
         return (model, assistant, root)
     }
+    @MainActor func testDictationAppendsToOriginatingDraftWithoutSendingOrOverwritingEdits() throws {
+        let (model, assistant, _) = try fixture()
+        let notebook = model.currentNotebook
+        assistant.setDraft("Existing text.", notebook: notebook)
+        let chatID = try XCTUnwrap(assistant.chat(notebook)?.id)
+        var job = MediaJob(notebookID: notebook.id, subject: notebook.name, note: "", sourceName: "Microphone", microphone: true)
+        model.dictationTarget = .init(notebook: notebook, chatID: chatID, jobID: job.id)
+        job.transcript = [.init(id: "0-0", start: 0, end: 5, text: "Hola clase.")]
+        model.receiveDictation(job)
+        XCTAssertEqual(assistant.chat(notebook)?.draft, "Existing text. Hola clase.")
+        assistant.setDraft("Corrected text.", notebook: notebook)
+        model.receiveDictation(job)
+        XCTAssertEqual(assistant.chat(notebook)?.draft, "Corrected text.")
+        let otherID = try assistant.newChat(notebook)
+        assistant.setDraft("Other chat", notebook: notebook)
+        job.transcript.append(.init(id: "1-0", start: 5, end: 10, text: "Segunda frase."))
+        job.stage = .transcribed
+        model.receiveDictation(job)
+        XCTAssertEqual(assistant.chat(notebook)?.id, otherID)
+        XCTAssertEqual(assistant.chat(notebook)?.draft, "Other chat")
+        let original = try XCTUnwrap(assistant.state(notebook).chats.first { $0.id == chatID })
+        XCTAssertEqual(original.draft, "Corrected text. Segunda frase.")
+        XCTAssertTrue(original.messages.isEmpty)
+        XCTAssertNil(model.dictationTarget)
+        XCTAssertEqual(try model.workspace?.readNote("Inicio.md"), "# Inicio\n\nTexto inicial.\n")
+    }
+    @MainActor func testDictationIgnoresUnrelatedJobsAndBlocksSendUntilFinished() throws {
+        let (model, assistant, _) = try fixture()
+        let notebook = model.currentNotebook
+        assistant.setDraft("Draft", notebook: notebook)
+        let id = try XCTUnwrap(assistant.chat(notebook)?.id)
+        model.dictationTarget = .init(notebook: notebook, chatID: id, jobID: "expected")
+        var unrelated = MediaJob(notebookID: notebook.id, subject: "Example", note: "", sourceName: "Old recording")
+        unrelated.transcript = [.init(id: "0-0", start: 0, end: 1, text: "Wrong chat")]
+        model.receiveDictation(unrelated)
+        XCTAssertEqual(assistant.chat(notebook)?.draft, "Draft")
+        model.media?.busy = true
+        model.submitNotebookPrompt()
+        XCTAssertTrue(assistant.chat(notebook)?.messages.isEmpty == true)
+        XCTAssertFalse(assistant.isRunning(notebook))
+        model.media?.busy = false
+    }
+    @MainActor func testAudioAndVideoCannotEnterThroughGeneralFileImport() throws {
+        let (model, _, root) = try fixture()
+        let library = NotebookFileLibrary(projects: try XCTUnwrap(model.projects))
+        for name in ["example.m4a", "example.MP4", "example.webm", "example.wav"] {
+            let source = root.appendingPathComponent(name)
+            try Data("Invented fixture".utf8).write(to: source)
+            XCTAssertThrowsError(try library.externalSnapshot(source, destination: name))
+        }
+        let text = root.appendingPathComponent("example.txt")
+        try Data("Document".utf8).write(to: text)
+        XCTAssertEqual(try library.externalSnapshot(text, destination: "example.txt").files.count, 1)
+    }
     @MainActor func testChatNavigatorGroupsRepliesAndTracksVisibleExchange() {
         let first = NotebookMessage(role: "user", text: "First question")
         let reply = NotebookMessage(role: "assistant", text: "First reply")

@@ -159,6 +159,20 @@ final class NotebookAssistantController: ObservableObject {
             try save(value, id: notebook.id)
         } catch { self.error = error.localizedDescription }
     }
+    /// Dictation appends to its original chat, never to whichever chat happens
+    /// to be selected when recognition finishes. It never sends a request.
+    func appendDictation(_ text: String, notebook: Notebook, chatID: String) throws {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        var value = state(notebook)
+        guard let index = value.chats.firstIndex(where: { $0.id == chatID }) else {
+            throw MediaError.invalid("El chat del dictado ya no existe. No se ha enviado ningún mensaje.")
+        }
+        let existing = value.chats[index].draft
+        let separator = existing.isEmpty || existing.last?.isWhitespace == true ? "" : " "
+        value.chats[index].draft = existing + separator + text
+        try save(value, id: notebook.id)
+    }
     func importAttachments(_ urls: [URL], notebook: Notebook) {
         guard !importingAttachments else { return }
         do {
@@ -453,6 +467,7 @@ extension Workbench {
         } catch { errorText = error.localizedDescription; return false }
     }
     func submitNotebookPrompt() {
+        guard media?.isRecording != true, media?.busy != true else { return }
         guard let assistant, projects != nil, let ai else { return }
         let notebook = currentNotebook
         assistant.dispatchQueued = { [weak self] notebook, chatID, item in
@@ -470,6 +485,7 @@ extension Workbench {
         assistant.resumeQueue(currentNotebook)
     }
     func steerNotebookPrompt() {
+        guard media?.isRecording != true, media?.busy != true else { return }
         guard let assistant, let ai else { return }
         assistant.enqueue(currentNotebook, configuration: ai.providerSettings.selected, document: selectedLibraryPath, steer: true)
     }

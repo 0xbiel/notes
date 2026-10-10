@@ -99,12 +99,12 @@ struct ControlHoverBackground: ViewModifier {
 }
 
 enum NotebookPreferencesSection: String, CaseIterable {
-    case general, theme, providers
+    case general, theme, providers, transcription
     var title: LocalizedStringKey {
-        switch self { case .general: "General"; case .theme: "Tema"; case .providers: "Proveedores IA" }
+        switch self { case .general: "General"; case .theme: "Tema"; case .providers: "Proveedores IA"; case .transcription: "Dictado" }
     }
     var symbol: String {
-        switch self { case .general: "slider.horizontal.3"; case .theme: "paintpalette"; case .providers: "sparkles" }
+        switch self { case .general: "slider.horizontal.3"; case .theme: "paintpalette"; case .providers: "sparkles"; case .transcription: "waveform" }
     }
 }
 
@@ -129,6 +129,8 @@ struct NotebookPreferences: View {
                     Text(section == .general ? "Preferencias" : section.title).font(.largeTitle.weight(.semibold))
                     if section == .theme {
                         NotebookThemePreferences().frame(maxWidth: 500)
+                    } else if section == .transcription {
+                        if let media = model.media { TranscriptionPreferences(media: media) }
                     } else if section == .providers {
                         if let ai = model.ai {
                             ProviderPreferences(ai: ai, contentWidth: max(0, min(680, geometry.size.width - inset * 2)))

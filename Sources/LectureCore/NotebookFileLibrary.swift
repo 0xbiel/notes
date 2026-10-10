@@ -1,4 +1,5 @@
 import Foundation
+import UniformTypeIdentifiers
 
 /// Binary library files stay outside Markdown editing and assistant transactions.
 public struct NotebookFileTransfer {
@@ -49,17 +50,28 @@ public final class NotebookFileLibrary {
         let attributes = try fm.attributesOfItem(atPath: url.path)
         let type = attributes[.type] as? FileAttributeType
         guard type == .typeRegular || type == .typeDirectory else { throw ReplayError.unsafePath(url.path) }
-        if type == .typeRegular { return .init(files: [destination: try Data(contentsOf: url)]) }
+        if type == .typeRegular {
+            try Self.validateImportType(url)
+            return .init(files: [destination: try Data(contentsOf: url)])
+        }
         var files: [String: Data] = [:], folders = [destination]
         guard let iterator = fm.enumerator(at: url, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else { throw ReplayError.unsafePath(url.path) }
         for case let child as URL in iterator {
             let name = destination + "/" + String(child.path.dropFirst(url.path.count + 1))
             let kind = try fm.attributesOfItem(atPath: child.path)[.type] as? FileAttributeType
             if kind == .typeDirectory { folders.append(name) }
-            else if kind == .typeRegular { files[name] = try Data(contentsOf: child) }
+            else if kind == .typeRegular { try Self.validateImportType(child); files[name] = try Data(contentsOf: child) }
             else { throw ReplayError.unsafePath(child.path) }
         }
         return .init(files: files, folders: folders)
+    }
+    private static func validateImportType(_ url: URL) throws {
+        let ext = url.pathExtension.lowercased()
+        let type = UTType(filenameExtension: ext)
+        let mediaExtensions: Set<String> = ["mp3", "wav", "m4a", "aac", "flac", "ogg", "opus", "aiff", "aif", "caf", "mp4", "m4v", "mov", "avi", "mkv", "webm"]
+        guard type?.conforms(to: .audio) != true, type?.conforms(to: .movie) != true, !mediaExtensions.contains(ext) else {
+            throw MediaError.invalid("No se importan archivos de audio o vídeo. Usa el micrófono para dictar en el chat.")
+        }
     }
     public func write(_ transfer: NotebookFileTransfer, notebookID: String, summary: String) throws {
         let fm = FileManager.default

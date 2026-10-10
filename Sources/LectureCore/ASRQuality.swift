@@ -8,7 +8,7 @@ public enum ASRQuality {
         for segment in segments {
             let tokens = segment.text.lowercased().split(whereSeparator: \.isWhitespace).map { String($0).trimmingCharacters(in: .punctuationCharacters) }.filter { !$0.isEmpty }
             let key = tokens.joined(separator: " ")
-            if tokens.count >= 4 {
+            if !tokens.isEmpty {
                 counts[key, default: 0] += 1
                 if counts[key, default: 0] >= 4 { return warning }
             }

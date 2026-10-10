@@ -22,7 +22,6 @@ extension Workbench {
             job.syntheticFixture = true; job.stage = .transcribed; job.transcript = SyntheticAIFixture.segments
             try media.addAIDemo(job)
             notes = try workspace.noteNames(); folders = try workspace.folderNames(); openNote(note)
-            selectedTab = "replay"; showInspector = true
             statusText = "Demo inventada · selecciona los cuatro fragmentos antes de enviar; permite retención, no entrenamiento"
         } catch { errorText = error.localizedDescription }
     }

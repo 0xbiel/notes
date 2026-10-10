@@ -50,6 +50,7 @@ public final class RollingPCMRecorder: @unchecked Sendable {
     public let job: MediaJob
     public let maximumFrames: UInt64
     public let sourcePath: String
+    private var chunkSeconds: Double { job.liveChunkSeconds ?? Self.secondsPerChunk }
     private let lock = NSLock()
     private let full: PCMFile
     private var current: PCMFile?
@@ -58,7 +59,7 @@ public final class RollingPCMRecorder: @unchecked Sendable {
     private var tail = Data()
     private var state: LiveCaptureManifest
     public init(store: LocalMediaStore, job: MediaJob) throws {
-        guard store.maximumDuration > 0, store.maximumDuration <= 28_800 else { throw MediaError.invalid("Límite de captura inválido.") }
+        guard [5.0, 10.0, 30.0].contains(job.liveChunkSeconds ?? 30), store.maximumDuration > 0, store.maximumDuration <= 28_800 else { throw MediaError.invalid("Límite de captura inválido.") }
         self.store = store; self.job = job
         maximumFrames = min(UInt64(store.maximumDuration * 16_000), (store.maximumBytes > 44 ? store.maximumBytes - 44 : 0) / 2)
         guard maximumFrames > 0 else { throw MediaError.invalid("No hay capacidad para guardar audio.") }
@@ -76,13 +77,13 @@ public final class RollingPCMRecorder: @unchecked Sendable {
         if !accepted.isEmpty { try full.append(Data(accepted)) }
         var position = 0
         while position < accepted.count {
-            let free = UInt64(Self.secondsPerChunk * 16_000) - freshFrames
+            let free = UInt64(chunkSeconds * 16_000) - freshFrames
             let bytes = min(accepted.count - position, Int(free * 2))
             let piece = Data(accepted[position..<(position + bytes)])
             try current?.append(piece); freshFrames += UInt64(bytes / 2); state.frames += UInt64(bytes / 2)
             tail.append(piece); if tail.count > 64_000 { tail = Data(tail.suffix(64_000)) }
             position += bytes
-            if freshFrames == UInt64(Self.secondsPerChunk * 16_000) { try sealChunk(); try full.checkpoint(); try persist(); try openChunk() }
+            if freshFrames == UInt64(chunkSeconds * 16_000) { try sealChunk(); try full.checkpoint(); try persist(); try openChunk() }
         }
         if state.frames >= maximumFrames { try finishLocked(); throw MediaError.invalid("Captura detenida al alcanzar el límite de duración o almacenamiento; el audio guardado se conserva.") }
     }
@@ -101,7 +102,7 @@ public final class RollingPCMRecorder: @unchecked Sendable {
         let duration = Double(current.frames) / 16_000
         state.chunks.append(LiveAudioChunk(index: state.chunks.count, path: path, start: max(0, state.duration - duration), end: state.duration, digest: try store.fingerprint(path)))
         self.current = nil; currentPath = nil; freshFrames = 0
-        guard state.chunks.count <= 961 else { throw MediaError.invalid("Demasiados fragmentos de audio.") }
+        guard state.chunks.count <= 5761 else { throw MediaError.invalid("Demasiados fragmentos de audio.") }
     }
     private func finishLocked() throws {
         if freshFrames > 0 { try sealChunk() }
@@ -125,7 +126,7 @@ public final class RollingPCMRecorder: @unchecked Sendable {
         let target = try store.destination(for: job, name: "live-manifest.json")
         let state = try JSONDecoder().decode(LiveCaptureManifest.self, from: Data(contentsOf: target.url))
         let source = try store.destination(for: job, name: "live-source.wav")
-        guard state.version == 1, state.mediaID == job.id, state.source == source.relative, state.duration <= store.maximumDuration, state.chunks.count <= 961 else { throw MediaError.invalid("Estado de captura inválido.") }
+        guard state.version == 1, state.mediaID == job.id, state.source == source.relative, state.duration <= store.maximumDuration, state.chunks.count <= 5761 else { throw MediaError.invalid("Estado de captura inválido.") }
         for (index, chunk) in state.chunks.enumerated() {
             let expected = try store.destination(for: job, name: String(format: "live-%04d.wav", index))
             guard chunk.index == index, chunk.path == expected.relative, chunk.start.isFinite, chunk.end.isFinite, chunk.start >= 0, chunk.end > chunk.start, chunk.end - chunk.start <= 32.01 else { throw MediaError.invalid("Fragmento de captura inválido.") }

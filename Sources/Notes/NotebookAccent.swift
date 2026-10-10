@@ -69,10 +69,10 @@ struct NotebookStatusIndicator: View {
     private var active: Bool { media.isRecording || media.busy || assistant.runningNotebookID != nil || assistant.importingAttachments || ai.running }
     private var color: Color { media.isRecording ? .red : NotebookAccent.color(stored) }
     private var title: String {
-        if media.isRecording { return language == "en" ? "Recording" : "Grabando" }
+        if media.isRecording { return language == "en" ? "Dictating" : "Dictando" }
         if assistant.runningCount > 1 { return language == "en" ? "\(assistant.runningCount) chats working…" : "\(assistant.runningCount) chats trabajando…" }
         if assistant.runningNotebookID != nil { return NotebookAssistantText.display(assistant.progress, language: language) }
-        if media.busy { return language == "en" ? "Processing recording…" : "Procesando grabación…" }
+        if media.busy { return language == "en" ? "Finishing dictation…" : "Terminando dictado…" }
         if assistant.importingAttachments { return language == "en" ? "Preparing attachments…" : "Preparando archivos…" }
         return language == "en" ? "Working…" : "Trabajando…"
     }

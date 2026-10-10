@@ -175,7 +175,7 @@ extension Workbench {
             ai.refresh(); refreshEditorFromDisk()
             do { try engine?.acknowledgeEditorSave(filename: change.filename, before: change.before, after: change.after) }
             catch { statusText = "Propuesta guardada. La sesión sintética antigua tiene un conflicto." }
-            inspectorHistoryMode = "editor"; statusText = "Propuesta aplicada · puedes deshacer en Versiones"
+            statusText = "Propuesta aplicada"
         } catch { errorText = error.localizedDescription; ai.refresh(); refreshEditorFromDisk() }
     }
 }
