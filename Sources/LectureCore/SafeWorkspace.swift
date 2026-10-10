@@ -70,7 +70,7 @@ public final class SafeWorkspace {
     /// Library assets use the same containment and link checks as editable notes.
     public func fileURL(_ filename: String) throws -> URL {
         let components = filename.components(separatedBy: "/")
-        guard !filename.hasPrefix("/"), components.allSatisfy({ !$0.isEmpty && !$0.hasPrefix(".") }) else {
+        guard !filename.hasPrefix("/"), components.allSatisfy({ !$0.isEmpty && (!$0.hasPrefix(".") || $0 == ".palladium-images") }) else {
             throw ReplayError.unsafePath(filename)
         }
         return try validated(courseRoot.appendingPathComponent(filename), under: courseRoot)
@@ -78,9 +78,10 @@ public final class SafeWorkspace {
 
     public func fileNames() throws -> [String] {
         try rejectLinks(courseRoot)
-        guard let iterator = fm.enumerator(at: courseRoot, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else { return [] }
+        guard let iterator = fm.enumerator(at: courseRoot, includingPropertiesForKeys: [.isDirectoryKey]) else { return [] }
         var names: [String] = []
         for case let url as URL in iterator {
+            if url.lastPathComponent.hasPrefix("."), url.lastPathComponent != ".palladium-images" { iterator.skipDescendants(); continue }
             try rejectLinks(url)
             if try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true { continue }
             let name = String(url.path.dropFirst(courseRoot.path.count + 1))
@@ -141,7 +142,7 @@ public final class SafeWorkspace {
 
     public func createFolder(_ relative: String) throws {
         let components = relative.components(separatedBy: "/")
-        guard !relative.hasPrefix("/"), components.allSatisfy({ !$0.isEmpty && !$0.hasPrefix(".") }) else {
+        guard !relative.hasPrefix("/"), components.allSatisfy({ !$0.isEmpty && (!$0.hasPrefix(".") || $0 == ".palladium-images") }) else {
             throw ReplayError.unsafePath(relative)
         }
         let url = courseRoot.appendingPathComponent(relative)
@@ -183,6 +184,21 @@ public final class SafeWorkspace {
         // Exclusive creation refuses an existing file. Foundation does not allow
         // combining withoutOverwriting and atomic; replacements use writeNote.
         try Data(text.utf8).write(to: url, options: .withoutOverwriting)
+    }
+
+    /// Move a validated library item without replacing an existing destination.
+    public func moveLibraryItem(_ source: String, to destination: String, folder: Bool) throws {
+        guard source != destination, !source.isEmpty, !destination.isEmpty,
+              !folder || !destination.hasPrefix(source + "/") else { throw ReplayError.unsafePath(destination) }
+        if folder { _ = try libraryFolderTree(source) }
+        let from = try fileURL(folder ? source + "/placeholder" : source)
+        let to = try fileURL(folder ? destination + "/placeholder" : destination)
+        let sourceURL = folder ? from.deletingLastPathComponent() : from
+        let destinationURL = folder ? to.deletingLastPathComponent() : to
+        guard try folder || (sourceURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true),
+              !fm.fileExists(atPath: destinationURL.path),
+              try destinationURL.deletingLastPathComponent().resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else { throw ReplayError.conflict }
+        try fm.moveItem(at: sourceURL, to: destinationURL)
     }
 
     public func renameFile(_ source: String, to destination: String) throws {

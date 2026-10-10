@@ -4,8 +4,8 @@ Palladium is a native macOS notebook app for Markdown notes, AI-assisted editing
 
 ![Palladium showing a study-guide table, notebook navigation, and an assistant chat with its activity log](docs/images/palladium.png)
 
-- **Notebooks and Markdown.** Organize notes into notebooks and folders. Write and read formatted Markdown with tables, checklists, and math, backed by autosave and undo.
-- **Notebook chats.** Work with an assistant that can use your notebook’s context, suggest changes, and help edit documents. Attach images, PDFs, or text files when a conversation needs them.
+- **Notebooks and Markdown.** Organize notes into notebooks and folders. Write and read formatted Markdown with tables, checklists, math, and images. Paste or drag pictures into notes and resize or crop them visually, with autosave and undo.
+- **Notebook chats.** Work with an assistant that can use your notebook’s context, search the web, and help edit documents. Web access starts enabled; switch it off in each notebook’s Profile settings. Attach images, PDFs, or text files when a conversation needs them.
 - **Local or API dictation.** Speak into the chat composer using a local Whisper model or the OpenAI API. Review and edit the resulting text before sending. Manage models and your API key in Preferences.
 - **Your own appearance.** Choose light, dark, or system appearance, adjust the theme and accent colors, and use compact mode when you want more room for your notes.
 
@@ -23,7 +23,7 @@ The first command creates an independent workspace with invented content; run it
 
 ## Your data
 
-Notes and chats are stored locally. When you use an external AI provider, the content needed for that request is sent to the selected service. API dictation sends audio to OpenAI; local dictation runs on your Mac.
+Notes and chats are stored locally. When you use an external AI provider, the content needed for that request is sent to the selected service. Web searches send the query to the search service, and page/image requests contact their source sites. API dictation sends audio to OpenAI; local dictation runs on your Mac.
 
 See the [developer guide](docs/development.md) for architecture, testing, and workspace details.
 

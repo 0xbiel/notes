@@ -105,7 +105,7 @@ struct NeutralSidebarSelection: NSViewRepresentable {
             guard roots.count == ids.count else { pointer.cancel(); selectionOverlay?.insertionY = nil; return event }
             let headers = zip(ids, roots).map { NotebookPointerReorder.Header(id: $0.0, rect: outline.rect(ofRow: $0.1), subtreeEnd: outline.rect(ofRow: outline.numberOfRows - 1).maxY) }
             if event.type == .leftMouseDown {
-                guard !event.modifierFlags.contains(.control), event.window === outline.window, outline.visibleRect.contains(point),
+                guard event.modifierFlags.intersection([.control, .command, .shift]).isEmpty, event.window === outline.window, outline.visibleRect.contains(point),
                       let header = headers.first(where: { $0.rect.contains(point) }),
                       point.x > outline.frameOfOutlineCell(atRow: roots[ids.firstIndex(of: header.id)!]).maxX + 3 else { return event }
                 sidebarFocused = true

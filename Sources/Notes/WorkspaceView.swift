@@ -262,7 +262,7 @@ struct NoteToolbar: View {
     }
 }
 
-enum NotebookSidebarSelection: Hashable { case notebook(String), note(String), folder(String) }
+enum NotebookSidebarSelection: Hashable, Codable { case notebook(String), note(String), folder(String) }
 
 struct CourseSidebar: View {
     @ObservedObject var model: Workbench
@@ -287,16 +287,9 @@ struct CourseSidebar: View {
                 }.buttonStyle(.plain).modifier(ControlHoverBackground()).help("Nueva nota · ⌘N").accessibilityLabel("Nueva nota")
             }.padding(.horizontal, 8)
             ScrollViewReader { proxy in
-            List(selection: Binding<NotebookSidebarSelection?>(get: {
-                model.librarySelection
-            }, set: { value in
-                switch value {
-                case .notebook(let id): model.openNotebook(id)
-                case .note(let path): if model.libraryFiles.contains(path) { model.openLibraryFile(path) }
-                case .folder(let path): model.selectLibraryFolder(path)
-                case nil: break
-                }
-            })) {
+            List(selection: Binding<Set<NotebookSidebarSelection>>(get: {
+                model.librarySelections
+            }, set: { values in DispatchQueue.main.async { model.setLibrarySelections(values) } })) {
                 ForEach(model.activeNotebooks) { notebook in
                     DisclosureGroup(isExpanded: Binding(get: { expanded.contains(notebook.id) || !query.isEmpty }, set: { value in if value { expanded.insert(notebook.id) } else { expanded.remove(notebook.id) } })) {
                         let filenames = model.fileNames(in: notebook).filter { LibraryContentFilter.notes.includes(path: $0) && (query.isEmpty || $0.localizedCaseInsensitiveContains(query)) }
@@ -343,11 +336,7 @@ struct CourseSidebar: View {
                             Button("Eliminar cuaderno", role: .destructive) { model.deleteNotebook(notebook) }.disabled(!model.canManageFiles)
                         }
                     }
-                    .dropDestination(for: URL.self) { urls, _ in
-                        guard model.canManageFiles, !urls.isEmpty else { return false }
-                        model.importLibraryFiles(urls, into: notebook.rootPrefix, notebookID: notebook.id)
-                        return true
-                    }
+                    .modifier(LibraryDropTarget(model: model, directory: notebook.rootPrefix, notebookID: notebook.id))
                     .tag(NotebookSidebarSelection.notebook(notebook.id))
                     .id(notebook.id)
 
@@ -424,6 +413,7 @@ struct CourseTreeRow: View {
                     }.foregroundStyle(.secondary).font(.callout)
                         .padding(.vertical, 6).padding(.leading, 8).padding(.trailing, 2)
                         .alignmentGuide(.firstTextBaseline) { dimensions in dimensions[VerticalAlignment.center] + 2 }
+                        .modifier(LibraryDragSource(model: model, item: .folder(node.path)))
                         .contextMenu {
                             Button("Nueva nota aquí") { createInFolder(node.path) }
                             Button("Nueva carpeta aquí") { model.createFolderInside(node.path) }
@@ -438,12 +428,10 @@ struct CourseTreeRow: View {
                         }
                 }
                 .tag(NotebookSidebarSelection.folder(node.path))
-                .dropDestination(for: URL.self) { urls, _ in
-                    guard model.canManageFiles, !urls.isEmpty, let owner = model.projects?.owner(of: node.path + "/placeholder") else { return false }
-                    model.importLibraryFiles(urls, into: node.path, notebookID: owner.id); return true
-                }
+                .modifier(LibraryDropTarget(model: model, directory: node.path, notebookID: model.projects?.owner(of: node.path + "/placeholder")?.id ?? ""))
                 .onAppear { revealSelection() }
                 .onChange(of: model.selectedLibraryPath) { _, _ in revealSelection() }
+                .onChange(of: model.selectedFolder) { _, _ in revealSelection() }
                 .onChange(of: expandAll) { _, value in if value { expanded = true } }
             } else {
                 HStack(spacing: 9) {
@@ -454,6 +442,7 @@ struct CourseTreeRow: View {
                     if model.hasDraft(for: node.path) { Circle().fill(Color.orange).frame(width: 5, height: 5).accessibilityLabel("Sin guardar") }
                 }.padding(.vertical, 6).padding(.horizontal, 2)
                     .help(node.name).tag(NotebookSidebarSelection.note(node.path))
+                    .modifier(LibraryDragSource(model: model, item: .note(node.path)))
                     .contextMenu {
                         Button("Abrir") { model.openLibraryFile(node.path) }
                         if node.path.hasSuffix(".md") {
@@ -471,7 +460,7 @@ struct CourseTreeRow: View {
         }
     }
     private func revealSelection() {
-        if expandAll || model.selectedLibraryPath?.hasPrefix(node.path + "/") == true { expanded = true }
+        if expandAll || model.selectedLibraryPath?.hasPrefix(node.path + "/") == true || model.selectedFolder == node.path || model.selectedFolder?.hasPrefix(node.path + "/") == true { expanded = true }
     }
 }
 
@@ -492,6 +481,9 @@ struct NoteWorkspace: View {
             } else if let note = model.selectedNote {
                 LiveMarkdownEditor(documentID: note, text: model.draftText, editing: model.layout == "edit", heading: model.previewHeading,
                     bottomInset: showsComposer ? composerHeight : 0,
+                    imageDirectory: model.workspace?.courseRoot.appendingPathComponent(note).deletingLastPathComponent(),
+                    imageRoot: model.workspace?.courseRoot.appendingPathComponent(model.currentNotebook.rootPrefix),
+                    importImage: { data, ext in try model.importDocumentImage(data, fileExtension: ext, note: note) },
                     onChange: { model.changeDraft($0) }, onLink: { _ = model.openWikilink($0) }, onTaskToggle: { _ in if model.layout == "preview" { model.saveDraft() } })
             } else {
                 if let assistant = model.assistant { NotebookHome(model: model, assistant: assistant) }

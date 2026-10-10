@@ -560,6 +560,11 @@ struct NotebookManagement: View {
             if tab == "profile" {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
+                        Toggle(t("Búsqueda web", "Web search"), isOn: Binding(get: { profile.allowsWebSearch }, set: { profile.webSearchEnabled = $0 }))
+                            .modifier(NotebookToggleAccent(switchStyle: true))
+                            .accessibilityIdentifier("notebook.profile.webSearch")
+                        Text(t("Permite buscar fuentes actuales y descargar imágenes para este cuaderno.", "Allow searching current sources and downloading images for this notebook."))
+                            .font(.caption).foregroundStyle(.secondary)
                         field(t("Propósito", "Purpose"), text: $profile.purpose)
                         field(t("Instrucciones del asistente", "Assistant instructions"), text: $profile.instructions, lines: 4)
                         field(t("Estilo y formato", "Style and formatting"), text: $profile.formatting)

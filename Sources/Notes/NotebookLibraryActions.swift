@@ -29,13 +29,14 @@ extension Workbench {
     var libraryDestination: String {
         selectedFolder ?? selectedLibraryPath.map { $0.components(separatedBy: "/").dropLast().joined(separator: "/") } ?? currentNotebook.rootPrefix
     }
-    func fileNames(in notebook: Notebook) -> [String] { libraryFiles.filter { projects?.owner(of: $0)?.id == notebook.id } }
+    func fileNames(in notebook: Notebook) -> [String] { libraryFiles.filter { projects?.owner(of: $0)?.id == notebook.id && !NotebookImageStorage.managed($0) } }
     func openLibraryFile(_ path: String) {
         if path.hasSuffix(".md") { openNote(path); return }
         guard let projects, let notebook = projects.owner(of: path), notebook.archivedAt == nil else { return }
         perform {
             try NotebookFileLibrary(projects: projects).validate(path, notebookID: notebook.id)
             if let selectedNote { saveDraft(named: selectedNote) }
+            librarySelections = [.note(path)]
             selectedNote = nil; selectedFile = path; selectedFolder = nil; selectedNotebookID = notebook.id; showPreferences = false
         }
     }
@@ -43,6 +44,7 @@ extension Workbench {
         guard let owner = projects?.owner(of: path + "/placeholder"), owner.archivedAt == nil else { return }
         if selectedNotebookID != owner.id { openNotebook(owner.id) }
         selectedFolder = path
+        librarySelections = [.folder(path)]
     }
     func chooseLibraryImport(into folder: String, notebookID: String) {
         guard canManageFiles else { return }
@@ -296,17 +298,122 @@ extension Workbench {
     }
 
     func moveLibraryItem(_ path: String, folder: Bool, into destination: String, notebookID: String) {
-        guard canManageFiles, let projects else { return }
+        moveLibraryItems([folder ? .folder(path) : .note(path)], into: destination, notebookID: notebookID)
+    }
+
+    func itemsForMoving(_ item: NotebookSidebarSelection) -> Set<NotebookSidebarSelection> {
+        librarySelections.contains(item) ? librarySelections : [item]
+    }
+
+    func setLibrarySelections(_ values: Set<NotebookSidebarSelection>) {
+        // Outline rebuilds can emit stale/empty selections while moved rows are inserted.
+        guard !values.isEmpty, values.allSatisfy({ item in
+            switch item {
+            case .note(let path): return libraryFiles.contains(path)
+            case .folder(let path): return folders.contains(path)
+            case .notebook(let id): return activeNotebooks.contains { $0.id == id }
+            }
+        }) else { return }
+        let added = values.subtracting(librarySelections)
+        librarySelections = values
+        guard values.count == 1 || added.count == 1, let value = added.first ?? values.first else { return }
+        switch value {
+        case .notebook(let id): openNotebook(id)
+        case .note(let path): if libraryFiles.contains(path) { openLibraryFile(path) }
+        case .folder(let path): selectLibraryFolder(path)
+        }
+        librarySelections = values
+    }
+
+    func moveLibraryItems(_ selection: Set<NotebookSidebarSelection>, into destination: String, notebookID: String) {
+        guard canManageFiles, let projects, let workspace else { return }
         perform {
-            guard !folder || (destination != path && !destination.hasPrefix(path + "/")) else { throw ReplayError.unsafePath(destination) }
-            guard let owner = projects.owner(of: folder ? path + "/placeholder" : path) else { throw ReplayError.unsafePath(path) }
-            try checkpointDrafts(owner.id)
             let library = NotebookFileLibrary(projects: projects)
-            let snapshot = try library.snapshot(notebookID: owner.id, path: path, folder: folder)
-            let newRoot = try library.availablePath((destination.isEmpty ? "" : destination + "/") + URL(fileURLWithPath: path).lastPathComponent)
-            func mapped(_ name: String) -> String { newRoot + String(name.dropFirst(path.count)) }
-            try library.write(.init(files: Dictionary(uniqueKeysWithValues: snapshot.files.map { (mapped($0.key), $0.value) }), folders: snapshot.folders.map(mapped)), notebookID: notebookID, summary: "Mover archivos")
-            deleteItem(path, folder: folder); refreshProjectFiles(Array(snapshot.files.keys)); openNotebook(notebookID)
+            try library.validate((destination.isEmpty ? "" : destination + "/") + "placeholder", notebookID: notebookID)
+            let selectedFolders = selection.compactMap { if case .folder(let path) = $0 { return path }; return nil }
+            var roots: [(path: String, folder: Bool)] = []
+            for item in selection {
+                let path: String, folder: Bool
+                switch item {
+                case .note(let value): path = value; folder = false
+                case .folder(let value): path = value; folder = true
+                case .notebook: continue
+                }
+                if selectedFolders.contains(where: { path != $0 && path.hasPrefix($0 + "/") }) { continue }
+                guard !folder || (destination != path && !destination.hasPrefix(path + "/")) else { throw ReplayError.unsafePath(destination) }
+                if path.components(separatedBy: "/").dropLast().joined(separator: "/") == destination { continue }
+                roots.append((path, folder))
+            }
+            guard !roots.isEmpty else { return }
+            roots.sort { $0.path < $1.path }
+            var moves: [(from: String, to: String, folder: Bool)] = []
+            var affected: [String] = [], owners: Set<String> = [notebookID], reserved: Set<String> = []
+            for root in roots {
+                guard let owner = projects.owner(of: root.folder ? root.path + "/placeholder" : root.path), owner.archivedAt == nil else { throw ReplayError.unsafePath(root.path) }
+                owners.insert(owner.id)
+                let snapshot = try library.snapshot(notebookID: owner.id, path: root.path, folder: root.folder)
+                guard root.folder || snapshot.files[root.path] != nil else { throw ReplayError.conflict }
+                let target = try library.availablePath((destination.isEmpty ? "" : destination + "/") + URL(fileURLWithPath: root.path).lastPathComponent, reserved: reserved)
+                reserved.insert(target)
+                try library.validate(root.folder ? target + "/placeholder" : target, notebookID: notebookID)
+                moves.append((root.path, target, root.folder))
+                affected += snapshot.files.keys.flatMap { [$0, target + String($0.dropFirst(root.path.count))] }
+            }
+            for owner in owners.sorted() { try checkpointDrafts(owner); _ = try projects.capture(owner, summary: "Before moving documents") }
+            let originalNotes = try Dictionary(uniqueKeysWithValues: affected.filter { path in
+                guard path.hasSuffix(".md") else { return false }
+                return FileManager.default.fileExists(atPath: try workspace.noteURL(path).path)
+            }.map { ($0, try workspace.readNote($0)) })
+            func mapped(_ path: String) -> String {
+                guard let move = moves.first(where: { path == $0.from || ($0.folder && path.hasPrefix($0.from + "/")) }) else { return path }
+                return move.to + String(path.dropFirst(move.from.count))
+            }
+            var completed: [(from: String, to: String, folder: Bool)] = []
+            var copiedImages: [String: Data] = [:], rewrittenNotes: [String: String] = [:]
+            var imageTargets: [String: String] = [:]
+            do {
+                for move in moves { try workspace.moveLibraryItem(move.from, to: move.to, folder: move.folder); completed.append(move) }
+                for (oldNote, original) in originalNotes {
+                    let newNote = mapped(oldNote)
+                    guard newNote != oldNote else { continue }
+                    var replacement = original as NSString
+                    for reference in NotebookImageStorage.references(original, note: oldNote, workspace: workspace).reversed() {
+                        var target = mapped(reference.path)
+                        guard let sourceOwner = projects.owner(of: reference.path), sourceOwner.id == projects.owner(of: oldNote)?.id else { continue }
+                        if projects.owner(of: target)?.id != notebookID {
+                            if let cached = imageTargets[reference.path] { target = cached }
+                            else {
+                                let bytes = try workspace.readFile(target)
+                                let image = try DocumentImageInput.validated(bytes)
+                                let prefix = activeNotebooks.first { $0.id == notebookID }!.rootPrefix
+                                target = (prefix.isEmpty ? "" : prefix + "/") + ".palladium-images/image-" + UUID().uuidString.lowercased() + "." + image.fileExtension
+                                try workspace.createAsset(target, data: bytes); copiedImages[target] = bytes
+                                imageTargets[reference.path] = target
+                            }
+                        }
+                        replacement = replacement.replacingCharacters(in: reference.range, with: NotebookImageStorage.relative(target, from: newNote)) as NSString
+                    }
+                    if replacement as String != original {
+                        rewrittenNotes[newNote] = original
+                        try Data((replacement as String).utf8).write(to: workspace.noteURL(newNote), options: .atomic)
+                    }
+                }
+                for owner in owners.sorted() { _ = try projects.capture(owner, summary: "Move documents", invalidatesProposals: true) }
+            } catch {
+                for (note, text) in rewrittenNotes { try Data(text.utf8).write(to: workspace.noteURL(note), options: .atomic) }
+                for (path, bytes) in copiedImages { try workspace.removeAsset(path, expected: bytes) }
+                for move in completed.reversed() { try workspace.moveLibraryItem(move.to, to: move.from, folder: move.folder) }
+                throw error
+            }
+            refreshProjectFiles(affected)
+            openNotebook(notebookID)
+            if !destination.isEmpty { selectedFolder = destination }
+            librarySelections = Set(moves.map { $0.folder ? .folder($0.to) : .note($0.to) })
+            if moves.count == 1, let move = moves.first {
+                if move.folder { selectLibraryFolder(move.to) } else { openLibraryFile(move.to) }
+            }
+            notebookRevealRequest += 1
+            statusText = UserDefaults.standard.string(forKey: "notes.language") == "en" ? "Moved" : "Movido"
         }
     }
 }

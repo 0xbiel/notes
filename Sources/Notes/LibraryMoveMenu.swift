@@ -7,7 +7,7 @@ struct LibraryMoveMenu: View {
     let folder: Bool
     private var parent: String { path.components(separatedBy: "/").dropLast().joined(separator: "/") }
     var body: some View {
-        Menu("Mover a…") {
+        Menu(UserDefaults.standard.string(forKey: "notes.language") == "en" ? "Move to…" : "Mover a…") {
             ForEach(model.activeNotebooks) { notebook in
                 Menu(notebook.name) {
                     destination(notebook.rootPrefix, label: "Raíz del cuaderno", notebook: notebook)
@@ -21,7 +21,7 @@ struct LibraryMoveMenu: View {
         }.disabled(!model.canManageFiles)
     }
     private func destination(_ directory: String, label: String, notebook: Notebook) -> some View {
-        Button(label) { model.moveLibraryItem(path, folder: folder, into: directory, notebookID: notebook.id) }
+        Button(label) { model.moveLibraryItems(model.itemsForMoving(folder ? .folder(path) : .note(path)), into: directory, notebookID: notebook.id) }
             .disabled(directory == parent || (folder && (directory == path || directory.hasPrefix(path + "/"))))
     }
 }

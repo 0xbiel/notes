@@ -17,6 +17,18 @@ final class NotebookAssistantTests: XCTestCase {
         addTeardownBlock { @MainActor in model.assistant?.stop(); model.ai?.stop(); model.media?.shutdown(); try? FileManager.default.removeItem(at: root) }
         return (model, assistant, root)
     }
+    @MainActor func testDisabledWebRejectsProviderActionsWithoutEditingNotes() async throws {
+        let (model, assistant, _) = try fixture()
+        assistant.generate = { request, _ in
+            XCTAssertFalse(request.webEnabled)
+            return .init(reply: "", webActions: [.init(kind: "search", query: "public query")])
+        }
+        assistant.setDraft("Search the web", notebook: model.currentNotebook)
+        assistant.send(notebook: model.currentNotebook, document: "Inicio.md", texts: ["Inicio.md": model.draftText], configuration: model.ai!.providerSettings.selected, webEnabled: false) { _, _, _ in XCTFail("Web-disabled action must never mutate notes"); return nil }
+        await assistant.waitUntilFinished()
+        XCTAssertEqual(assistant.chat(model.currentNotebook)?.messages.last?.role, "error")
+        XCTAssertEqual(try model.workspace!.readNote("Inicio.md"), "# Inicio\n\nTexto inicial.\n")
+    }
     @MainActor func testDictationAppendsToOriginatingDraftWithoutSendingOrOverwritingEdits() throws {
         let (model, assistant, _) = try fixture()
         let notebook = model.currentNotebook

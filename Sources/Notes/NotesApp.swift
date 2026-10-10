@@ -53,6 +53,8 @@ final class Workbench: ObservableObject {
     @Published var libraryFiles: [String] = []
     @Published var selectedFile: String?
     @Published var selectedFolder: String?
+    @Published var libraryDropDestination: String?
+    @Published var librarySelections: Set<NotebookSidebarSelection> = []
     @Published var documentChatVisible = false
     @Published var folders: [String] = []
     @Published var noteText = ""
@@ -82,6 +84,7 @@ final class Workbench: ObservableObject {
     var editor: NotebookEditor?
     var workspace: SafeWorkspace?
     @Published var media: MediaController?
+    var notebookWebEnabled: Bool { assistant?.state(currentNotebook).profile.allowsWebSearch ?? true }
     @Published var dictationActive = false
     private var dictationObservation: AnyCancellable?
     @Published var ai: AIController?
