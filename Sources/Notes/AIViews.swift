@@ -11,7 +11,7 @@ struct AISendControls: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(LocalizedStringKey(ai.providerSettings.selectedProvider == .openCode ? (job.syntheticFixture ? "Demo inventada · retención permitida" : "OpenRouter gratuito · ZDR exigido") : ai.providerSettings.selectedProvider.title)).font(.subheadline.weight(.semibold))
-            Text(LocalizedStringKey(ai.providerSettings.selectedProvider == .openCode ? (job.syntheticFixture ? "Solo envía los cuatro fragmentos y su nota inventada exacta. Permite retención del proveedor; prohíbe entrenamiento. No incluye apuntes reales." : "Envía el texto seleccionado y hasta 2.000 caracteres relevantes de la copia. El audio permanece local. Los cambios siguen el permiso elegido en General.") : "Envía los fragmentos y contexto limitado mediante tu cuenta. Se aplican sus costes y condiciones de retención. El audio permanece local; los cambios siguen el permiso elegido en General.")).font(.caption).foregroundStyle(.secondary)
+            Text(LocalizedStringKey(ai.providerSettings.selectedProvider == .openCode ? (job.syntheticFixture ? "Solo envía los cuatro fragmentos y su nota inventada exacta. Permite retención del proveedor; prohíbe entrenamiento. No incluye apuntes reales." : "Envía el texto seleccionado y hasta 2.000 caracteres relevantes de la copia. Esta acción solo envía texto. Los cambios siguen el permiso elegido en General.") : "Envía los fragmentos y contexto limitado mediante tu cuenta. Se aplican sus costes y condiciones de retención. Esta acción solo envía texto; los cambios siguen el permiso elegido en General.")).font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button(LocalizedStringKey(selected.count == job.transcript.count ? "Quitar selección" : "Seleccionar todos")) { selected = selected.count == job.transcript.count ? [] : Set(job.transcript.map(\.id)) }.disabled(job.transcript.isEmpty)
                 Spacer()
@@ -27,7 +27,7 @@ struct AISendControls: View {
             Toggle("Enviar automáticamente nuevos fragmentos de esta grabación", isOn: Binding(get: { ai.automaticMediaIDs.contains(job.id) }, set: { ai.setAutomatic($0, media: job) }))
                 .modifier(NotebookToggleAccent())
                 .font(.caption).disabled(job.syntheticFixture || job.asrQualityWarning != nil || (job.transcript.isEmpty && job.stage != .transcribing && job.stage != .recording))
-            Text("Prepara propuestas aproximadamente cada 5 minutos, al terminar una frase. Adelanta el envío si hay mucho texto y espera hasta 7,5 minutos si hay poco. Incluye hasta dos fragmentos previos de contexto. Recibe la transcripción local durante la grabación o desde archivos importados. Se desactiva al cerrar, ante un error o si Whisper repite frases.").font(.caption2).foregroundStyle(.secondary)
+            Text("Prepara propuestas aproximadamente cada 5 minutos, al terminar una frase. Adelanta el envío si hay mucho texto y espera hasta 7,5 minutos si hay poco. Incluye hasta dos fragmentos previos de contexto. Recibe la transcripción durante la grabación o desde archivos importados. Se desactiva al cerrar, ante un error o si Whisper repite frases.").font(.caption2).foregroundStyle(.secondary)
             if let error = ai.error { Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
         }.padding(12).modifier(NotebookInputSurface(radius: 12))
     }
@@ -108,5 +108,19 @@ struct AIProposalCard: View {
     }
     private func label(_ action: AIAction) -> String {
         switch action { case .add: "Añadir"; case .correct: "Corregir cita"; case .retract: "Retirar cita"; case .omit: "No copiar"; case .aside: "Inciso"; case .priority: "Prioridad indicada"; case .uncertain: "Duda · confirma el sentido" }
+    }
+}
+
+struct InspectorEmptyState: View {
+    let title: String
+    let symbol: String
+    let detail: String
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: symbol).font(.system(size: 24, weight: .light)).foregroundStyle(.tertiary)
+            Text(LocalizedStringKey(title)).font(.system(size: 13, weight: .medium))
+            Text(LocalizedStringKey(detail)).font(.callout).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+        }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

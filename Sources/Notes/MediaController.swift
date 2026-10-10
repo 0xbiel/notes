@@ -13,6 +13,25 @@ final class MediaController: ObservableObject {
     @Published var playing = false
     @Published var position = 0.0
     @Published var error: String?
+    @Published var transcriptionProvider: TranscriptionProvider = TranscriptionProvider(rawValue: UserDefaults.standard.string(forKey: "transcription.provider") ?? "local") ?? .local {
+        didSet { UserDefaults.standard.set(transcriptionProvider.rawValue, forKey: "transcription.provider") }
+    }
+    @Published var transcriptionModel: WhisperModel = WhisperModel(rawValue: UserDefaults.standard.string(forKey: "transcription.model") ?? "small") ?? .small {
+        didSet { UserDefaults.standard.set(transcriptionModel.rawValue, forKey: "transcription.model") }
+    }
+    @Published var transcriptionLanguage = UserDefaults.standard.string(forKey: "transcription.language") ?? "es" {
+        didSet { UserDefaults.standard.set(transcriptionLanguage, forKey: "transcription.language") }
+    }
+    @Published var captureMode: InputMode = InputMode(rawValue: UserDefaults.standard.string(forKey: "transcription.captureMode") ?? "") ?? .lecture {
+        didSet { UserDefaults.standard.set(captureMode.rawValue, forKey: "transcription.captureMode") }
+    }
+    @Published var modelOperation: String?
+    @Published var modelError: String?
+    @Published var installedModels: Set<WhisperModel> = []
+    @Published var runtimeInstalled = false
+    @Published var hasAPIKey = false
+    @Published var teacherVoiceInstalled = false
+    private var modelWorker: Task<Void, Never>?
     let store: LocalMediaStore
     var onTranscriptUpdate: ((MediaJob) -> Void)?
     private var worker: Task<Void, Never>?
@@ -30,15 +49,120 @@ final class MediaController: ObservableObject {
         return try? WhisperConfiguration.resolved(for: job)
     }
     var whisperAvailable: Bool {
+        available(for: selected)
+    }
+    func available(for job: MediaJob?) -> Bool {
+        let provider = job?.transcriptionProvider ?? (job == nil ? transcriptionProvider : .local)
+        if provider == .openAI { return hasAPIKey }
+        let configuration = job.flatMap { whisperConfiguration(for: $0) } ?? WhisperConfiguration(model: transcriptionModel)
+        return WhisperTranscriber(store: store).available(for: configuration)
+    }
+    func refreshTranscription() {
+        teacherVoiceInstalled = TeacherVoiceMatcher(store: store).available
         let transcriber = WhisperTranscriber(store: store)
-        if let selected {
-            guard let configuration = whisperConfiguration(for: selected) else { return false }
-            return transcriber.available(for: configuration)
+        installedModels = Set(WhisperModel.allCases.filter { FileManager.default.fileExists(atPath: transcriber.model(for: WhisperConfiguration(model: $0)).path) })
+        runtimeInstalled = FileManager.default.isExecutableFile(atPath: transcriber.binary.path)
+        hasAPIKey = ((try? TranscriptionKeychain.read()) ?? "").isEmpty == false
+    }
+    func manageModel(_ model: WhisperModel?, remove: Bool = false) {
+        guard !busy, !isRecording, modelWorker == nil else { return }
+        modelOperation = remove ? "Eliminando…" : model == nil ? "Preparando Whisper v1.8.2…" : "Descargando y verificando modelo…"
+        modelError = nil
+        modelWorker = Task { [self] in
+            defer { modelOperation = nil; modelWorker = nil; refreshTranscription() }
+            do {
+                let installer = TranscriptionModelInstaller(root: store.root)
+                if let model { if remove { try installer.uninstall(model) } else { try await installer.install(model) } }
+                else { try await installer.installRuntime() }
+            } catch { modelError = Task.isCancelled ? "Instalación cancelada. El modelo anterior se conserva." : error.localizedDescription }
         }
-        return transcriber.available(for: transcriber.preferredConfiguration)
+    }
+    func manageTeacherVoice(remove: Bool = false) {
+        guard !busy, !isRecording, modelWorker == nil else { return }
+        modelOperation = remove ? "Eliminando…" : "Instalando comparación de voz…"
+        modelError = nil
+        modelWorker = Task { [self] in
+            defer { modelOperation = nil; modelWorker = nil; refreshTranscription() }
+            do {
+                let installer = TranscriptionModelInstaller(root: store.root)
+                if remove { try installer.uninstallTeacherVoice() } else { try await installer.installTeacherVoice() }
+            } catch { modelError = error.localizedDescription }
+        }
+    }
+    func setTeacherReference(at start: Double) {
+        guard !busy, modelOperation == nil, let original = selected else { return }
+        busy = true
+        worker = Task { [self] in
+            defer { busy = false }
+            var temporary: String?
+            do {
+                let matcher = TeacherVoiceMatcher(store: store)
+                let reference = try matcher.reference(for: original, at: start)
+                temporary = reference.path
+                _ = try await matcher.annotate([], audio: store.url(reference.path), offset: 0, reference: reference)
+                guard var job = jobs.first(where: { $0.id == original.id }) else { return }
+                job.teacherReference = reference
+                for index in job.transcript.indices { job.transcript[index].teacherSimilarity = nil }
+                update(job); temporary = nil
+            } catch { self.error = error.localizedDescription }
+            if let temporary { try? store.removeTemporary(temporary) }
+        }
+    }
+    func clearTeacherReference() {
+        guard !busy, !isRecording, var job = selected else { return }
+        job.teacherReference = nil
+        for index in job.transcript.indices { job.transcript[index].teacherSimilarity = nil }
+        update(job)
+    }
+    func compareTeacher() {
+        guard !busy, !isRecording, modelOperation == nil, let original = selected, let reference = original.teacherReference, let source = original.audioRelativePath else { return }
+        busy = true
+        worker = Task { [self] in
+            defer { busy = false }
+            do {
+                var job = original
+                // Bound decoded audio and inference memory to one minute.
+                for start in stride(from: 0.0, to: job.duration, by: 60) {
+                    try Task.checkCancellation()
+                    let indices = job.transcript.indices.filter { job.transcript[$0].start >= start && job.transcript[$0].start < start + 60 }
+                    if indices.isEmpty { continue }
+                    let end = min(job.duration, max(start + 60, indices.map { job.transcript[$0].end }.max() ?? start + 60))
+                    let wav = try store.destination(for: job, name: "voice-review-\(UUID().uuidString).wav")
+                    defer { try? store.removeTemporary(wav.relative) }
+                    let store = self.store
+                    try await Task.detached(priority: .utility) { try WhisperTranscriber.convertPCM(source: store.url(source), output: wav.url, offset: start, duration: min(302, end - start)) }.value
+                    let results = try await TeacherVoiceMatcher(store: store).annotate(indices.map { job.transcript[$0] }, audio: wav.url, offset: start, reference: reference)
+                    for (index, result) in zip(indices, results) { job.transcript[index] = result }
+                    update(job)
+                }
+            } catch { self.error = error is CancellationError ? "Comparación cancelada; se conservan los resultados terminados." : error.localizedDescription }
+        }
+    }
+    func retryTranscription() {
+        guard !busy, !isRecording, modelOperation == nil, let old = selected, old.audioRelativePath != nil else { return }
+        var job = MediaJob(notebookID: old.notebookID, subject: old.subject, note: old.targetNote, sourceName: old.sourceName)
+        job.sourceRelativePath = old.sourceRelativePath; job.audioRelativePath = old.audioRelativePath
+        job.sourceDigest = old.sourceDigest; job.sourceCopyComplete = old.sourceCopyComplete
+        job.duration = old.duration; job.classDate = old.classDate; job.inputMode = old.inputMode
+        job.unitTags = old.unitTags; job.examTags = old.examTags; job.teacherReference = old.teacherReference
+        job.stage = .ready; configure(&job); update(job); select(job.id)
+    }
+    func cancelModelOperation() { modelWorker?.cancel() }
+    private func configure(_ job: inout MediaJob) {
+        job.transcriptionProvider = transcriptionProvider
+        job.transcriptionLanguage = transcriptionLanguage
+        job.whisperConfiguration = WhisperConfiguration(model: transcriptionModel)
+    }
+    func useCurrentTranscriptionSettings() {
+        guard !busy, !isRecording, var job = selected, job.completedChunks == 0 else { return }
+        configure(&job); update(job)
     }
     init(workspace: SafeWorkspace) throws {
         store = LocalMediaStore(workspace: workspace); jobs = try store.recoverJobs(); selectedID = jobs.first?.id
+        if UserDefaults.standard.string(forKey: "transcription.model") == nil {
+            transcriptionModel = WhisperTranscriber(store: store).preferredConfiguration.model
+        }
+        refreshTranscription()
         timer = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -47,7 +171,12 @@ final class MediaController: ObservableObject {
                     try? self.store.save(self.jobs[index])
                     if recorder.snapshot.duration >= self.store.maximumDuration { self.stopMicrophone() }
                 }
-                if let player = self.player { self.position = max(0, player.currentTime().seconds); self.playing = player.rate > 0 }
+                if let player = self.player {
+                    let next = max(0, player.currentTime().seconds)
+                    if next.isFinite, abs(self.position - next) > 0.05 { self.position = next }
+                    let active = player.rate > 0
+                    if self.playing != active { self.playing = active }
+                }
                 try? await Task.sleep(for: .seconds(1))
             }
         }
@@ -66,42 +195,6 @@ final class MediaController: ObservableObject {
     private func split(_ text: String) -> [String] { Array(Set(text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })).sorted() }
     var createNotebookTarget: ((Notebook) throws -> String)?
 
-    func chooseImport(notebook: Notebook, note: String?) {
-        guard !busy, !isRecording else { return }
-        let panel = NSOpenPanel(); panel.allowedContentTypes = [.audio, .movie]; panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
-        panel.message = "Se conservará la fuente y se guardará una copia local para esta clase."
-        guard panel.runModal() == .OK, let source = panel.url else { return }
-        do {
-            guard let target = try note ?? createNotebookTarget?(notebook) else { throw MediaError.invalid("Crea una nota para importar.") }
-            importMedia(source, notebook: notebook, note: target)
-        } catch { self.error = error.localizedDescription }
-    }
-    func importMedia(_ source: URL, notebook: Notebook, note: String) {
-        guard !busy, !isRecording else { return }
-        var job = MediaJob(notebookID: notebook.id, subject: notebook.name, note: note, sourceName: source.lastPathComponent)
-        job.whisperConfiguration = WhisperTranscriber(store: store).preferredConfiguration
-        update(job); select(job.id); busy = true; error = nil
-        worker = Task { [self] in
-            let scoped = source.startAccessingSecurityScopedResource(); defer { if scoped { source.stopAccessingSecurityScopedResource() }; busy = false }
-            do {
-                let copied = try await store.copySource(source, into: job) { [weak self, id = job.id] value in
-                    await self?.copyProgress(id, value: value)
-                }
-                job.sourceRelativePath = copied.path; job.sourceDigest = copied.hash; job.sourceCopyComplete = true
-                if let duplicate = jobs.first(where: { $0.id != job.id && $0.sourceDigest == copied.hash && $0.audioRelativePath != nil }) {
-                    job.duplicateOf = duplicate.id; job.audioRelativePath = duplicate.audioRelativePath; job.duration = duplicate.duration
-                    if WhisperConfiguration.canReuseTranscript(from: duplicate, for: job) {
-                        job.transcript = duplicate.transcript; job.completedChunks = duplicate.completedChunks
-                        job.asrQualityWarning = duplicate.asrQualityWarning
-                        job.stage = duplicate.stage == .transcribed ? .transcribed : .ready
-                    } else { job.stage = .ready }
-                    job.progress = 1; update(job)
-                    // Keep the separately dated import's source copy; references
-                    // remain durable if other session records are later removed.
-                } else { try await prepare(job) }
-            } catch { failed(job.id, error: error) }
-        }
-    }
     private func copyProgress(_ id: String, value: Double) {
         guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
         jobs[index].progress = value
@@ -130,17 +223,21 @@ final class MediaController: ObservableObject {
     }
     /// Called exclusively by the user's Start button. No startup, test or
     /// automatic recovery path requests microphone access or starts capture.
-    func startMicrophone(notebook: Notebook, note: String?) {
-        guard !busy, !isRecording else { return }
+    func startMicrophone(notebook: Notebook, note: String?, dictationID: String? = nil) {
+        guard !busy, !isRecording, modelOperation == nil else { return }
+        guard available(for: nil) else { error = "Configura el modelo local o la clave API en Preferencias → Dictado antes de grabar."; return }
         busy = true
         worker = Task { [self] in
             defer { busy = false }
-            guard await AVCaptureDevice.requestAccess(for: .audio) else { error = "El permiso del micrófono no está concedido. Puedes importar un archivo o cambiarlo en Ajustes del Sistema."; return }
+            guard await AVCaptureDevice.requestAccess(for: .audio) else { error = "El permiso del micrófono no está concedido. Puedes cambiarlo en Ajustes del Sistema."; return }
             guard !Task.isCancelled else { return }
             do {
                 // No note is created until the capture device actually starts.
                 var job = MediaJob(notebookID: notebook.id, subject: notebook.name, note: note ?? "", sourceName: "Micrófono", microphone: true)
-                job.whisperConfiguration = WhisperTranscriber(store: store).preferredConfiguration
+                configure(&job)
+                if let dictationID { job.id = dictationID }
+                job.inputMode = .dictation
+                job.liveChunkSeconds = 5
                 let rolling = try RollingPCMRecorder(store: store, job: job)
                 let stream = MicrophoneStream(recorder: rolling, changed: { [weak self, id = job.id] state in
                     Task { @MainActor in self?.captureChanged(id, state: state) }
@@ -189,7 +286,7 @@ final class MediaController: ObservableObject {
         }
     }
     func shutdown() {
-        worker?.cancel(); liveWorker?.cancel(); player?.pause()
+        worker?.cancel(); liveWorker?.cancel(); modelWorker?.cancel(); player?.pause()
         if let stream = recorder, let id = recordingID, var job = jobs.first(where: { $0.id == id }) {
             do {
                 let state = try stream.stop(); job.duration = state.duration; job.audioRelativePath = state.source; job.sourceCopyComplete = true
@@ -220,10 +317,14 @@ final class MediaController: ObservableObject {
                     }
                     for chunk in pending {
                         try Task.checkCancellation()
-                        let segments = try await WhisperTranscriber(store: store).transcribeLiveChunk(chunk, job: job)
+                        var segments = try await WhisperTranscriber(store: store).transcribeLiveChunk(chunk, job: job)
+                        if let reference = jobs.first(where: { $0.id == id })?.teacherReference {
+                            segments = try await TeacherVoiceMatcher(store: store).annotate(segments, audio: store.url(chunk.path), offset: chunk.start, reference: reference)
+                        }
                         guard var current = jobs.first(where: { $0.id == id }) else { return }
                         if let warning = ASRQuality.repetitionWarning(segments) { current.asrQualityWarning = warning; current.error = warning; self.error = warning }
                         current.transcript = TranscriptMerge.append(segments, to: current.transcript)
+                        if let warning = ASRQuality.repetitionWarning(current.transcript) { current.asrQualityWarning = warning; current.error = warning }
                         current.completedChunks = chunk.index + 1; current.live?.processedChunks = chunk.index + 1
                         let sealed = max(state.chunks.count, current.live?.sealedChunks ?? 0)
                         current.live?.sealedChunks = sealed
@@ -246,7 +347,7 @@ final class MediaController: ObservableObject {
         refreshBusy()
     }
     private func resumeLive() {
-        guard !busy, !isRecording, let original = selected, original.live != nil else { return }
+        guard !busy, !isRecording, modelOperation == nil, let original = selected, available(for: original), original.live != nil else { return }
         busy = true
         worker = Task { [self] in
             defer { refreshBusy() }
@@ -264,11 +365,14 @@ final class MediaController: ObservableObject {
     }
     func transcribe() {
         if selected?.live != nil { resumeLive(); return }
-        guard !busy, !isRecording, var job = selected, job.audioRelativePath != nil else { return }
+        guard !busy, !isRecording, modelOperation == nil, var job = selected, available(for: job), job.audioRelativePath != nil else { return }
         if job.whisperConfiguration == nil, job.completedChunks == 0 {
             job.whisperConfiguration = WhisperTranscriber(store: store).preferredConfiguration
         }
-        job.stage = .transcribing; job.error = nil; update(job); busy = true; error = nil
+        job.stage = .transcribing; job.error = nil
+        let seconds = (try? WhisperConfiguration.resolved(for: job).importChunkSeconds) ?? 30
+        job.progress = Double(job.completedChunks) / max(1, ceil(job.duration / seconds))
+        update(job); busy = true; error = nil
         worker = Task { [self] in
             defer { busy = false }
             do { _ = try await WhisperTranscriber(store: store).transcribe(job) { [weak self] value in await self?.update(value) } }

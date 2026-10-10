@@ -159,6 +159,20 @@ final class NotebookAssistantController: ObservableObject {
             try save(value, id: notebook.id)
         } catch { self.error = error.localizedDescription }
     }
+    /// Dictation appends to its original chat, never to whichever chat happens
+    /// to be selected when recognition finishes. It never sends a request.
+    func appendDictation(_ text: String, notebook: Notebook, chatID: String) throws {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        var value = state(notebook)
+        guard let index = value.chats.firstIndex(where: { $0.id == chatID }) else {
+            throw MediaError.invalid("El chat del dictado ya no existe. No se ha enviado ningún mensaje.")
+        }
+        let existing = value.chats[index].draft
+        let separator = existing.isEmpty || existing.last?.isWhitespace == true ? "" : " "
+        value.chats[index].draft = existing + separator + text
+        try save(value, id: notebook.id)
+    }
     func importAttachments(_ urls: [URL], notebook: Notebook) {
         guard !importingAttachments else { return }
         do {
@@ -253,7 +267,7 @@ final class NotebookAssistantController: ObservableObject {
     }
 
     func queued(_ notebook: Notebook) -> [NotebookQueuedPrompt] { chat(notebook)?.queuedPrompts ?? [] }
-    func enqueue(_ notebook: Notebook, configuration: AIProviderConfiguration, document: String?, steer: Bool = false) {
+    func enqueue(_ notebook: Notebook, configuration: AIProviderConfiguration, document: String?, webEnabled: Bool = true, steer: Bool = false) {
         guard let chat = chat(notebook), !importingAttachments else { return }
         let text = chat.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !(chat.attachments ?? []).isEmpty else { return }
@@ -261,7 +275,7 @@ final class NotebookAssistantController: ObservableObject {
             try configuration.validateSending()
             var value = state(notebook)
             guard let i = value.chats.firstIndex(where: { $0.id == chat.id }) else { return }
-            let item = NotebookQueuedPrompt(text: text, attachments: chat.attachments ?? [], configuration: configuration, document: document)
+            let item = NotebookQueuedPrompt(text: text, attachments: chat.attachments ?? [], configuration: configuration, document: document, webEnabled: webEnabled)
             var queue = value.chats[i].queuedPrompts ?? []
             if steer { queue.insert(item, at: 0) } else { queue.append(item) }
             value.chats[i].queuedPrompts = queue
@@ -312,7 +326,7 @@ final class NotebookAssistantController: ObservableObject {
         dispatchQueued?(notebook, chatID, item)
     }
 
-    func send(notebook: Notebook, document: String?, texts: [String: String], configuration: AIProviderConfiguration, chatID: String? = nil, queuedInput: NotebookQueuedPrompt? = nil,
+    func send(notebook: Notebook, document: String?, texts: [String: String], configuration: AIProviderConfiguration, chatID: String? = nil, queuedInput: NotebookQueuedPrompt? = nil, webEnabled: Bool = true,
               apply: @escaping ([NotebookFileChange], [String: String], String) throws -> NotebookCheckpoint?) {
         guard !isRunning(notebook, chatID: chatID), !importingAttachments, var chat = state(notebook).chats.first(where: { $0.id == (chatID ?? state(notebook).activeChatID) }) else { return }
         if let queuedInput { chat.draft = queuedInput.text; chat.attachments = queuedInput.attachments }
@@ -334,7 +348,9 @@ final class NotebookAssistantController: ObservableObject {
             let library = NotebookFileLibrary(projects: store)
             let libraryFiles = try store.workspace.fileNames().filter { store.owner(of: $0)?.id == notebook.id }
             let language = UserDefaults.standard.string(forKey: "notes.language") ?? "es"
-            let candidate = NotebookTextRequest(notebook: notebook, profile: value.profile, messages: value.chats[i].messages, currentDocument: document, texts: texts, language: language, libraryFiles: libraryFiles)
+            var candidate = NotebookTextRequest(notebook: notebook, profile: value.profile, messages: value.chats[i].messages, currentDocument: document, texts: texts, language: language, libraryFiles: libraryFiles)
+            candidate.webEnabled = queuedInput?.webEnabled ?? webEnabled
+            candidate.nativeWebSearch = configuration.provider == .codexCLI
             _ = try candidate.prompt()
             try save(value, id: notebook.id)
             let run = RunKey(notebookID: notebook.id, chatID: chat.id)
@@ -353,7 +369,8 @@ final class NotebookAssistantController: ObservableObject {
                 do {
                     var redundantRounds = 0
                     var repairRounds = 0
-                    for _ in 0..<6 {
+                    var webCount = 0
+                    for _ in 0..<12 {
                         try Task.checkCancellation()
                         self.report("Conectando con el proveedor…", run: run)
                         let round = UUID().uuidString
@@ -363,6 +380,24 @@ final class NotebookAssistantController: ObservableObject {
                             await self?.report(update, run: run, round: round)
                         }) }
                         try Task.checkCancellation()
+                        if let actions = response.webActions, !actions.isEmpty {
+                            guard request.webEnabled, webCount + actions.count <= 12 else { throw MediaError.invalid("Web access is off or the request reached its web-action limit.") }
+                            for action in actions {
+                                try Task.checkCancellation()
+                                webCount += 1
+                                let title = action.kind == "search" ? "Buscando en la web…" : action.kind == "downloadImage" ? "Descargando imagen…" : "Leyendo página web…"
+                                self.report(title, run: run, detail: action.query.isEmpty ? action.url : action.query, kind: .tool)
+                                do {
+                                    let result = try await NotebookWebClient().execute(action, workspaceRoot: self.store.workspace.root, originalRoot: self.store.workspace.originalRoot, notebook: notebook)
+                                    request.webResults.append(result)
+                                } catch {
+                                    if Task.isCancelled { throw CancellationError() }
+                                    request.webResults.append(.init(action: action, source: action.url, text: "", error: error.localizedDescription))
+                                }
+                            }
+                            request.contextUpdate = "New web results are in webResults. Continue the user's task; cite sources and use successful localImagePath values for image edits."
+                            continue
+                        }
                         if !response.readFiles.isEmpty {
                             guard response.edits.isEmpty else { throw MediaError.invalid("El asistente pidió contexto y cambios a la vez.") }
                             var advanced = false
@@ -441,7 +476,7 @@ extension Workbench {
     func openNotebook(_ id: String) {
         guard activeNotebooks.contains(where: { $0.id == id }) else { return }
         if let selectedNote { saveDraft(named: selectedNote) }
-        persistDrafts(); selectedNotebookID = id; selectedNote = nil; selectedFile = nil; selectedFolder = nil; previewHeading = nil; showPreferences = false
+        persistDrafts(); librarySelections = [.notebook(id)]; selectedNotebookID = id; selectedNote = nil; selectedFile = nil; selectedFolder = nil; previewHeading = nil; showPreferences = false
     }
     @discardableResult func openNotebookForNewChat(_ id: String) -> Bool {
         guard let notebook = activeNotebooks.first(where: { $0.id == id }), let assistant else { return false }
@@ -453,13 +488,14 @@ extension Workbench {
         } catch { errorText = error.localizedDescription; return false }
     }
     func submitNotebookPrompt() {
+        guard media?.isRecording != true, media?.busy != true else { return }
         guard let assistant, projects != nil, let ai else { return }
         let notebook = currentNotebook
         assistant.dispatchQueued = { [weak self] notebook, chatID, item in
             self?.dispatchNotebookPrompt(notebook: notebook, chatID: chatID, item: item)
         }
         if assistant.isRunning(notebook) {
-            assistant.enqueue(notebook, configuration: ai.providerSettings.selected, document: selectedLibraryPath)
+            assistant.enqueue(notebook, configuration: ai.providerSettings.selected, document: selectedLibraryPath, webEnabled: notebookWebEnabled)
             return
         }
         dispatchNotebookPrompt(notebook: notebook, chatID: nil, item: nil)
@@ -470,8 +506,9 @@ extension Workbench {
         assistant.resumeQueue(currentNotebook)
     }
     func steerNotebookPrompt() {
+        guard media?.isRecording != true, media?.busy != true else { return }
         guard let assistant, let ai else { return }
-        assistant.enqueue(currentNotebook, configuration: ai.providerSettings.selected, document: selectedLibraryPath, steer: true)
+        assistant.enqueue(currentNotebook, configuration: ai.providerSettings.selected, document: selectedLibraryPath, webEnabled: notebookWebEnabled, steer: true)
     }
     func dispatchNotebookPrompt(notebook: Notebook, chatID: String?, item: NotebookQueuedPrompt?) {
         guard let assistant, let projects, let ai else { return }
@@ -480,7 +517,7 @@ extension Workbench {
             var effective = disk
             for (path, text) in drafts where projects.owner(of: path)?.id == notebook.id && hasDraft(for: path) { effective[path] = text }
             let snapshot = effective
-            assistant.send(notebook: notebook, document: item == nil ? selectedLibraryPath : item?.document, texts: snapshot, configuration: item?.configuration ?? ai.providerSettings.selected, chatID: chatID, queuedInput: item) { [weak self] changes, read, prompt in
+            assistant.send(notebook: notebook, document: item == nil ? selectedLibraryPath : item?.document, texts: snapshot, configuration: item?.configuration ?? ai.providerSettings.selected, chatID: chatID, queuedInput: item, webEnabled: notebookWebEnabled) { [weak self] changes, read, prompt in
                 guard let self else { throw CancellationError() }
                 guard !changes.isEmpty else { return nil }
                 for (path, original) in read where disk[path] != nil {
@@ -514,9 +551,13 @@ extension Workbench {
         guard let workspace else { return }
         do {
             notes = try workspace.noteNames(); libraryFiles = try workspace.fileNames(); folders = try workspace.folderNames()
+            let previousTexts = drafts
             for path in paths {
                 let text = notes.contains(path) ? try workspace.readNote(path) : nil
                 drafts[path] = text; bases[path] = text
+            }
+            for path in paths {
+                synchronizeDocumentImages(previous: previousTexts[path] ?? "", current: drafts[path] ?? "", note: path)
             }
             persistDrafts()
             if let selectedNote, !notes.contains(selectedNote) { openNotebook(selectedNotebookID) }

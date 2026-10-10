@@ -247,3 +247,36 @@
 "Translúcida" = "Translucent";
 
 "Desactiva Reducir transparencia en los ajustes de accesibilidad de macOS para usar este control." = "Turn off Reduce Transparency in macOS Accessibility settings to use this control.";
+
+"Transcribir" = "Transcribe";
+"Usar configuración actual" = "Use current settings";
+"La transcripción se actualiza por fragmentos mientras grabas; al detener termina el audio pendiente." = "Transcription updates in chunks while recording; stopping finishes the pending audio.";
+"OpenAI API · whisper-1 · se envía el audio" = "OpenAI API · whisper-1 · audio is uploaded";
+
+"Envía el texto seleccionado y hasta 2.000 caracteres relevantes de la copia. Esta acción solo envía texto. Los cambios siguen el permiso elegido en General." = "Sends selected text and up to 2,000 relevant characters from the copy. This action only sends text. Changes follow the permission selected in General.";
+"Envía los fragmentos y contexto limitado mediante tu cuenta. Se aplican sus costes y condiciones de retención. Esta acción solo envía texto; los cambios siguen el permiso elegido en General." = "Sends excerpts and limited context through your account. Its costs and retention terms apply. This action only sends text; changes follow the permission selected in General.";
+"Prepara propuestas aproximadamente cada 5 minutos, al terminar una frase. Adelanta el envío si hay mucho texto y espera hasta 7,5 minutos si hay poco. Incluye hasta dos fragmentos previos de contexto. Recibe la transcripción durante la grabación o desde archivos importados. Se desactiva al cerrar, ante un error o si Whisper repite frases." = "Prepares proposals about every 5 minutes, at a sentence boundary. Sends sooner when there is more text and waits up to 7.5 minutes when there is less. Includes up to two previous chunks as context. Receives transcripts during recording or from imported files. Turns off when closed, on error, or if Whisper repeats phrases.";
+
+"Voz del profesor" = "Teacher voice";
+"Usar voz desde %@" = "Use voice from %@";
+"Comparar voces de la transcripción" = "Compare transcript voices";
+"Posible profesor" = "Likely teacher";
+"Voz sin confirmar" = "Unconfirmed voice";
+"Seleccionar coincidencias del profesor" = "Select likely teacher speech";
+"Las coincidencias son orientativas. Revisa la selección antes de enviarla." = "Matches are estimates. Review the selection before sending.";
+"No separa voces superpuestas ni identifica automáticamente el rol. Las coincidencias requieren revisión." = "Does not isolate overlapping voices or automatically infer their role. Matches require review.";
+"Busca un momento donde solo hable el profesor. Se usarán los siguientes ocho segundos como referencia de esta grabación." = "Find a moment when only the teacher speaks. The next eight seconds become the reference for this recording.";
+"Instala la comparación local de voz en Preferencias → Transcripción." = "Install local voice comparison in Preferences → Transcription.";
+"El profesor está hablando · usar últimos 8 s guardados" = "Teacher is speaking · use last 8 saved seconds";
+"Nueva transcripción con ajustes actuales" = "New transcription with current settings";
+"Revisa las uniones entre fragmentos y las negaciones." = "Review chunk boundaries and negations.";
+"Escuchar referencia" = "Listen to reference";
+
+"Ir a la referencia" = "Go to reference";
+"Referencia: %@ · %lld s" = "Reference: %@ · %lld s";
+
+"Quitar referencia" = "Remove reference";
+
+"Revisión y versiones" = "Review and versions";
+
+"Dictado" = "Dictation";

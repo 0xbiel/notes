@@ -35,6 +35,7 @@ extension Workbench {
             let disk = try workspace.readNote(name)
             let dirty = drafts[name] != nil && drafts[name] != bases[name]
             if !dirty { drafts[name] = disk; bases[name] = disk }
+            librarySelections = [.note(name)]
             selectedNote = name
             selectedFile = nil; selectedFolder = nil
             draftText = drafts[name] ?? disk
@@ -42,6 +43,9 @@ extension Workbench {
             if let notebook = notebooks.first(where: { !$0.rootPrefix.isEmpty && name.hasPrefix($0.rootPrefix + "/") }) { selectedNotebookID = notebook.id }
             else { selectedNotebookID = "derecho" }
             draftVersion += 1
+            let migrated = try migrateGeneratedImages(draftText, note: name)
+            if migrated != draftText { changeDraft(migrated) }
+            else { synchronizeDocumentImages(previous: draftText, current: draftText, note: name) }
         } catch { errorText = error.localizedDescription }
     }
     func refreshEditorFromDisk() {
@@ -56,7 +60,9 @@ extension Workbench {
     }
     func changeDraft(_ text: String) {
         guard let name = selectedNote else { return }
+        let previous = drafts[name] ?? draftText
         draftText = text; drafts[name] = text
+        synchronizeDocumentImages(previous: previous, current: text, note: name)
         draftVersion += 1
         statusText = ""
         persistDrafts()

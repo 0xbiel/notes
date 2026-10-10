@@ -4,6 +4,7 @@ import LectureCore
 
 @MainActor private final class FoldingLayoutManager: NSLayoutManager, @preconcurrency NSLayoutManagerDelegate {
     var math: [Int: RenderedMarkdownMath] = [:]
+    var images: [Int: RenderedMarkdownImage] = [:]
     var foldedRanges: [NSRange] = [] {
         didSet {
             guard foldedRanges != oldValue, let textStorage else { return }
@@ -24,11 +25,11 @@ import LectureCore
     }
 
     func layoutManager(_ layoutManager: NSLayoutManager, shouldGenerateGlyphs glyphs: UnsafePointer<CGGlyph>, properties props: UnsafePointer<NSLayoutManager.GlyphProperty>, characterIndexes charIndexes: UnsafePointer<Int>, font aFont: NSFont, forGlyphRange glyphRange: NSRange) -> Int {
-        guard !foldedRanges.isEmpty || !math.isEmpty else { return 0 }
+        guard !foldedRanges.isEmpty || !math.isEmpty || !images.isEmpty else { return 0 }
         var properties = Array(UnsafeBufferPointer(start: props, count: glyphRange.length))
         var changed = false
         for index in properties.indices {
-            if math[charIndexes[index]] != nil { properties[index] = .controlCharacter; changed = true }
+            if math[charIndexes[index]] != nil || images[charIndexes[index]] != nil { properties[index] = .controlCharacter; changed = true }
             else if foldedRanges.contains(where: { NSLocationInRange(charIndexes[index], $0) }) { properties[index].insert(.null); changed = true }
         }
         guard changed else { return 0 }
@@ -38,9 +39,10 @@ import LectureCore
         return glyphRange.length
     }
     func layoutManager(_ layoutManager: NSLayoutManager, shouldUse action: NSLayoutManager.ControlCharacterAction, forControlCharacterAt charIndex: Int) -> NSLayoutManager.ControlCharacterAction {
-        math[charIndex] == nil ? action : .whitespace
+        math[charIndex] == nil && images[charIndex] == nil ? action : .whitespace
     }
     func layoutManager(_ layoutManager: NSLayoutManager, boundingBoxForControlGlyphAt glyphIndex: Int, for textContainer: NSTextContainer, proposedLineFragment proposedRect: NSRect, glyphPosition: NSPoint, characterIndex charIndex: Int) -> NSRect {
+        if let image = images[charIndex] { return NSRect(origin: .zero, size: image.size) }
         guard let render = math[charIndex] else { return .zero }
         return NSRect(x: 0, y: -render.descent, width: render.size.width + 2, height: render.size.height)
     }
@@ -170,6 +172,9 @@ struct LiveMarkdownEditor: NSViewRepresentable {
     var editing: Bool
     var heading: String? = nil
     var bottomInset: CGFloat = 0
+    var imageDirectory: URL? = nil
+    var imageRoot: URL? = nil
+    var importImage: ((Data, String) throws -> URL)? = nil
     var onChange: (String) -> Void
     var onLink: (URL) -> Void
     var onTaskToggle: ((String) -> Void)? = nil
@@ -229,6 +234,9 @@ struct LiveMarkdownEditor: NSViewRepresentable {
                 changing = false
             }
             view.isEditable = owner.editing
+            view.imageDirectory = owner.imageDirectory
+            view.imageRoot = owner.imageRoot
+            view.importImage = owner.importImage
             view.liveEditing = owner.editing
             view.setAccessibilityLabel(owner.editing ? "Editar nota, vista previa Markdown" : "Ver nota")
             view.openLink = owner.onLink
@@ -332,6 +340,12 @@ struct LiveMarkdownEditor: NSViewRepresentable {
     private var codeBlocks: [CodeBlock] = []
     private var inlineCode: [NSRange] = []
     private(set) var tableBlocks: [MarkdownTableBlock] = []
+    var imageDirectory: URL? { didSet { if imageDirectory != oldValue { renderedSource = nil } } }
+    var imageRoot: URL? { didSet { if imageRoot != oldValue { renderedSource = nil } } }
+    private(set) var renderedImages: [RenderedMarkdownImage] = []
+    var selectedImageLocation: Int?
+    var importImage: ((Data, String) throws -> URL)?
+    private var imageViews: [MarkdownImageView] = []
     private(set) var renderedMath: [RenderedMarkdownMath] = []
     private(set) var renderedTables: [RenderedMarkdownTable] = []
     var contextTable: MarkdownTableBlock?
@@ -350,6 +364,7 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         let container = NSTextContainer(containerSize: NSSize(width: frame.width, height: CGFloat.greatestFiniteMagnitude))
         storage.addLayoutManager(layout); layout.addTextContainer(container)
         self.init(frame: frame, textContainer: container)
+        registerForDraggedTypes([.fileURL, .png, .tiff])
         isRichText = false
         allowsUndo = true
         isVerticallyResizable = true
@@ -417,12 +432,13 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         renderMarkdown()
         (layoutManager as? FoldingLayoutManager)?.foldedRanges = codeBlocks.compactMap {
             collapsedBlocks.contains($0.id) ? foldedRange(for: $0) : nil
-        } + renderedTables.compactMap(\.foldedRange) + renderedMath.map(\.foldedRange)
+        } + renderedTables.compactMap(\.foldedRange) + renderedMath.map(\.foldedRange) + renderedImages.map(\.foldedRange)
         needsDisplay = true
         window?.invalidateCursorRects(for: self)
     }
 
     override func mouseDown(with event: NSEvent) {
+        selectedImageLocation = nil; updateImageSelection()
         finishInlineTableCell()
         let point = convert(event.locationInWindow, from: nil)
         if isEditable, let hit = tableCell(at: point) {
@@ -533,6 +549,7 @@ struct LiveMarkdownEditor: NSViewRepresentable {
             }
         }
         super.draw(dirtyRect)
+        positionImageViews()
         for render in renderedMath {
             if let rect = mathRect(render), rect.intersects(dirtyRect) {
                 render.image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
@@ -622,22 +639,50 @@ struct LiveMarkdownEditor: NSViewRepresentable {
     @objc func undo(_ sender: Any?) { if isEditable { documentUndo.undo() } }
     @objc func redo(_ sender: Any?) { if isEditable { documentUndo.redo() } }
     override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
-        if item.action == #selector(copy(_:)), selectedTableText() != nil { return true }
+        if item.action == #selector(copy(_:)), selectedImageLocation != nil || selectedTableText() != nil { return true }
         if item.action == #selector(undo(_:)) { return isEditable && documentUndo.canUndo }
         if item.action == #selector(redo(_:)) { return isEditable && documentUndo.canRedo }
         if item.action == #selector(visualTableMenuAction(_:)) || item.action == #selector(insertMarkdownTable(_:)) || item.action == #selector(editMarkdownTable(_:)) { return isEditable && !hasMarkedText() }
         return super.validateUserInterfaceItem(item)
     }
     override func paste(_ sender: Any?) {
+        if insertImages(from: .general) { return }
+        selectedImageLocation = nil; updateImageSelection()
         if tableSelection != nil { if !pasteTableCells(NSPasteboard.general.string(forType: .string) ?? "") { NSSound.beep() }; return }; pasteAsPlainText(sender)
     }
     override func copy(_ sender: Any?) {
+        if selectedImageLocation != nil { copySelectedImage(); return }
         if let text = selectedTableText() { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) } else { super.copy(sender) }
     }
     override func mouseDragged(with event: NSEvent) {
         if tableSelection != nil, let hit = tableCell(at: convert(event.locationInWindow, from: nil)) { selectTableCell(hit.table, cellIndex: hit.index, extending: true) } else if tableSelection == nil { super.mouseDragged(with: event) }
     }
-    override func keyDown(with event: NSEvent) { if handleTableKey(event) { return }; super.keyDown(with: event) }
+    override func keyDown(with event: NSEvent) {
+        if selectedImageLocation != nil {
+            if event.keyCode == 51 || event.keyCode == 117 { removeSelectedImage(); return }
+            let image = renderedImages.first { $0.range.location == selectedImageLocation }
+            selectedImageLocation = nil; updateImageSelection()
+            if event.keyCode == 53 { return }
+            if let image { setSelectedRange(NSRange(location: min(string.utf16.count, NSMaxRange(image.range) + 1), length: 0)) }
+        }
+        if handleTableKey(event) { return }; super.keyDown(with: event)
+    }
+    override func cut(_ sender: Any?) {
+        if selectedImageLocation != nil { copySelectedImage(); removeSelectedImage() } else { super.cut(sender) }
+    }
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        if isEditable && DocumentImageInput.containsImage(sender.draggingPasteboard) { return .copy }
+        if sender.draggingPasteboard.availableType(from: [.fileURL]) != nil { return [] }
+        return super.draggingEntered(sender)
+    }
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation { draggingEntered(sender) }
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        if DocumentImageInput.containsImage(sender.draggingPasteboard) {
+            return insertImages(from: sender.draggingPasteboard, at: characterIndexForInsertion(at: convert(sender.draggingLocation, from: nil)))
+        }
+        if sender.draggingPasteboard.availableType(from: [.fileURL]) != nil { return false }
+        return super.performDragOperation(sender)
+    }
     func tableRect(_ table: RenderedMarkdownTable) -> NSRect? {
         guard let layoutManager, let textContainer, table.firstLine.location < (string as NSString).length else { return nil }
         layoutManager.ensureLayout(for: textContainer)
@@ -1007,12 +1052,33 @@ struct LiveMarkdownEditor: NSViewRepresentable {
                 storage.addAttribute(.paragraphStyle, value: style, range: source.lineRange(for: span.range))
             }
         }
+        renderedImages = MarkdownImageRenderer.render(source: string, directory: imageDirectory, root: imageRoot, width: textContainer?.containerSize.width ?? 680).filter { !inCode($0.range) }
+        for image in renderedImages {
+            storage.addAttribute(.foregroundColor, value: NSColor.clear, range: image.range)
+            let style = NSMutableParagraphStyle(); style.minimumLineHeight = image.size.height + 16; style.paragraphSpacing = 8
+            storage.addAttribute(.paragraphStyle, value: style, range: image.range)
+        }
+        (layoutManager as? FoldingLayoutManager)?.images = Dictionary(uniqueKeysWithValues: renderedImages.map { ($0.range.location, $0) })
+        let previousImageViews = imageViews
+        var retainedImageViews = Set<ObjectIdentifier>()
+        imageViews = renderedImages.map { render in
+            let view = previousImageViews.first { !retainedImageViews.contains(ObjectIdentifier($0)) && $0.matches(render, editable: isEditable) } ?? MarkdownImageView()
+            retainedImageViews.insert(ObjectIdentifier(view))
+            view.editable = isEditable; view.maximumWidth = max(48, (textContainer?.containerSize.width ?? 680) - 16)
+            view.configure(render); view.selected = selectedImageLocation == render.range.location
+            view.onSelect = { [weak self] in self?.selectImage(at: render.range.location) }
+            view.onChange = { [weak self] width, crop in self?.changeImage(at: render.range.location, width: width, crop: crop) }
+            view.onDelete = { [weak self] in self?.selectedImageLocation = render.range.location; self?.removeSelectedImage() }
+            view.onCopy = { [weak self] in self?.selectedImageLocation = render.range.location; self?.copySelectedImage() }
+            if view.superview == nil { addSubview(view) }; return view
+        }
+        previousImageViews.filter { !retainedImageViews.contains(ObjectIdentifier($0)) }.forEach { $0.removeFromSuperview() }
         (layoutManager as? FoldingLayoutManager)?.math = Dictionary(uniqueKeysWithValues: renderedMath.map { ($0.span.range.location, $0) })
         storage.endEditing()
         documentUndo.enableUndoRegistration()
         (layoutManager as? FoldingLayoutManager)?.foldedRanges = blocks.compactMap {
             collapsedBlocks.contains($0.id) ? foldedRange(for: $0) : nil
-        } + renderedTables.compactMap(\.foldedRange) + renderedMath.map(\.foldedRange)
+        } + renderedTables.compactMap(\.foldedRange) + renderedMath.map(\.foldedRange) + renderedImages.map(\.foldedRange)
         // Selection callbacks can restyle text during an AppKit character edit.
         // In that path, font changes outside the edited paragraph can retain
         // glyph IDs from the previous font. Regenerate them after styling.
@@ -1023,4 +1089,17 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         typingAttributes = [.font: NSFont.systemFont(ofSize: 16), .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph]
         syncVisualTableControls()
     }
+    func updateImageSelection() {
+        for (render, view) in zip(renderedImages, imageViews) { view.selected = selectedImageLocation == render.range.location }
+    }
+    private func positionImageViews() {
+        guard let layoutManager, let textContainer else { return }
+        for (render, view) in zip(renderedImages, imageViews) {
+            if view.isResizing { continue }
+            let glyphs = layoutManager.glyphRange(forCharacterRange: NSRange(location: render.range.location, length: 1), actualCharacterRange: nil)
+            let rect = layoutManager.boundingRect(forGlyphRange: glyphs, in: textContainer)
+            view.frame = NSRect(x: textContainerOrigin.x + rect.minX, y: textContainerOrigin.y + rect.minY, width: render.size.width, height: render.size.height)
+        }
+    }
+
 }

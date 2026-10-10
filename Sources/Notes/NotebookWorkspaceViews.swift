@@ -212,7 +212,12 @@ struct NotebookChatPicker: View {
                 }
             Button {
                 do { try assistant.newChat(notebook) } catch { assistant.error = error.localizedDescription }
-            } label: { Label(language == "en" ? "New chat" : "Nuevo chat", systemImage: "plus") }
+            } label: {
+                Label(language == "en" ? "New chat" : "Nuevo chat", systemImage: "plus")
+                    .padding(.horizontal, 10).frame(minWidth: 34, minHeight: 34)
+                    .contentShape(Rectangle())
+                    .modifier(ControlHoverBackground())
+            }
                 .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityIdentifier("notebook.newChat")
         }.font(.callout)
             .fixedSize(horizontal: true, vertical: true)
@@ -382,6 +387,7 @@ struct NotebookComposer: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             VStack(alignment: .leading, spacing: large ? 16 : 8) {
+                if let media = model.media { ChatDictationStatus(media: media) }
                 if let attachments = assistant.chat(notebook)?.attachments, !attachments.isEmpty {
                     NotebookAttachmentStrip(attachments: attachments, workspace: assistant.store.workspace) { assistant.removeAttachment($0, notebook: notebook) }
                 }
@@ -413,7 +419,7 @@ struct NotebookComposer: View {
                             Button(language == "en" ? "Queue after current request" : "Añadir a la cola") { model.submitNotebookPrompt() }
                             Button(language == "en" ? "Steer now" : "Cambiar instrucciones ahora") { model.steerNotebookPrompt() }
                         } label: { Image(systemName: "arrow.up").foregroundStyle(NotebookAccent.color(accent)).frame(width: 28, height: 28) }
-                        .menuStyle(.borderlessButton).fixedSize().help(language == "en" ? "Queue or steer" : "Añadir a la cola o dirigir")
+                        .menuStyle(.borderlessButton).fixedSize().disabled(model.dictationActive).help(language == "en" ? "Queue or steer" : "Añadir a la cola o dirigir")
                     }
                     Button {
                         if running { assistant.stop(notebook: notebook) } else { model.submitNotebookPrompt() }
@@ -422,7 +428,7 @@ struct NotebookComposer: View {
                             .font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
                             .frame(width: 30, height: 30).background(NotebookAccent.color(accent), in: Circle())
                     }.buttonStyle(.plain)
-                        .disabled(!running && ((draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (assistant.chat(notebook)?.attachments ?? []).isEmpty) || assistant.importingAttachments))
+                        .disabled(!running && (model.dictationActive || (draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (assistant.chat(notebook)?.attachments ?? []).isEmpty) || assistant.importingAttachments))
                         .accessibilityLabel(running ? (language == "en" ? "Stop" : "Detener") : (language == "en" ? "Send" : "Enviar"))
                         .accessibilityIdentifier("notebook.send")
                 }
@@ -442,7 +448,13 @@ struct NotebookComposer: View {
         }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: showConversation)
         .onExitCommand { showConversation = false }
-        .onChange(of: notebook.id) { _, _ in showConversation = false }
+        .onChange(of: notebook.id) { _, _ in
+            showConversation = false
+            if model.media?.isRecording == true { model.media?.stopMicrophone() }
+        }
+        .onChange(of: assistant.chat(notebook)?.id) { _, _ in
+            if model.media?.isRecording == true { model.media?.stopMicrophone() }
+        }
         .onChange(of: showConversation) { _, value in if !large { model.documentChatVisible = value } }
         .onAppear { if !large { model.documentChatVisible = showConversation } }
         .onDisappear { if !large { model.documentChatVisible = false } }
@@ -548,6 +560,11 @@ struct NotebookManagement: View {
             if tab == "profile" {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
+                        Toggle(t("Búsqueda web", "Web search"), isOn: Binding(get: { profile.allowsWebSearch }, set: { profile.webSearchEnabled = $0 }))
+                            .modifier(NotebookToggleAccent(switchStyle: true))
+                            .accessibilityIdentifier("notebook.profile.webSearch")
+                        Text(t("Permite buscar fuentes actuales y descargar imágenes para este cuaderno.", "Allow searching current sources and downloading images for this notebook."))
+                            .font(.caption).foregroundStyle(.secondary)
                         field(t("Propósito", "Purpose"), text: $profile.purpose)
                         field(t("Instrucciones del asistente", "Assistant instructions"), text: $profile.instructions, lines: 4)
                         field(t("Estilo y formato", "Style and formatting"), text: $profile.formatting)
@@ -628,8 +645,30 @@ struct NotebookAssistantToggle: View {
     }
     var body: some View {
         Button { model.hideStudyComposer.toggle() } label: {
-            Image(systemName: model.hideStudyComposer ? "bubble.left" : "bubble.left.fill").frame(width: 26, height: 26)
-        }.buttonStyle(.plain).modifier(ControlHoverBackground()).help(title)
+            Image(systemName: model.hideStudyComposer ? "bubble.left" : "bubble.left.fill")
+                .frame(width: 34, height: 34).contentShape(Rectangle())
+                .modifier(ControlHoverBackground())
+        }.buttonStyle(.plain).help(title)
             .accessibilityLabel(title).accessibilityIdentifier("notebook.toggleAssistant")
+    }
+}
+
+private struct ChatDictationStatus: View {
+    @ObservedObject var media: MediaController
+    @AppStorage("notes.language") private var language = "es"
+    var body: some View {
+        if media.isRecording || media.busy {
+            Text(media.isRecording
+                 ? (language == "en" ? "Listening… Text appears here as it is transcribed. Stop to review and send." : "Escuchando… El texto aparecerá aquí. Detén el dictado para revisar y enviar.")
+                 : (language == "en" ? "Finishing dictation…" : "Terminando dictado…"))
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        if let error = media.error {
+            HStack(alignment: .top) {
+                Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+                Button { media.error = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
+                    .accessibilityLabel(language == "en" ? "Dismiss dictation error" : "Cerrar error de dictado")
+            }
+        }
     }
 }

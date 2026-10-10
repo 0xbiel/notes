@@ -4,7 +4,7 @@ struct CodexNotebookStreamingTransport {
     let store: LocalMediaStore
     let configuration: AIProviderConfiguration
 
-    func generate(_ prompt: String, language: String, images: [NotebookInputImage], progress: @escaping @Sendable (NotebookProviderProgress) async -> Void) async throws -> String {
+    func generate(_ prompt: String, language: String, images: [NotebookInputImage], webEnabled: Bool = true, progress: @escaping @Sendable (NotebookProviderProgress) async -> Void) async throws -> String {
         let directory = try NotesProviderTransport(store: store).temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let home = directory.appendingPathComponent("codex-home")
@@ -21,8 +21,8 @@ struct CodexNotebookStreamingTransport {
         var environment = ProcessInfo.processInfo.environment
         for name in environment.keys where name.hasPrefix("CODEX_") || name.hasPrefix("T3CODE_") { environment.removeValue(forKey: name) }
         environment["CODEX_HOME"] = home.path
-        let instructions = NotebookAssistantProtocol.instructions(language: language)
-        let exec = NotesProviderTransport.codexArguments(configuration, schema: directory.appendingPathComponent("unused-schema"), instructions: instructions)
+        let instructions = NotebookAssistantProtocol.instructions(language: language) + "\n" + NotebookAssistantProtocol.webInstructions(enabled: webEnabled, native: true)
+        let exec = NotesProviderTransport.codexArguments(configuration, schema: directory.appendingPathComponent("unused-schema"), instructions: instructions, allowWebSearch: webEnabled)
         var arguments = ["app-server", "--listen", "stdio://", "--config", "sandbox_mode=\"read-only\"", "--config", "cli_auth_credentials_store=\"file\""]
         for index in exec.indices where ["--config", "--disable"].contains(exec[index]) && index + 1 < exec.count { arguments += [exec[index], exec[index + 1]] }
         let connection = ProviderRPCConnection(configuration: configuration, directory: directory, environment: environment, arguments: arguments)
@@ -37,7 +37,7 @@ struct CodexNotebookStreamingTransport {
                 if configuration.model != "default" { threadParams["model"] = configuration.model }
                 let result = try connection.request("thread/start", params: threadParams)
                 guard let thread = result["thread"] as? [String: Any], let id = thread["id"] as? String else { throw MediaError.invalid("Codex no inició el hilo.") }
-                var decoder = CodexNotebookProgressDecoder(threadID: id)
+                var decoder = CodexNotebookProgressDecoder(threadID: id, webEnabled: webEnabled)
                 connection.notificationHandler = { method, params in
                     if let update = try decoder.accept(method, params) { events.continuation.yield(update) }
                 }
@@ -66,6 +66,7 @@ struct CodexNotebookStreamingTransport {
 
 struct CodexNotebookProgressDecoder {
     let threadID: String
+    var webEnabled = false
     private var turnID: String?
     private var parts: [String: [Int: String]] = [:]
     private(set) var output = ""
@@ -88,6 +89,10 @@ struct CodexNotebookProgressDecoder {
         }
         if method == "item/agentMessage/delta" { return .init(id: "provider-response", title: "Redactando respuesta…") }
         if ["item/started", "item/completed"].contains(method), let item = params["item"] as? [String: Any], let kind = item["type"] as? String {
+            if kind == "webSearch", webEnabled {
+                let action = item["action"] as? [String: Any]
+                return .init(id: "web-" + (item["id"] as? String ?? "current"), title: "Buscando en la web…", detail: action?["query"] as? String, kind: .tool)
+            }
             guard ["reasoning", "agentMessage", "userMessage"].contains(kind) else { throw MediaError.invalid("Codex devolvió un evento no permitido; respuesta rechazada.") }
             if method == "item/completed", kind == "agentMessage", let text = item["text"] as? String { output = String(text.prefix(60_000)) }
         }

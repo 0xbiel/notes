@@ -22,6 +22,137 @@ final class NotebookLibraryTests: XCTestCase {
         }
         return (model, root, clipboard)
     }
+    @MainActor func testPointerMoveRetainsGroupThroughNativeSelectionChanges() throws {
+        let (model, _, _) = try fixture()
+        try model.workspace!.createNote("Second.md", text: "Second")
+        try model.workspace!.createFolder("Destination")
+        model.refreshProjectFiles([])
+        model.setLibrarySelections([.note("Inicio.md"), .note("Second.md")])
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 200), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let source = LibraryNativeDragSource.Bridge(frame: NSRect(x: 0, y: 0, width: 200, height: 30))
+        source.model = model; source.item = .note("Inicio.md")
+        let destination = LibraryNativeDropArea.Bridge(frame: NSRect(x: 0, y: 80, width: 200, height: 30))
+        destination.directory = "Destination"; destination.notebookID = "derecho"
+        window.contentView!.addSubview(source); window.contentView!.addSubview(destination)
+        defer { source.stop() }
+        func event(_ type: NSEvent.EventType, y: CGFloat) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: NSPoint(x: 20, y: y), modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        }
+        XCTAssertNotNil(source.handle(event(.leftMouseDown, y: 15)))
+        model.setLibrarySelections([.note("Inicio.md")])
+        XCTAssertNil(source.handle(event(.leftMouseDragged, y: 95)))
+        XCTAssertEqual(model.libraryDropDestination, "derecho:Destination")
+        XCTAssertNil(source.handle(event(.leftMouseUp, y: 95)))
+        XCTAssertNil(model.errorText)
+        XCTAssertNil(model.libraryDropDestination)
+        XCTAssertEqual(try model.workspace!.readNote("Destination/Inicio.md"), "# Original\n")
+        XCTAssertEqual(try model.workspace!.readNote("Destination/Second.md"), "Second")
+        XCTAssertEqual(model.librarySelections.count, 2)
+    }
+
+    @MainActor func testLegacyGeneratedImagesMigrateWithoutTouchingUserAssets() throws {
+        let (model, _, _) = try fixture()
+        let path = "assets/image-" + UUID().uuidString.lowercased() + ".gif"
+        let gif = Data(base64Encoded: "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")!
+        try model.workspace!.createAsset(path, data: gif)
+        try model.workspace!.createAsset("assets/user-picture.gif", data: gif)
+        try model.workspace!.createNote("Picture.md", text: "![Picture](" + path + ")")
+        model.refreshProjectFiles([]); model.openNote("Picture.md"); model.saveDraft()
+        let reference = try XCTUnwrap(NotebookImageStorage.references(model.draftText, note: "Picture.md", workspace: model.workspace!).first)
+        XCTAssertTrue(reference.path.hasPrefix(".palladium-images/"))
+        XCTAssertEqual(try model.workspace!.readFile(reference.path), gif)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try model.workspace!.fileURL(path).path))
+        XCTAssertEqual(try model.workspace!.readFile("assets/user-picture.gif"), gif)
+        model.changeDraft("Removed")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try model.workspace!.fileURL(reference.path).path))
+        model.changeDraft("![Picture](" + reference.path + ")")
+        XCTAssertEqual(try model.workspace!.readFile(reference.path), gif)
+    }
+
+    @MainActor func testMultipleSelectionMovePreservesDraftsImagesAndNestedFolders() throws {
+        let (model, root, _) = try fixture()
+        let workspace = model.workspace!
+        let imagePath = ".palladium-images/image-" + UUID().uuidString.lowercased() + ".gif"
+        let gif = Data(base64Encoded: "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")!
+        try workspace.createAsset(imagePath, data: gif)
+        try workspace.createFolder("Lessons/Empty")
+        try workspace.createNote("Lessons/Topic.md", text: "![Picture](../" + imagePath + ")")
+        try workspace.createAsset("manual.pdf", data: Data([1, 2, 3]))
+        model.refreshProjectFiles([])
+        model.openNote("Inicio.md"); model.changeDraft("Unsaved draft")
+        try model.createNotebookItem(kind: "cuaderno", name: "Target")
+        let target = model.currentNotebook
+        try workspace.createNote(target.rootPrefix + "/Inicio.md", text: "Existing")
+        model.setLibrarySelections([.folder("Lessons"), .note("Lessons/Topic.md"), .note("Inicio.md"), .note("manual.pdf")])
+        XCTAssertEqual(model.librarySelections.count, 4)
+        model.moveLibraryItems(model.librarySelections, into: target.rootPrefix, notebookID: target.id)
+        XCTAssertNil(model.errorText)
+        XCTAssertEqual(try workspace.readNote(target.rootPrefix + "/Inicio.md"), "Existing")
+        XCTAssertEqual(try workspace.readNote(target.rootPrefix + "/Inicio copy.md"), "Unsaved draft")
+        XCTAssertEqual(try workspace.readFile(target.rootPrefix + "/manual.pdf"), Data([1, 2, 3]))
+        XCTAssertTrue(model.folders.contains(target.rootPrefix + "/Lessons/Empty"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("copied-course/Lessons").path))
+        let movedNote = target.rootPrefix + "/Lessons/Topic.md"
+        let text = try workspace.readNote(movedNote)
+        let reference = try XCTUnwrap(NotebookImageStorage.references(text, note: movedNote, workspace: workspace).first)
+        XCTAssertTrue(reference.path.hasPrefix(target.rootPrefix + "/.palladium-images/"))
+        XCTAssertEqual(try workspace.readFile(reference.path), gif)
+        XCTAssertFalse(model.fileNames(in: target).contains(reference.path))
+        XCTAssertEqual(model.librarySelections.count, 3)
+    }
+
+    @MainActor func testInvalidBatchMoveDoesNotMoveAnySource() throws {
+        let (model, _, _) = try fixture()
+        try model.workspace!.createFolder("Folder/Child")
+        model.refreshProjectFiles([])
+        model.moveLibraryItems([.note("Inicio.md"), .folder("Folder")], into: "Folder/Child", notebookID: "derecho")
+        XCTAssertNotNil(model.errorText)
+        XCTAssertEqual(try model.workspace!.readNote("Inicio.md"), "# Original\n")
+        XCTAssertTrue(model.folders.contains("Folder/Child"))
+    }
+
+    @MainActor func testHiddenImageRemovalKeepsSharedReferencesAndRestoresOnUndo() throws {
+        let (model, _, _) = try fixture()
+        let gif = Data(base64Encoded: "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")!
+        model.openNote("Inicio.md")
+        let url = try model.importDocumentImage(gif, fileExtension: "gif", note: "Inicio.md")
+        let path = String(url.path.dropFirst(model.workspace!.courseRoot.path.count + 1))
+        XCTAssertTrue(path.hasPrefix(".palladium-images/"))
+        let text = "![Picture](" + path + ")"
+        model.changeDraft(text); model.saveDraft()
+        try model.workspace!.createNote("Shared.md", text: text)
+        model.refreshProjectFiles([])
+        model.changeDraft("Removed here")
+        XCTAssertEqual(try model.workspace!.readFile(path), gif)
+        model.openNote("Shared.md"); model.changeDraft("Removed everywhere")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        model.changeDraft(text)
+        XCTAssertEqual(try model.workspace!.readFile(path), gif)
+        model.saveDraft()
+        let reopened = Workbench(workspaceRoot: model.workspace!.root)
+        defer { reopened.assistant?.stop(); reopened.ai?.stop(); reopened.media?.shutdown() }
+        reopened.openNote("Shared.md")
+        XCTAssertEqual(try reopened.workspace!.readFile(path), gif)
+    }
+
+    @MainActor func testWebPreferenceIsPerNotebookAndOlderProfilesDefaultToEnabled() throws {
+        let (model, root, _) = try fixture()
+        let old = try JSONDecoder().decode(NotebookProfile.self, from: Data(#"{"purpose":"","instructions":"","formatting":"","sourceRules":""}"#.utf8))
+        XCTAssertTrue(old.allowsWebSearch)
+        var profile = model.assistant!.state(model.currentNotebook).profile
+        profile.webSearchEnabled = false
+        model.assistant!.saveProfile(profile, notebook: model.currentNotebook)
+        XCTAssertFalse(model.notebookWebEnabled)
+        try model.createNotebookItem(kind: "cuaderno", name: "Other")
+        XCTAssertTrue(model.notebookWebEnabled)
+        model.openNotebook("derecho"); XCTAssertFalse(model.notebookWebEnabled)
+        let reopened = Workbench(workspaceRoot: root)
+        defer { reopened.assistant?.stop(); reopened.ai?.stop(); reopened.media?.shutdown() }
+        reopened.openNotebook("derecho"); XCTAssertFalse(reopened.notebookWebEnabled)
+    }
+
     @MainActor func testQuickOpenSearchIncludesNotebooksAndRevealsTheirSidebarSelection() throws {
         let (model, _, _) = try fixture()
         try model.createNotebookItem(kind: "cuaderno", name: "Álgebra")
@@ -223,8 +354,10 @@ final class NotebookLibraryTests: XCTestCase {
         XCTAssertNil(model.errorText)
         XCTAssertEqual(try model.workspace!.readFile("Destination/Assets/Blob.bin"), Data([2, 255]))
         XCTAssertFalse(model.libraryFiles.contains("Assets/Blob.bin"))
+        model.deleteItem("Destination/Assets", folder: true)
         let entry = try XCTUnwrap(model.trash.first)
         model.restoreTrash(entry)
+        model.moveLibraryItem("Destination/Assets", folder: true, into: "", notebookID: "derecho")
         XCTAssertNil(model.errorText); XCTAssertTrue(model.folders.contains("Assets/Empty"))
         XCTAssertEqual(try model.workspace!.readNote("Assets/Note.md"), "Note")
         model.deleteItem("Assets", folder: true)

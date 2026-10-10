@@ -6,6 +6,9 @@ public struct NotebookProfile: Codable, Equatable, Sendable {
     public var instructions = ""
     public var formatting = ""
     public var sourceRules = ""
+    /// Missing on older profiles: web access is enabled by default.
+    public var webSearchEnabled: Bool? = nil
+    public var allowsWebSearch: Bool { webSearchEnabled ?? true }
     public init() {}
 }
 
@@ -42,8 +45,9 @@ public struct NotebookQueuedPrompt: Codable, Identifiable, Equatable, Sendable {
     public var attachments: [NotebookAttachment]
     public var configuration: AIProviderConfiguration
     public var document: String?
-    public init(text: String, attachments: [NotebookAttachment], configuration: AIProviderConfiguration, document: String?) {
-        self.text = text; self.attachments = attachments; self.configuration = configuration; self.document = document
+    public var webEnabled: Bool?
+    public init(text: String, attachments: [NotebookAttachment], configuration: AIProviderConfiguration, document: String?, webEnabled: Bool = true) {
+        self.text = text; self.attachments = attachments; self.configuration = configuration; self.document = document; self.webEnabled = webEnabled
     }
 }
 

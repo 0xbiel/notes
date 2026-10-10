@@ -48,6 +48,8 @@ public struct MediaTranscriptSegment: Codable, Identifiable, Equatable, Sendable
     public var end: Double
     public var text: String
     public var boundaryReview: Bool? = nil
+    public var teacherSimilarity: Double? = nil
+    public var likelyTeacher: Bool { (teacherSimilarity ?? -1) >= 0.65 }
     public init(id: String, start: Double, end: Double, text: String) {
         self.id = id; self.start = start; self.end = end; self.text = text
     }
@@ -81,6 +83,10 @@ public struct MediaJob: Codable, Identifiable, Sendable {
     public var live: LiveRecordingMetadata? = nil
     public var asrQualityWarning: String? = nil
     public var whisperConfiguration: WhisperConfiguration? = nil
+    public var transcriptionProvider: TranscriptionProvider? = nil
+    public var transcriptionLanguage: String? = nil
+    public var liveChunkSeconds: Double? = nil
+    public var teacherReference: TeacherVoiceReference? = nil
     public init(notebookID: String, subject: String, note: String, sourceName: String, microphone: Bool = false) {
         self.notebookID = notebookID; self.subject = subject; targetNote = note
         self.sourceName = sourceName; isMicrophone = microphone

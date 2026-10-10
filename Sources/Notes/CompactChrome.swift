@@ -3,7 +3,7 @@ import SwiftUI
 
 enum CompactLayout {
     static let sidebarWidth: CGFloat = 260
-    static let horizontalInset: CGFloat = 16
+    static let horizontalInset: CGFloat = 8
     static let verticalInset = horizontalInset
     static let sidebarRadius: CGFloat = 12
     static let rowRadius: CGFloat = 6

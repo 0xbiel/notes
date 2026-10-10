@@ -24,13 +24,7 @@ struct WorkbenchView: View {
                     } else {
                         WorkspaceTitleBar(model: model)
                     }
-                    HStack(spacing: 0) {
-                        NoteWorkspace(model: model)
-                        if model.showInspector {
-                            Divider()
-                            SessionInspector(model: model).frame(width: 320)
-                        }
-                    }
+                    NoteWorkspace(model: model)
                     if model.assistant == nil {
                         HStack { Spacer(); ListeningDock(model: model) }.padding(12)
                     } else if model.selectedLibraryPath != nil && model.hideStudyComposer, let media = model.media {
@@ -56,7 +50,6 @@ struct WorkbenchView: View {
 
             }
             library
-                .padding(.horizontal, chrome.compact ? 4 : 0)
                 .frame(width: sidebarWidth)
                 .frame(maxHeight: .infinity)
                 .background { if chrome.compact { NotebookThemeBackground() } }
@@ -91,7 +84,7 @@ struct WorkbenchView: View {
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: chrome.compact)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: chrome.sidebarVisible)
         .onChange(of: model.showPreferences) { _, presented in
-            if presented { preferencesSection = .general }
+            if presented { preferencesSection = model.requestedPreferencesSection; model.requestedPreferencesSection = .general }
         }
         .sheet(isPresented: $model.showNotebookManagement) {
             if let assistant = model.assistant { NotebookManagement(model: model, assistant: assistant, notebook: model.currentNotebook) }
@@ -251,33 +244,35 @@ struct NoteToolbar: View {
                     }.disabled(model.layout != "edit" || model.selectedNote == nil)
                     Button("Insertar tabla…") { NSApp.sendAction(#selector(MarkdownTextView.insertMarkdownTable(_:)), to: nil, from: nil) }.disabled(model.layout != "edit" || model.selectedNote == nil)
                     Divider()
-                    Button("Revisar edición") { model.inspectorHistoryMode = "editor"; model.selectedTab = "changes"; model.showInspector = true }
-                        .disabled(!model.isDirty && model.editor?.history.isEmpty != false)
                     Button("Deshacer edición guardada") { model.undoEditor() }
                         .disabled(model.isDirty || model.editor?.history.contains(where: { !$0.undone && $0.superseded != true }) != true)
                     Divider()
                     Button("Nueva nota") { model.creationInitialName = ""; model.creationKind = "nota" }
                     Button("Nueva carpeta") { model.creationInitialName = ""; model.creationKind = "carpeta" }
                     Button("Nuevo cuaderno") { model.creationInitialName = ""; model.creationKind = "cuaderno" }
-                } label: { Label("Opciones de la nota", systemImage: "ellipsis").frame(width: 26, height: 26) }.modifier(ControlHoverBackground()).help("Opciones de la nota")
-                Button { model.showInspector.toggle() } label: { Label("Inspector", systemImage: "sidebar.right").frame(width: 26, height: 26) }
-                    .modifier(ControlHoverBackground()).help("Mostrar u ocultar inspector · ⌥⌘I")
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .frame(width: 34, height: 34)
+                        .contentShape(Rectangle())
+                        .modifier(ControlHoverBackground())
+                }.menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+                    .accessibilityLabel("Opciones de la nota").accessibilityIdentifier("document.noteOptions")
+                    .help("Opciones de la nota")
         }.labelStyle(.iconOnly).buttonStyle(.plain).padding(.horizontal, 12).padding(.vertical, 7)
     }
 }
 
-enum NotebookSidebarSelection: Hashable { case notebook(String), note(String), folder(String) }
+enum NotebookSidebarSelection: Hashable, Codable { case notebook(String), note(String), folder(String) }
 
 struct CourseSidebar: View {
     @ObservedObject var model: Workbench
     @State private var query = ""
-    @State private var section = LibraryContentFilter.notes
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var expanded: Set<String> = ["derecho"]
     @AppStorage("notes.accent") private var accent = ""
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 HStack(spacing: 6) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                     TextField("Buscar", text: $query).textFieldStyle(.plain).accessibilityLabel("Filtrar archivos")
@@ -285,37 +280,23 @@ struct CourseSidebar: View {
                         Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
                             .buttonStyle(.plain).modifier(ControlHoverBackground()).help("Limpiar búsqueda")
                     }
-                }.padding(.horizontal, 11).frame(height: 34)
+                }.padding(.horizontal, 11).frame(height: 38)
                     .modifier(SidebarSearchGlass())
-                filterMenu
                 Button { model.creationInitialName = ""; model.creationKind = "nota" } label: {
-                    Image(systemName: "square.and.pencil").frame(width: 28, height: 34)
+                    Image(systemName: "square.and.pencil").frame(width: 28, height: 38)
                 }.buttonStyle(.plain).modifier(ControlHoverBackground()).help("Nueva nota · ⌘N").accessibilityLabel("Nueva nota")
-            }.padding(.horizontal, 12)
+            }.padding(.horizontal, 8)
             ScrollViewReader { proxy in
-            List(selection: Binding<NotebookSidebarSelection?>(get: {
-                model.librarySelection
-            }, set: { value in
-                switch value {
-                case .notebook(let id): model.openNotebook(id)
-                case .note(let path): if model.libraryFiles.contains(path) { model.openLibraryFile(path) }
-                case .folder(let path): model.selectLibraryFolder(path)
-                case nil: break
-                }
-            })) {
+            List(selection: Binding<Set<NotebookSidebarSelection>>(get: {
+                model.librarySelections
+            }, set: { values in DispatchQueue.main.async { model.setLibrarySelections(values) } })) {
                 ForEach(model.activeNotebooks) { notebook in
                     DisclosureGroup(isExpanded: Binding(get: { expanded.contains(notebook.id) || !query.isEmpty }, set: { value in if value { expanded.insert(notebook.id) } else { expanded.remove(notebook.id) } })) {
-                        let filenames = model.fileNames(in: notebook).filter { section.includes(path: $0) && (query.isEmpty || $0.localizedCaseInsensitiveContains(query)) }
+                        let filenames = model.fileNames(in: notebook).filter { LibraryContentFilter.notes.includes(path: $0) && (query.isEmpty || $0.localizedCaseInsensitiveContains(query)) }
                         let relativeNames = filenames.map { notebook.rootPrefix.isEmpty ? $0 : String($0.dropFirst(notebook.rootPrefix.count + 1)) }
-                        let folders = query.isEmpty && section == .notes ? model.folderNames(in: notebook).map { notebook.rootPrefix.isEmpty ? $0 : String($0.dropFirst(notebook.rootPrefix.count + 1)) } : []
+                        let folders = query.isEmpty ? model.folderNames(in: notebook).map { notebook.rootPrefix.isEmpty ? $0 : String($0.dropFirst(notebook.rootPrefix.count + 1)) } : []
                         ForEach(NotebookNode.tree(notes: relativeNames, folderNames: folders, prefix: notebook.rootPrefix.isEmpty ? "" : notebook.rootPrefix + "/")) { node in
                             CourseTreeRow(model: model, node: node, expandAll: !query.isEmpty) { folder in prepareCreation("nota", folder: folder, notebook: notebook) }
-                        }
-                        if section != .notes, let media = model.media {
-                            NotebookRecordingRows(model: model, media: media, notebookID: notebook.id, query: query, filter: section)
-                        }
-                        if section != .notes && filenames.isEmpty && model.media?.jobs.contains(where: { $0.notebookID == notebook.id && section.includes($0) }) != true {
-                            Text(section == .video ? "Sin vídeos" : "Sin audio").font(.caption).foregroundStyle(.secondary)
                         }
                     } label: {
                         Button { model.openNotebook(notebook.id) } label: {
@@ -325,7 +306,7 @@ struct CourseSidebar: View {
                                     .lineLimit(2).truncationMode(.tail).fixedSize(horizontal: false, vertical: true)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 Spacer(minLength: 2)
-                                Text("\(model.fileNames(in: notebook).filter { section.includes(path: $0) }.count + (model.media?.jobs.filter { $0.notebookID == notebook.id && section.includes($0) }.count ?? 0))").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                                Text("\(model.fileNames(in: notebook).filter { LibraryContentFilter.notes.includes(path: $0) }.count)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                             }.padding(.vertical, 6).padding(.leading, 8).padding(.trailing, 2).contentShape(Rectangle())
                                 // The native outline arrow follows the label baseline; anchor it to the row center.
                                 .alignmentGuide(.firstTextBaseline) { dimensions in dimensions[VerticalAlignment.center] + 2 }
@@ -355,11 +336,7 @@ struct CourseSidebar: View {
                             Button("Eliminar cuaderno", role: .destructive) { model.deleteNotebook(notebook) }.disabled(!model.canManageFiles)
                         }
                     }
-                    .dropDestination(for: URL.self) { urls, _ in
-                        guard model.canManageFiles, !urls.isEmpty else { return false }
-                        model.importLibraryFiles(urls, into: notebook.rootPrefix, notebookID: notebook.id)
-                        return true
-                    }
+                    .modifier(LibraryDropTarget(model: model, directory: notebook.rootPrefix, notebookID: notebook.id))
                     .tag(NotebookSidebarSelection.notebook(notebook.id))
                     .id(notebook.id)
 
@@ -404,28 +381,9 @@ struct CourseSidebar: View {
             }
             .onChange(of: model.selectedNotebookID) { _, id in expanded.insert(id) }
             .onChange(of: model.notebookRevealRequest) { _, _ in
-                query = ""; section = .notes; expanded.insert(model.selectedNotebookID)
+                query = ""; expanded.insert(model.selectedNotebookID)
             }
 
-    }
-    private var filterMenu: some View {
-        Menu {
-            ForEach(LibraryContentFilter.allCases) { filter in
-                Button { section = filter } label: {
-                    Label(LocalizedStringKey(filter.title), systemImage: filter.symbol)
-                }
-                .accessibilityAddTraits(section == filter ? .isSelected : [])
-            }
-        } label: {
-            Image(systemName: section.symbol)
-        }.menuStyle(.borderlessButton).menuIndicator(.hidden)
-            .labelStyle(.iconOnly)
-            .font(.system(size: 14, weight: .medium))
-            .frame(width: 34, height: 34)
-            .modifier(ControlHoverBackground())
-            .accessibilityIdentifier("notebook.contentFilter")
-            .accessibilityLabel("Filtrar por tipo: \(section.title)")
-            .help("Texto, audio o vídeos importados")
     }
     private func prepareCreation(_ kind: String, folder: String, notebook: Notebook) {
         model.selectedNotebookID = notebook.id
@@ -455,6 +413,7 @@ struct CourseTreeRow: View {
                     }.foregroundStyle(.secondary).font(.callout)
                         .padding(.vertical, 6).padding(.leading, 8).padding(.trailing, 2)
                         .alignmentGuide(.firstTextBaseline) { dimensions in dimensions[VerticalAlignment.center] + 2 }
+                        .modifier(LibraryDragSource(model: model, item: .folder(node.path)))
                         .contextMenu {
                             Button("Nueva nota aquí") { createInFolder(node.path) }
                             Button("Nueva carpeta aquí") { model.createFolderInside(node.path) }
@@ -469,12 +428,10 @@ struct CourseTreeRow: View {
                         }
                 }
                 .tag(NotebookSidebarSelection.folder(node.path))
-                .dropDestination(for: URL.self) { urls, _ in
-                    guard model.canManageFiles, !urls.isEmpty, let owner = model.projects?.owner(of: node.path + "/placeholder") else { return false }
-                    model.importLibraryFiles(urls, into: node.path, notebookID: owner.id); return true
-                }
+                .modifier(LibraryDropTarget(model: model, directory: node.path, notebookID: model.projects?.owner(of: node.path + "/placeholder")?.id ?? ""))
                 .onAppear { revealSelection() }
                 .onChange(of: model.selectedLibraryPath) { _, _ in revealSelection() }
+                .onChange(of: model.selectedFolder) { _, _ in revealSelection() }
                 .onChange(of: expandAll) { _, value in if value { expanded = true } }
             } else {
                 HStack(spacing: 9) {
@@ -485,12 +442,12 @@ struct CourseTreeRow: View {
                     if model.hasDraft(for: node.path) { Circle().fill(Color.orange).frame(width: 5, height: 5).accessibilityLabel("Sin guardar") }
                 }.padding(.vertical, 6).padding(.horizontal, 2)
                     .help(node.name).tag(NotebookSidebarSelection.note(node.path))
+                    .modifier(LibraryDragSource(model: model, item: .note(node.path)))
                     .contextMenu {
                         Button("Abrir") { model.openLibraryFile(node.path) }
                         if node.path.hasSuffix(".md") {
                             Button("Editar") { model.openNote(node.path); model.layout = "edit" }
                             Button("Ver") { model.openNote(node.path); model.layout = "preview" }
-                            Button("Sesiones de esta nota") { model.openNote(node.path); model.selectedTab = "library"; model.showInspector = true }
                         }
                         Divider()
                         Button(UserDefaults.standard.string(forKey: "notes.language") == "en" ? "Rename…" : "Renombrar…") { model.renamingItem = .note(node.path) }.disabled(!model.canManageFiles)
@@ -503,7 +460,7 @@ struct CourseTreeRow: View {
         }
     }
     private func revealSelection() {
-        if expandAll || model.selectedLibraryPath?.hasPrefix(node.path + "/") == true { expanded = true }
+        if expandAll || model.selectedLibraryPath?.hasPrefix(node.path + "/") == true || model.selectedFolder == node.path || model.selectedFolder?.hasPrefix(node.path + "/") == true { expanded = true }
     }
 }
 
@@ -524,6 +481,9 @@ struct NoteWorkspace: View {
             } else if let note = model.selectedNote {
                 LiveMarkdownEditor(documentID: note, text: model.draftText, editing: model.layout == "edit", heading: model.previewHeading,
                     bottomInset: showsComposer ? composerHeight : 0,
+                    imageDirectory: model.workspace?.courseRoot.appendingPathComponent(note).deletingLastPathComponent(),
+                    imageRoot: model.workspace?.courseRoot.appendingPathComponent(model.currentNotebook.rootPrefix),
+                    importImage: { data, ext in try model.importDocumentImage(data, fileExtension: ext, note: note) },
                     onChange: { model.changeDraft($0) }, onLink: { _ = model.openWikilink($0) }, onTaskToggle: { _ in if model.layout == "preview" { model.saveDraft() } })
             } else {
                 if let assistant = model.assistant { NotebookHome(model: model, assistant: assistant) }
@@ -565,26 +525,7 @@ struct ListeningDock: View {
             Button { model.notebookCheckpointSelection = nil; model.showNotebookManagement = true } label: { Image(systemName: "slider.horizontal.3").frame(width: 30, height: 32) }
                 .buttonStyle(.plain).help("Gestionar cuaderno").accessibilityLabel("Gestionar cuaderno").accessibilityIdentifier("notebook.manage")
             if let media = model.media { MicrophoneButton(model: model, media: media, compact: embedded) }
-            Divider().frame(height: 20).padding(.horizontal, 2)
-            Menu {
-                Button { model.selectedTab = "library"; model.showInspector = true } label: { Label("Grabaciones", systemImage: "waveform") }
-                Button { model.selectedTab = "replay"; model.showInspector = true } label: { Label("Transcripción", systemImage: "text.bubble") }
-                Button { model.selectedTab = "review"; model.showInspector = true } label: { Label("Revisión (\(model.document?.reviews.filter { !$0.resolved }.count ?? 0))", systemImage: "checkmark.bubble") }
-                Divider()
-                Menu("Versiones") {
-                    if model.document?.history.isEmpty != false && model.editor?.history.isEmpty != false {
-                        Text("Sin versiones guardadas")
-                    }
-                    Button("Historial de la sesión") { model.inspectorHistoryMode = "session"; model.selectedTab = "changes"; model.showInspector = true }
-                    Button("Historial de edición") { model.inspectorHistoryMode = "editor"; model.selectedTab = "changes"; model.showInspector = true }
-                }
-                Divider()
-                Button("Importar audio o MP4…") { model.importMedia() }
-            } label: {
-                if let media = model.media { RecordingMenuIcon(media: media) }
-                else { Image(systemName: "waveform").foregroundStyle(.secondary).frame(width: 34, height: 32) }
-            }
-                .menuStyle(.borderlessButton).fixedSize().help("Grabaciones, transcripción y versiones").accessibilityLabel("Grabaciones y versiones")
+
         }.padding(embedded ? 0 : 6)
     }
 }
@@ -687,10 +628,19 @@ struct MicrophoneButton: View {
     @ObservedObject var model: Workbench
     @ObservedObject var media: MediaController
     var compact = false
+    @AppStorage("notes.language") private var language = "es"
     var body: some View {
         Button { model.toggleMicrophone() } label: {
-            HStack(spacing: 8) { Image(systemName: media.isRecording ? "stop.fill" : "mic.fill"); if !compact { Text(LocalizedStringKey(media.isRecording ? "Grabando · Detener" : "Grabar")).font(.callout.weight(.medium)) } }.padding(.horizontal, 12).padding(.vertical, 8)
-        }.accessibilityLabel(media.isRecording ? "Detener grabación" : "Grabar y transcribir").buttonStyle(.plain).foregroundStyle(media.isRecording ? Color.red : Color.primary).disabled(!media.isRecording && (media.busy || model.busy)).help(media.isRecording ? "Detener grabación local" : "Iniciar micrófono · solo al pulsar este botón")
+            HStack(spacing: 8) {
+                if media.busy && !media.isRecording { ProgressView().controlSize(.small) }
+                else { Image(systemName: media.isRecording ? "stop.fill" : "mic.fill") }
+                if !compact { Text(media.isRecording ? (language == "en" ? "Stop dictation" : "Detener dictado") : (language == "en" ? "Dictate" : "Dictar")) }
+            }.padding(.horizontal, 12).padding(.vertical, 8)
+        }.accessibilityLabel(media.isRecording ? (language == "en" ? "Stop dictation" : "Detener dictado") : (language == "en" ? "Dictate into chat" : "Dictar en el chat"))
+            .accessibilityIdentifier("notebook.dictation")
+            .buttonStyle(.plain).foregroundStyle(media.isRecording ? Color.red : Color.primary)
+            .disabled(!media.isRecording && (media.busy || model.busy || media.modelOperation != nil))
+            .help(language == "en" ? "Dictate into the message box. Review before sending." : "Dicta en el cuadro de mensaje. Revísalo antes de enviar.")
     }
 }
 
@@ -748,86 +698,6 @@ enum LibraryContentFilter: String, CaseIterable, Identifiable {
             $0.notebookID == notebookID && includes($0) &&
             (query.isEmpty || ([$0.sourceName, $0.targetNote, $0.subject] + $0.unitTags + $0.examTags).joined(separator: " ").localizedCaseInsensitiveContains(query))
         }.sorted { $0.classDate == $1.classDate ? $0.id < $1.id : $0.classDate > $1.classDate }
-    }
-}
-
-struct NotebookRecordingRows: View {
-    @ObservedObject var model: Workbench
-    @ObservedObject var media: MediaController
-    let notebookID: String
-    let query: String
-    let filter: LibraryContentFilter
-    private var jobs: [MediaJob] {
-        filter.recordings(media.jobs, notebookID: notebookID, query: query)
-    }
-    var body: some View {
-        ForEach(jobs) { job in
-            let status = RecordingPresentation(job: job)
-            Button {
-                guard !media.isRecording else { return }
-                model.openNote(job.targetNote)
-                media.select(job.id)
-                model.selectedTab = job.transcript.isEmpty ? "library" : "replay"
-                model.showInspector = true
-            } label: {
-                HStack(spacing: 9) {
-                    Image(systemName: filter.symbol).foregroundStyle(.secondary)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(job.sourceName).font(.callout).lineLimit(2)
-                        HStack(spacing: 4) {
-                            Text(job.classDate, format: .dateTime.day().month(.abbreviated))
-                            Text("· " + timestamp(job.duration)).monospacedDigit()
-                            (Text("· ") + Text(LocalizedStringKey(status.title))).foregroundStyle(status.color)
-                        }.font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                    Spacer(minLength: 2)
-                }.padding(.vertical, 6).contentShape(Rectangle())
-            }.buttonStyle(.plain).disabled(media.isRecording).help(status.detail)
-                .accessibilityIdentifier("notebook.recording." + job.id)
-                .accessibilityLabel("\(job.sourceName), \(status.title), \(timestamp(job.duration))")
-                .accessibilityAddTraits(media.selectedID == job.id ? .isSelected : [])
-        }
-    }
-}
-
-struct NoteRecordingStatus: View {
-    @ObservedObject var model: Workbench
-    @ObservedObject var media: MediaController
-    private var linked: [MediaJob] { media.jobs.filter { !$0.syntheticFixture && $0.targetNote == model.selectedNote }.sorted { $0.importedAt > $1.importedAt } }
-    private var selected: MediaJob? { linked.first(where: { $0.id == media.selectedID }) ?? linked.first }
-    var body: some View {
-        if let job = selected {
-            let status = RecordingPresentation(job: job)
-            Button {
-                media.select(job.id)
-                model.selectedTab = job.transcript.isEmpty ? "library" : "replay"
-                model.showInspector = true
-            } label: {
-                HStack(spacing: 7) {
-                    Image(systemName: status.symbol).foregroundStyle(status.color)
-                    ViewThatFits(in: .horizontal) {
-                        HStack(spacing: 5) {
-                            Text(LocalizedStringKey(status.title)).foregroundStyle(status.color)
-                            Text("· \(timestamp(job.duration))").foregroundStyle(.secondary).monospacedDigit()
-                        }
-                        Text(LocalizedStringKey(status.title)).foregroundStyle(status.color)
-                    }
-                    Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold)).foregroundStyle(.tertiary)
-                }.font(.caption).lineLimit(1)
-            }.buttonStyle(.plain).help(status.detail)
-                .accessibilityLabel("Abrir grabación de esta nota: \(status.title)")
-        } else if model.isDirty {
-            Label("Sin guardar", systemImage: "circle.fill").font(.caption2).foregroundStyle(.secondary)
-        } else if model.selectedNote != nil {
-            Label("Guardado", systemImage: "checkmark").font(.caption2).foregroundStyle(.secondary)
-        }
-    }
-}
-
-private struct RecordingMenuIcon: View {
-    @ObservedObject var media: MediaController
-    var body: some View {
-        Image(systemName: "waveform").foregroundStyle(media.isRecording ? Color.red : Color.secondary).frame(width: 34, height: 32)
     }
 }
 
