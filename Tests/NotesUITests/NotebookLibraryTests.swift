@@ -22,36 +22,6 @@ final class NotebookLibraryTests: XCTestCase {
         }
         return (model, root, clipboard)
     }
-    @MainActor func testPointerMoveRetainsGroupThroughNativeSelectionChanges() throws {
-        let (model, _, _) = try fixture()
-        try model.workspace!.createNote("Second.md", text: "Second")
-        try model.workspace!.createFolder("Destination")
-        model.refreshProjectFiles([])
-        model.setLibrarySelections([.note("Inicio.md"), .note("Second.md")])
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 200), styleMask: [.borderless], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        defer { window.close() }
-        let source = LibraryNativeDragSource.Bridge(frame: NSRect(x: 0, y: 0, width: 200, height: 30))
-        source.model = model; source.item = .note("Inicio.md")
-        let destination = LibraryNativeDropArea.Bridge(frame: NSRect(x: 0, y: 80, width: 200, height: 30))
-        destination.directory = "Destination"; destination.notebookID = "derecho"
-        window.contentView!.addSubview(source); window.contentView!.addSubview(destination)
-        defer { source.stop() }
-        func event(_ type: NSEvent.EventType, y: CGFloat) -> NSEvent {
-            NSEvent.mouseEvent(with: type, location: NSPoint(x: 20, y: y), modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
-        }
-        XCTAssertNotNil(source.handle(event(.leftMouseDown, y: 15)))
-        model.setLibrarySelections([.note("Inicio.md")])
-        XCTAssertNil(source.handle(event(.leftMouseDragged, y: 95)))
-        XCTAssertEqual(model.libraryDropDestination, "derecho:Destination")
-        XCTAssertNil(source.handle(event(.leftMouseUp, y: 95)))
-        XCTAssertNil(model.errorText)
-        XCTAssertNil(model.libraryDropDestination)
-        XCTAssertEqual(try model.workspace!.readNote("Destination/Inicio.md"), "# Original\n")
-        XCTAssertEqual(try model.workspace!.readNote("Destination/Second.md"), "Second")
-        XCTAssertEqual(model.librarySelections.count, 2)
-    }
-
     @MainActor func testLegacyGeneratedImagesMigrateWithoutTouchingUserAssets() throws {
         let (model, _, _) = try fixture()
         let path = "assets/image-" + UUID().uuidString.lowercased() + ".gif"

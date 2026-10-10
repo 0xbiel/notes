@@ -76,6 +76,7 @@ enum NotebookAssistantText {
         "Buscando en la web…": "Searching the web…",
         "Leyendo página web…": "Reading web page…",
         "Descargando imagen…": "Downloading image…",
+        "Descargando archivo…": "Downloading file…",
         "Conectando con el proveedor…": "Connecting to provider…",
         "Pensando…": "Thinking…",
         "Comprobando respuesta…": "Checking response…",

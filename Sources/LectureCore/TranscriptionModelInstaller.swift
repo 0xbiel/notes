@@ -1,6 +1,58 @@
 import Foundation
 import CryptoKit
 
+public struct DownloadProgress: Equatable, Sendable {
+    public var received: Int64
+    public var total: Int64
+    public init(received: Int64, total: Int64) { self.received = received; self.total = total }
+    public var fraction: Double { total > 0 ? min(1, max(0, Double(received) / Double(total))) : 0 }
+}
+
+/// One file download that reports how much has arrived. The file is moved
+/// aside before the session deletes it; the caller removes it.
+final class ProgressDownload: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let expected: Int64
+    private let progress: @Sendable (DownloadProgress) -> Void
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<(URL, URLResponse), Error>?
+    private var file: URL?
+    private var moveError: Error?
+    private var reported = Date.distantPast
+    init(expected: Int64, progress: @escaping @Sendable (DownloadProgress) -> Void) { self.expected = expected; self.progress = progress }
+
+    static func run(_ url: URL, expected: Int64, progress: @escaping @Sendable (DownloadProgress) -> Void) async throws -> (URL, URLResponse) {
+        let delegate = ProgressDownload(expected: expected, progress: progress)
+        let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        let task = session.downloadTask(with: url)
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                delegate.lock.lock(); delegate.continuation = continuation; delegate.lock.unlock()
+                task.resume()
+            }
+        } onCancel: { task.cancel() }
+    }
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        lock.lock(); let due = Date().timeIntervalSince(reported) >= 0.1; if due { reported = Date() }; lock.unlock()
+        if due { progress(.init(received: totalBytesWritten, total: totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : expected)) }
+    }
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        let kept = FileManager.default.temporaryDirectory.appendingPathComponent("palladium-download-" + UUID().uuidString)
+        lock.lock(); defer { lock.unlock() }
+        do { try FileManager.default.moveItem(at: location, to: kept); file = kept } catch { moveError = error }
+    }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        lock.lock(); let continuation = self.continuation; self.continuation = nil; let file = self.file, moveError = self.moveError; lock.unlock()
+        if let error = error ?? moveError {
+            if let file { try? FileManager.default.removeItem(at: file) }
+            continuation?.resume(throwing: (error as? URLError)?.code == .cancelled ? CancellationError() : error)
+        } else if let file, let response = task.response {
+            progress(.init(received: max(expected, task.countOfBytesReceived), total: max(expected, task.countOfBytesReceived)))
+            continuation?.resume(returning: (file, response))
+        } else { continuation?.resume(throwing: MediaError.invalid("Descarga de modelo fallida.")) }
+    }
+}
+
 public struct TranscriptionModelInstaller: Sendable {
     public let root: URL
     public init(root: URL) { self.root = root }
@@ -10,7 +62,7 @@ public struct TranscriptionModelInstaller: Sendable {
         try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
         return target
     }
-    public func install(_ model: WhisperModel) async throws {
+    public func install(_ model: WhisperModel, progress: @escaping @Sendable (DownloadProgress) -> Void = { _ in }) async throws {
         struct Repository: Decodable { struct File: Decodable { struct LFS: Decodable { let sha256: String; let size: Int64 }; let rfilename: String; let lfs: LFS? }; let sha: String; let siblings: [File] }
         let session = URLSession(configuration: .ephemeral); defer { session.invalidateAndCancel() }
         let (metadata, response) = try await session.data(from: URL(string: "https://huggingface.co/api/models/ggerganov/whisper.cpp?blobs=true")!)
@@ -20,7 +72,8 @@ public struct TranscriptionModelInstaller: Sendable {
               let file = repository.siblings.first(where: { $0.rfilename == model.filename }), let lfs = file.lfs,
               lfs.size > 1_000_000, lfs.size < 4_000_000_000 else { throw MediaError.invalid("Modelo no disponible en el catálogo oficial.") }
         let directory = try folder("models")
-        let (temporary, downloadResponse) = try await session.download(from: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/\(repository.sha)/\(model.filename)")!)
+        progress(.init(received: 0, total: lfs.size))
+        let (temporary, downloadResponse) = try await ProgressDownload.run(URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/\(repository.sha)/\(model.filename)")!, expected: lfs.size, progress: progress)
         defer { try? FileManager.default.removeItem(at: temporary) }
         guard (downloadResponse as? HTTPURLResponse)?.statusCode == 200 else { throw MediaError.invalid("Descarga de modelo fallida.") }
         try await Task.detached {

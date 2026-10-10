@@ -63,6 +63,8 @@ final class NotebookAssistantController: ObservableObject {
     let transport: NotesProviderTransport
     var generate: ((NotebookTextRequest, AIProviderConfiguration) async throws -> NotebookAssistantResponse)?
     var dispatchQueued: ((Notebook, String, NotebookQueuedPrompt) -> Void)?
+    /// Files the assistant added to the library outside note edits, such as downloads.
+    var onLibraryChange: (([String]) -> Void)?
     private var heldQueues: Set<RunKey> = []
     private var steering: Set<RunKey> = []
     private var workers: [RunKey: Task<Void, Never>] = [:]
@@ -338,7 +340,7 @@ final class NotebookAssistantController: ObservableObject {
             guard let i = value.chats.firstIndex(where: { $0.id == chat.id }) else { return }
             let allAttachments = value.chats[i].messages.flatMap { $0.attachments ?? [] } + (chat.attachments ?? [])
             var images = try NotebookAttachmentImport.images(allAttachments, notebookID: notebook.id, workspace: store.workspace)
-            if configuration.provider == .openCode && !images.isEmpty { throw MediaError.invalid("This provider does not support image/PDF attachments. Select Codex or Antigravity.") }
+            if configuration.provider == .openCode && !images.isEmpty { throw MediaError.invalid("This provider does not support image/PDF attachments. Select Codex, Claude or Antigravity.") }
             var message = NotebookMessage(role: "user", text: prompt.isEmpty ? (UserDefaults.standard.string(forKey: "notes.language") == "en" ? "Review the attached files." : "Revisa los archivos adjuntos.") : prompt)
             message.attachments = chat.attachments
             value.chats[i].messages.append(message)
@@ -350,7 +352,7 @@ final class NotebookAssistantController: ObservableObject {
             let language = UserDefaults.standard.string(forKey: "notes.language") ?? "es"
             var candidate = NotebookTextRequest(notebook: notebook, profile: value.profile, messages: value.chats[i].messages, currentDocument: document, texts: texts, language: language, libraryFiles: libraryFiles)
             candidate.webEnabled = queuedInput?.webEnabled ?? webEnabled
-            candidate.nativeWebSearch = configuration.provider == .codexCLI
+            candidate.nativeWebSearch = configuration.provider.supportsNativeWebSearch
             _ = try candidate.prompt()
             try save(value, id: notebook.id)
             let run = RunKey(notebookID: notebook.id, chatID: chat.id)
@@ -369,8 +371,9 @@ final class NotebookAssistantController: ObservableObject {
                 do {
                     var redundantRounds = 0
                     var repairRounds = 0
-                    var webCount = 0
-                    for _ in 0..<12 {
+                    // Web rounds are not rationed: research runs until the assistant answers or the user stops it.
+                    var rounds = 0
+                    while rounds < 12 {
                         try Task.checkCancellation()
                         self.report("Conectando con el proveedor…", run: run)
                         let round = UUID().uuidString
@@ -381,13 +384,21 @@ final class NotebookAssistantController: ObservableObject {
                         }) }
                         try Task.checkCancellation()
                         if let actions = response.webActions, !actions.isEmpty {
-                            guard request.webEnabled, webCount + actions.count <= 12 else { throw MediaError.invalid("Web access is off or the request reached its web-action limit.") }
+                            guard request.webEnabled else { throw MediaError.invalid("Web access is off for this chat. Turn it on to let the assistant search.") }
                             for action in actions {
                                 try Task.checkCancellation()
-                                webCount += 1
-                                let title = action.kind == "search" ? "Buscando en la web…" : action.kind == "downloadImage" ? "Descargando imagen…" : "Leyendo página web…"
+                                let title = action.kind == "search" ? "Buscando en la web…" : action.kind == "downloadImage" ? "Descargando imagen…" : action.kind == "downloadFile" ? "Descargando archivo…" : "Leyendo página web…"
                                 self.report(title, run: run, detail: action.query.isEmpty ? action.url : action.query, kind: .tool)
                                 do {
+                                    if action.kind == "downloadFile" {
+                                        let file = try await NotebookWebClient().download(action)
+                                        let path = try library.availablePath(NotebookWebClient.destination(for: action, name: file.name, notebook: notebook))
+                                        try library.write(.init(files: [path: file.data]), notebookID: notebook.id, summary: "Descargar archivo")
+                                        request.catalog[path] = "Downloaded library file. Request this exact path in readFiles to read its contents. Source only; cannot be edited."
+                                        self.onLibraryChange?([path])
+                                        request.webResults.append(.init(action: action, source: file.source, text: "Saved in the notebook as \(path) (\(file.data.count) bytes). Read it with readFiles; link it from notes with a path relative to the note.", localFilePath: path))
+                                        continue
+                                    }
                                     let result = try await NotebookWebClient().execute(action, workspaceRoot: self.store.workspace.root, originalRoot: self.store.workspace.originalRoot, notebook: notebook)
                                     request.webResults.append(result)
                                 } catch {
@@ -398,18 +409,22 @@ final class NotebookAssistantController: ObservableObject {
                             request.contextUpdate = "New web results are in webResults. Continue the user's task; cite sources and use successful localImagePath values for image edits."
                             continue
                         }
+                        rounds += 1
                         if !response.readFiles.isEmpty {
                             guard response.edits.isEmpty else { throw MediaError.invalid("El asistente pidió contexto y cambios a la vez.") }
                             var advanced = false
-                            for path in response.readFiles {
-                                try library.validate(path, notebookID: notebook.id)
-                                guard request.catalog[path] != nil else { throw MediaError.invalid("Documento solicitado inexistente: \(path)") }
+                            for entry in response.readFiles {
+                                // A long source is read in parts: "file.pdf#pages=12-18" or "file.pdf#find=words".
+                                let (file, selection) = request.catalog[entry] != nil ? (entry, nil) : NotebookLibraryContext.parse(entry)
+                                let path = selection == nil ? file : entry
+                                try library.validate(file, notebookID: notebook.id)
+                                guard request.catalog[file] != nil else { throw MediaError.invalid("Documento solicitado inexistente: \(file)") }
                                 if request.documents[path] == nil {
                                     self.report("Leyendo · \(path)", run: run, detail: path, kind: .tool)
-                                    if let text = texts[path] { request.documents[path] = text }
+                                    if selection == nil, let text = texts[path] { request.documents[path] = text }
                                     else {
                                         do {
-                                            let source = try NotebookLibraryContext.read(path, library: library, notebookID: notebook.id)
+                                            let source = try NotebookLibraryContext.read(file, selection: selection, library: library, notebookID: notebook.id)
                                             request.documents[path] = source.text
                                             if configuration.provider == .openCode && !source.images.isEmpty {
                                                 request.documents[path, default: ""] += "\n[This provider cannot read images. Choose an image-capable provider for scanned pages/images.]"

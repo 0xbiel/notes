@@ -8,7 +8,9 @@ public struct NotebookWebAction: Codable, Equatable, Sendable {
     public var kind: String
     public var query: String
     public var url: String
-    public init(kind: String, query: String = "", url: String = "") { self.kind = kind; self.query = query; self.url = url }
+    /// Where a downloaded file goes inside the notebook.
+    public var path: String?
+    public init(kind: String, query: String = "", url: String = "", path: String? = nil) { self.kind = kind; self.query = query; self.url = url; self.path = path }
 }
 public struct NotebookWebResult: Codable, Sendable {
     public var action: NotebookWebAction
@@ -16,9 +18,10 @@ public struct NotebookWebResult: Codable, Sendable {
     public var text: String
     public var imageURLs: [String] = []
     public var localImagePath: String? = nil
+    public var localFilePath: String? = nil
     public var error: String? = nil
-    public init(action: NotebookWebAction, source: String, text: String, imageURLs: [String] = [], localImagePath: String? = nil, error: String? = nil) {
-        self.action = action; self.source = source; self.text = text; self.imageURLs = imageURLs; self.localImagePath = localImagePath; self.error = error
+    public init(action: NotebookWebAction, source: String, text: String, imageURLs: [String] = [], localImagePath: String? = nil, localFilePath: String? = nil, error: String? = nil) {
+        self.action = action; self.source = source; self.text = text; self.imageURLs = imageURLs; self.localImagePath = localImagePath; self.localFilePath = localFilePath; self.error = error
     }
 }
 
@@ -79,6 +82,36 @@ public struct NotebookWebClient: Sendable {
         default: throw MediaError.invalid("Unknown web action.")
         }
     }
+    public struct Download: Sendable {
+        public var data: Data
+        public var source: String
+        /// The server's name for the file, with an extension when one can be told.
+        public var name: String
+    }
+    /// Fetches a document such as a PDF. The caller stores it through the notebook library.
+    public func download(_ action: NotebookWebAction) async throws -> Download {
+        let (data, response) = try await fetch(action.url, limit: .max)
+        guard !data.isEmpty else { throw MediaError.invalid("The download is empty.") }
+        let mime = response.mimeType?.lowercased() ?? ""
+        guard !mime.contains("html") else { throw MediaError.invalid("This address is a web page, not a file. Use read for pages, or find the direct link to the file.") }
+        var name = response.suggestedFilename ?? response.url?.lastPathComponent ?? "download"
+        if URL(fileURLWithPath: name).pathExtension.isEmpty, let ext = data.starts(with: Data("%PDF".utf8)) ? "pdf" : UTType(mimeType: mime)?.preferredFilenameExtension { name += "." + ext }
+        return .init(data: data, source: response.url?.absoluteString ?? action.url, name: name)
+    }
+    /// The notebook path for a download: the requested one, kept inside the notebook and given the file's extension.
+    public static func destination(for action: NotebookWebAction, name: String, notebook: Notebook) throws -> String {
+        var path = (action.path ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/ \n\t"))
+        if path.isEmpty { path = name }
+        if !notebook.rootPrefix.isEmpty, path != notebook.rootPrefix, !path.hasPrefix(notebook.rootPrefix + "/") { path = notebook.rootPrefix + "/" + path }
+        let ext = URL(fileURLWithPath: name).pathExtension
+        if URL(fileURLWithPath: path).pathExtension.isEmpty, !ext.isEmpty { path += "." + ext }
+        let parts = path.components(separatedBy: "/"), type = URL(fileURLWithPath: path).pathExtension.lowercased()
+        guard path.count <= 300, !parts.contains(where: { $0.isEmpty || $0.hasPrefix(".") }), !type.isEmpty, path != notebook.rootPrefix else { throw MediaError.invalid("Invalid destination for the download. Give a path inside the notebook with a file name.") }
+        guard type != "md" else { throw MediaError.invalid("Create Markdown notes through edits, not downloads.") }
+        let kind = UTType(filenameExtension: type)
+        guard kind?.conforms(to: .audio) != true, kind?.conforms(to: .movie) != true, kind?.conforms(to: .executable) != true, !["app", "command", "sh", "pkg", "dmg"].contains(type) else { throw MediaError.invalid("Audio, video and programs are not downloaded into notebooks.") }
+        return path
+    }
     private func fetch(_ raw: String, limit: Int) async throws -> (Data, HTTPURLResponse) {
         let url = try Self.validateURL(raw)
         if let fixtureFetch {
@@ -88,7 +121,7 @@ public struct NotebookWebClient: Sendable {
         }
         try Self.validateHost(url)
         let delegate = PublicWebRedirects()
-        let config = URLSessionConfiguration.ephemeral; config.timeoutIntervalForRequest = 25; config.timeoutIntervalForResource = 40
+        let config = URLSessionConfiguration.ephemeral; config.timeoutIntervalForRequest = 25; config.timeoutIntervalForResource = limit > 20_000_000 ? 3_600 : 40
         config.httpCookieStorage = nil; config.urlCredentialStorage = nil
         let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
         defer { session.invalidateAndCancel() }
@@ -97,6 +130,7 @@ public struct NotebookWebClient: Sendable {
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
               response.expectedContentLength <= Int64(limit) else { throw MediaError.invalid("Web request failed or exceeds the download limit.") }
         var data = Data()
+        if response.expectedContentLength > 0 { data.reserveCapacity(Int(response.expectedContentLength)) }
         for try await byte in bytes {
             if data.count % 16_384 == 0 { try Task.checkCancellation() }
             guard data.count < limit else { throw MediaError.invalid("Web content exceeds the download limit.") }

@@ -102,8 +102,8 @@ struct GeneralAIPreferences: View {
     }
     private var modelControl: some View { AIModelSelector(preferences: preferences, manageProviders: manageProviders) }
     @ViewBuilder private var thinkingControl: some View {
-        if preferences.draft.selectedProvider == .codexCLI, let selected = preferences.selectedModel, !selected.reasoning.isEmpty {
-            AIReasoningSelector(levels: selected.reasoning, modelName: selected.name, fastMode: preferences.supportsFastMode ? Binding(get: { preferences.draft.selected.fastMode == true }, set: { preferences.draft.selected.fastMode = $0 }) : nil, selection: Binding(get: { preferences.draft.selected.reasoningEffort ?? "auto" }, set: { preferences.draft.selected.reasoningEffort = $0 == "auto" ? nil : $0 }))
+        if let selected = preferences.reasoningModel {
+            AIReasoningSelector(levels: selected.reasoning, modelName: selected.name, fastMode: preferences.fastModeSelection, selection: preferences.reasoningSelection)
                 .accessibilityIdentifier("general.ai.thinking")
         }
     }

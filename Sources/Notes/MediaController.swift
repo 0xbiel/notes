@@ -26,6 +26,14 @@ final class MediaController: ObservableObject {
         didSet { UserDefaults.standard.set(captureMode.rawValue, forKey: "transcription.captureMode") }
     }
     @Published var modelOperation: String?
+    /// The model being downloaded and how far along it is.
+    @Published var modelDownload: (model: WhisperModel, progress: DownloadProgress)?
+    @Published var useGPU = UserDefaults.standard.object(forKey: "transcription.gpu") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(useGPU, forKey: "transcription.gpu") }
+    }
+    @Published var stopOnSilence = UserDefaults.standard.object(forKey: "transcription.stopOnSilence") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(stopOnSilence, forKey: "transcription.stopOnSilence") }
+    }
     @Published var modelError: String?
     @Published var installedModels: Set<WhisperModel> = []
     @Published var runtimeInstalled = false
@@ -69,10 +77,13 @@ final class MediaController: ObservableObject {
         modelOperation = remove ? "Eliminando…" : model == nil ? "Preparando Whisper v1.8.2…" : "Descargando y verificando modelo…"
         modelError = nil
         modelWorker = Task { [self] in
-            defer { modelOperation = nil; modelWorker = nil; refreshTranscription() }
+            defer { modelOperation = nil; modelDownload = nil; modelWorker = nil; refreshTranscription() }
             do {
                 let installer = TranscriptionModelInstaller(root: store.root)
-                if let model { if remove { try installer.uninstall(model) } else { try await installer.install(model) } }
+                if let model {
+                    if remove { try installer.uninstall(model) }
+                    else { try await installer.install(model) { [weak self] progress in Task { @MainActor in if self?.modelWorker != nil { self?.modelDownload = (model, progress) } } } }
+                }
                 else { try await installer.installRuntime() }
             } catch { modelError = Task.isCancelled ? "Instalación cancelada. El modelo anterior se conserva." : error.localizedDescription }
         }
@@ -152,6 +163,7 @@ final class MediaController: ObservableObject {
         job.transcriptionProvider = transcriptionProvider
         job.transcriptionLanguage = transcriptionLanguage
         job.whisperConfiguration = WhisperConfiguration(model: transcriptionModel)
+        job.whisperConfiguration?.useGPU = useGPU
     }
     func useCurrentTranscriptionSettings() {
         guard !busy, !isRecording, var job = selected, job.completedChunks == 0 else { return }
@@ -237,12 +249,14 @@ final class MediaController: ObservableObject {
                 configure(&job)
                 if let dictationID { job.id = dictationID }
                 job.inputMode = .dictation
-                job.liveChunkSeconds = 5
+                job.liveChunkSeconds = 5; job.liveVoiceSegments = true
                 let rolling = try RollingPCMRecorder(store: store, job: job)
-                let stream = MicrophoneStream(recorder: rolling, changed: { [weak self, id = job.id] state in
+                let stream = MicrophoneStream(recorder: rolling, silence: stopOnSilence ? .init() : nil, changed: { [weak self, id = job.id] state in
                     Task { @MainActor in self?.captureChanged(id, state: state) }
                 }, failure: { [weak self] reason in
                     Task { @MainActor in self?.error = reason; self?.stopMicrophone() }
+                }, quiet: { [weak self, id = job.id] in
+                    Task { @MainActor in if self?.recordingID == id { self?.stopMicrophone() } }
                 })
                 job.sourceRelativePath = rolling.sourcePath; job.live = LiveRecordingMetadata()
                 do {
@@ -313,7 +327,7 @@ final class MediaController: ObservableObject {
                             job.stage = .transcribed; job.progress = 1; job.live?.captureEnded = true; job.live?.sealedChunks = state.chunks.count
                             update(job); return
                         }
-                        try await Task.sleep(for: .milliseconds(250)); continue
+                        try await Task.sleep(for: .milliseconds(100)); continue
                     }
                     for chunk in pending {
                         try Task.checkCancellation()
@@ -368,6 +382,7 @@ final class MediaController: ObservableObject {
         guard !busy, !isRecording, modelOperation == nil, var job = selected, available(for: job), job.audioRelativePath != nil else { return }
         if job.whisperConfiguration == nil, job.completedChunks == 0 {
             job.whisperConfiguration = WhisperTranscriber(store: store).preferredConfiguration
+            job.whisperConfiguration?.useGPU = useGPU
         }
         job.stage = .transcribing; job.error = nil
         let seconds = (try? WhisperConfiguration.resolved(for: job).importChunkSeconds) ?? 30

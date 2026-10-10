@@ -9,14 +9,16 @@ public struct NotesProviderTransport: Sendable {
         guard FileManager.default.isExecutableFile(atPath: configuration.executablePath) else { throw MediaError.invalid("No se encuentra el ejecutable. Selecciona una instalación existente; Palladium no instala proveedores.") }
         switch configuration.provider {
         case .openCode:
-            let harness = OpenRouterHarness(store: store, executablePath: configuration.executablePath)
+            let harness = OpenRouterHarness(store: store, configuration: configuration)
             try await harness.prepare()
             return .init(message: "OpenCode compatible · configuración efectiva verificada · router gratuito · sin envío", models: [OpenRouterHarness.model])
         case .codexCLI:
-            let version = try await invoke(configuration, arguments: ["--version"])
+            let version = String(decoding: try await invoke(configuration, arguments: ["--version"]), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             let help = String(decoding: try await invoke(configuration, arguments: ["exec", "--help"]), as: UTF8.self)
             guard help.contains("--ignore-user-config"), help.contains("--ignore-rules"), help.contains("--ephemeral"), help.contains("--output-schema"), help.contains("--json") else { throw MediaError.invalid("Codex CLI no ofrece el transporte aislado requerido. Actualiza su instalación fuera de Palladium.") }
-            return .init(message: String(decoding: version, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) + " · exec JSON disponible · no comprueba login ni envía texto")
+            return .init(message: version + " · exec JSON disponible · no comprueba login ni envía texto", version: version.split(separator: " ").last.map(String.init))
+        case .claudeCode:
+            return try await ClaudeTextTransport(store: store, configuration: configuration).diagnose()
         case .antigravity:
             return try await AntigravityTextTransport(store: store, configuration: configuration).diagnose()
         }
@@ -25,12 +27,15 @@ public struct NotesProviderTransport: Sendable {
     public func send(_ batch: AIBatch, configuration: AIProviderConfiguration, checked: @escaping @Sendable () async -> Void = {}) async throws -> AIBatch {
         try configuration.validateSending()
         if configuration.provider == .openCode {
-            let harness = OpenRouterHarness(store: store, executablePath: configuration.executablePath)
+            let harness = OpenRouterHarness(store: store, configuration: configuration)
             if batch.syntheticDemoProvenance == SyntheticAIFixture.version { return try await harness.sendSyntheticDemo(batch, checked: checked) }
             return try await harness.send(batch, checked: checked)
         }
         if configuration.provider == .antigravity {
             return try await AntigravityTextTransport(store: store, configuration: configuration).send(batch, checked: checked)
+        }
+        if configuration.provider == .claudeCode {
+            return try await ClaudeTextTransport(store: store, configuration: configuration).send(batch, checked: checked)
         }
         _ = try await diagnose(configuration)
         try Task.checkCancellation()
@@ -42,7 +47,7 @@ public struct NotesProviderTransport: Sendable {
         try OpenRouterHarness.payload(batch).write(to: input, options: .withoutOverwriting)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: input.path)
         await checked()
-        let data = try await invoke(configuration, arguments: Self.codexArguments(configuration, schema: schema), input: input, directory: directory)
+        let data = try await invoke(configuration, arguments: try Self.codexArguments(configuration, schema: schema), input: input, directory: directory)
         return try Self.decodeCodexEvents(data, for: batch)
     }
 
@@ -57,10 +62,7 @@ public struct NotesProviderTransport: Sendable {
         command.process.executableURL = URL(fileURLWithPath: configuration.executablePath)
         command.process.arguments = arguments
         command.process.currentDirectoryURL = directory ?? store.root
-        var environment = ProcessInfo.processInfo.environment
-        for name in environment.keys where name.hasPrefix("CODEX_") || name.hasPrefix("T3CODE_") { environment.removeValue(forKey: name) }
-        if !configuration.homePath.isEmpty { environment["CODEX_HOME"] = configuration.homePath }
-        command.process.environment = environment
+        command.process.environment = try Self.codexEnvironment(configuration)
         let reader = try input.map { try FileHandle(forReadingFrom: $0) }
         command.process.standardInput = reader ?? FileHandle.nullDevice
         defer { try? reader?.close() }
@@ -70,12 +72,26 @@ public struct NotesProviderTransport: Sendable {
         } onCancel: { command.cancel() }
     }
 
-    public static func codexArguments(_ configuration: AIProviderConfiguration, schema: URL, instructions: String = OpenRouterHarness.systemPrompt, allowWebSearch: Bool = false) -> [String] {
-        var arguments = ["exec", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check", "--sandbox", "read-only", "--json", "--color", "never", "--output-schema", schema.path,
+    static let codexDisabledFeatures = ["shell_tool", "unified_exec", "multi_agent", "multi_agent_v2", "apps", "hooks", "browser_use", "computer_use", "code_mode", "code_mode_only", "code_mode_prewarm", "skill_search"]
+
+    /// The inherited environment without ambient Codex/T3 variables, then the
+    /// instance variables, then the account home.
+    static func codexEnvironment(_ configuration: AIProviderConfiguration, home: String? = nil, secret: ProviderEnvironment.SecretReader = { try ProviderSecrets.read($0, $1) }) throws -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        for name in Array(environment.keys) where name.hasPrefix("CODEX_") || name.hasPrefix("T3CODE_") { environment.removeValue(forKey: name) }
+        try ProviderEnvironment.apply(configuration, to: &environment, secret: secret)
+        let home = home ?? configuration.accountHomePath
+        if !home.isEmpty { environment["CODEX_HOME"] = home }
+        return environment
+    }
+
+    /// Launch arguments come first so the isolation options below prevail.
+    public static func codexArguments(_ configuration: AIProviderConfiguration, schema: URL, instructions: String = OpenRouterHarness.systemPrompt, allowWebSearch: Bool = false) throws -> [String] {
+        var arguments = ["exec"] + (try ProviderLaunchArguments.resolve(configuration)) + ["--ephemeral", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check", "--sandbox", "read-only", "--json", "--color", "never", "--output-schema", schema.path,
                          "--config", "approval_policy=\"never\"", "--config", allowWebSearch ? "web_search=\"live\"" : "web_search=\"disabled\"", "--config", "mcp_servers={}",
                          "--config", "project_doc_max_bytes=0", "--config", "skills.bundled.enabled=false", "--config", "skills.include_instructions=false",
                          "--config", "developer_instructions=" + tomlString(instructions)]
-        for feature in ["shell_tool", "unified_exec", "multi_agent", "multi_agent_v2", "apps", "hooks", "browser_use", "computer_use", "code_mode", "code_mode_only", "code_mode_prewarm", "skill_search"] {
+        for feature in codexDisabledFeatures {
             arguments += ["--disable", feature]
         }
         if configuration.model != "default" { arguments += ["--model", configuration.model] }

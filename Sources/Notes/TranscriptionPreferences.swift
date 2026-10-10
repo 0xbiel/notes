@@ -75,7 +75,7 @@ struct TranscriptionPreferences: View {
                 Text(t("Audio bajo: se aumenta el nivel antes de transcribir, hasta +18 dB sin saturar. La grabación original se conserva.", "Quiet audio is boosted before transcription, up to +18 dB without clipping. Your original recording is preserved.")).font(.caption).foregroundStyle(.secondary)
                 if media.transcriptionProvider == .local { localEditor } else { apiEditor }
                 if let operation = media.modelOperation {
-                    HStack { ProgressView().controlSize(.small); Text(operation).font(.caption); Spacer(); Button(t("Cancelar", "Cancel")) { media.cancelModelOperation() }.buttonStyle(.plain) }
+                    HStack { if media.modelDownload == nil { ProgressView().controlSize(.small) }; Text(operation).font(.caption); Spacer(); Button(t("Cancelar", "Cancel")) { media.cancelModelOperation() }.buttonStyle(.plain) }
                 }
                 if let error = media.modelError { Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
             }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
@@ -131,7 +131,10 @@ struct TranscriptionPreferences: View {
             if !media.runtimeInstalled && !showRuntime {
                 Button { showRuntime = true } label: { Label(t("Instala el motor para empezar", "Install the runtime to get started"), systemImage: "arrow.down.circle").font(.caption).foregroundStyle(NotebookAccent.color(accent)) }.buttonStyle(.plain)
             }
-            Text(t("Carga reducida: dos hilos de CPU, sin GPU. El procesamiento tarda más para dejar recursos al Mac.", "Reduced load: two CPU threads, no GPU. Processing takes longer to leave resources for your Mac.")).font(.caption).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 10) {
+                option(t("Usar la GPU", "Use the GPU"), t("Transcribe varias veces más rápido con Metal. Sin ella: dos hilos de CPU, más lento pero con menos carga.", "Transcribes several times faster with Metal. Without it: two CPU threads, slower but lighter on your Mac."), isOn: $media.useGPU, id: "transcription.gpu")
+                option(t("Detener al dejar de hablar", "Stop when you stop speaking"), t("El dictado termina solo tras unos segundos de silencio.", "Dictation ends by itself after a few seconds of silence."), isOn: $media.stopOnSilence, id: "transcription.stopOnSilence")
+            }
             Divider().opacity(0.35)
             HStack { Text(t("Modelos", "Models")).font(.headline); Text("3").font(.caption).foregroundStyle(.secondary); Spacer() }
             VStack(spacing: 0) {
@@ -152,13 +155,19 @@ struct TranscriptionPreferences: View {
                     Image(systemName: selected ? "checkmark.circle.fill" : "circle").foregroundStyle(selected ? NotebookAccent.color(accent) : .secondary)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(model.displayName).font(.callout.weight(.medium)).foregroundStyle(.primary)
-                        Text((model == .small ? "488 MB" : model == .medium ? "1.53 GB" : "1.62 GB") + " · " + (installed ? t("Instalado", "Installed") : t("Sin descargar", "Not downloaded")))
-                            .font(.caption2).foregroundStyle(.secondary)
+                        if let download = media.modelDownload, download.model == model {
+                            ProgressView(value: download.progress.fraction).progressViewStyle(.linear).tint(NotebookAccent.color(accent))
+                                .accessibilityIdentifier("transcription.download." + model.rawValue)
+                            Text(Self.describe(download.progress, language: language)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                        } else {
+                            Text((model == .small ? "488 MB" : model == .medium ? "1.53 GB" : "1.62 GB") + " · " + (installed ? t("Instalado", "Installed") : t("Sin descargar", "Not downloaded")))
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }.contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityLabel(t("Elegir ", "Select ") + model.displayName)
                 .accessibilityIdentifier("transcription.model." + model.rawValue)
-            if installed {
+            if media.modelDownload?.model == model { EmptyView() } else if installed {
                 Button { media.manageModel(model) } label: { Image(systemName: "arrow.clockwise").foregroundStyle(.secondary).frame(width: 26, height: 26) }
                     .buttonStyle(.plain).modifier(ControlHoverBackground()).help(t("Actualizar modelo", "Update model")).accessibilityLabel(t("Actualizar ", "Update ") + model.displayName)
                 Menu { Button(t("Desinstalar modelo", "Uninstall model")) { media.manageModel(model, remove: true) } }
@@ -171,6 +180,21 @@ struct TranscriptionPreferences: View {
             }
         }.padding(.horizontal, 12).padding(.vertical, 10)
             .background(NotebookAccent.color(accent).opacity(selected ? 0.08 : 0))
+    }
+    /// "312 MB de 488 MB · 64 %", or the verification step once everything has arrived.
+    static func describe(_ progress: DownloadProgress, language: String) -> String {
+        let english = language == "en"
+        if progress.total > 0, progress.received >= progress.total { return english ? "Verifying…" : "Verificando…" }
+        let formatter = ByteCountFormatter(); formatter.countStyle = .file; formatter.allowedUnits = [.useMB, .useGB]
+        let received = formatter.string(fromByteCount: progress.received)
+        guard progress.total > 0 else { return received }
+        return received + (english ? " of " : " de ") + formatter.string(fromByteCount: progress.total) + " · " + String(Int(progress.fraction * 100)) + " %"
+    }
+    private func option(_ title: String, _ detail: String, isOn: Binding<Bool>, id: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle(title, isOn: isOn).modifier(NotebookToggleAccent(switchStyle: true)).accessibilityIdentifier(id)
+            Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
     }
     private func actionLabel(_ title: String, symbol: String) -> some View {
         Label(title, systemImage: symbol).font(.callout).foregroundStyle(NotebookAccent.color(accent))

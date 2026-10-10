@@ -39,6 +39,35 @@ final class NotebookWebTests: XCTestCase {
         let invalid = NotebookWebClient(fetch: { url in (Data("<html>Not an image</html>".utf8), HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: [:])!) })
         do { _ = try await invalid.execute(action, workspaceRoot: root, originalRoot: workspace.originalRoot, notebook: Notebook(name: "Demo", rootPrefix: "Demo")); XCTFail("Invalid image must not be saved") } catch { }
     }
+    func testFileDownloadKeepsBytesAndPlacesItInsideTheNotebook() async throws {
+        let pdf = Data("%PDF-1.4 invented".utf8)
+        let client = NotebookWebClient(fetch: { url in (pdf, HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/pdf"])!) })
+        let file = try await client.download(.init(kind: "downloadFile", url: "https://example.com/files/law", path: "resources/law"))
+        XCTAssertEqual(file.data, pdf); XCTAssertEqual(file.name, "law.pdf")
+        let demo = Notebook(name: "Demo", rootPrefix: "Cuadernos/Demo"), root = Notebook(name: "Root", rootPrefix: "")
+        func destination(_ path: String?, name: String = "law.pdf", notebook: Notebook = demo) throws -> String {
+            try NotebookWebClient.destination(for: .init(kind: "downloadFile", url: "https://example.com/x", path: path), name: name, notebook: notebook)
+        }
+        XCTAssertEqual(try destination("resources/law"), "Cuadernos/Demo/resources/law.pdf")
+        XCTAssertEqual(try destination("Cuadernos/Demo/resources/Estatuto.pdf"), "Cuadernos/Demo/resources/Estatuto.pdf")
+        XCTAssertEqual(try destination(""), "Cuadernos/Demo/law.pdf")
+        XCTAssertEqual(try destination("resources/law.pdf", notebook: root), "resources/law.pdf")
+        for refused in ["../outside.pdf", "resources/.hidden.pdf", "notes/summary.md", "media/talk.mp4", "tools/run.sh"] { XCTAssertThrowsError(try destination(refused), refused) }
+        XCTAssertThrowsError(try destination("resources/file", name: "download"))
+        let page = NotebookWebClient(fetch: { url in (Data("<html>".utf8), HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "text/html"])!) })
+        do { _ = try await page.download(.init(kind: "downloadFile", url: "https://example.com/page")); XCTFail("A web page is not a file") } catch { }
+        let action = try NotebookAssistantProtocol.decode(#"{"reply":"","readFiles":[],"edits":[],"webActions":[{"kind":"downloadFile","query":"","url":"https://example.com/law.pdf","path":"resources/law.pdf"}]}"#).webActions?.first
+        XCTAssertEqual(action?.path, "resources/law.pdf")
+        XCTAssertTrue(NotebookAssistantProtocol.webInstructions(enabled: true, native: false).contains("downloadFile"))
+    }
+    /// Set NOTES_LIVE_DOWNLOAD_URL to fetch a real document through the public-web client.
+    func testLiveFileDownload() async throws {
+        guard let address = ProcessInfo.processInfo.environment["NOTES_LIVE_DOWNLOAD_URL"] else { throw XCTSkip("Live download is opt-in") }
+        let started = Date()
+        let file = try await NotebookWebClient().download(.init(kind: "downloadFile", url: address))
+        print("LIVE_DOWNLOAD", file.name, file.data.count, "bytes in", String(format: "%.1f s", Date().timeIntervalSince(started)), file.source)
+        XCTAssertGreaterThan(file.data.count, 1_000)
+    }
     func testLiveConfiguredProviderWebRoundTrip() async throws {
         let env = ProcessInfo.processInfo.environment
         guard let provider = env["NOTES_LIVE_WEB_PROVIDER"], let settingsPath = env["NOTES_LIVE_WEB_SETTINGS"] else { throw XCTSkip("Live provider web test is opt-in") }

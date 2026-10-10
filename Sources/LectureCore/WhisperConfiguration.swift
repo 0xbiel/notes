@@ -27,6 +27,8 @@ public struct WhisperConfiguration: Codable, Equatable, Sendable {
     public var importChunkSeconds: Double
     public var conditionOnPreviousText: Bool
     public var normalizeAudio: Bool? = true
+    /// Metal on Apple GPUs. Recordings saved before this option stay on the CPU.
+    public var useGPU: Bool? = nil
     public init(model: WhisperModel = .small, importChunkSeconds: Double = 30, conditionOnPreviousText: Bool = false) {
         self.model = model; self.importChunkSeconds = importChunkSeconds; self.conditionOnPreviousText = conditionOnPreviousText
     }
@@ -48,7 +50,9 @@ public struct WhisperConfiguration: Codable, Equatable, Sendable {
         return source.teacherReference == destination.teacherReference && sourceConfiguration == destinationConfiguration && (source.transcriptionProvider ?? .local) == (destination.transcriptionProvider ?? .local) && (source.transcriptionLanguage ?? "es") == (destination.transcriptionLanguage ?? "es")
     }
     public func arguments(model: URL, audio: URL, output: URL, language: String = "es") -> [String] {
-        var values = ["-m", model.path, "-f", audio.path, "-l", language, "-t", "2", "-ng", "-oj", "-of", output.path, "-sns"]
+        var values = ["-m", model.path, "-f", audio.path, "-l", language, "-t", useGPU == true ? "4" : "2"]
+        if useGPU != true { values.append("-ng") }
+        values += ["-oj", "-of", output.path, "-sns"]
         if !conditionOnPreviousText { values += ["-mc", "0"] }
         return values
     }

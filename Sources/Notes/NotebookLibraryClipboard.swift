@@ -11,11 +11,10 @@ struct NotebookLibraryClipboard: NSViewRepresentable {
     final class Bridge: NSView {
         weak var model: Workbench?
         private var monitor: Any?
-        private var sidebarFocused = false
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow(); stop()
             guard window != nil else { return }
-            monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] event in
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
                 let handled = MainActor.assumeIsolated { self?.handle(event) ?? false }
                 return handled ? nil : event
             }
@@ -23,11 +22,8 @@ struct NotebookLibraryClipboard: NSViewRepresentable {
         func stop() { if let monitor { NSEvent.removeMonitor(monitor) }; monitor = nil }
         private func handle(_ event: NSEvent) -> Bool {
             guard let window, event.window === window, window.isKeyWindow, window.attachedSheet == nil, let model else { return false }
-            if event.type == .leftMouseDown || event.type == .rightMouseDown {
-                sidebarFocused = bounds.contains(convert(event.locationInWindow, from: nil)); return false
-            }
-            guard sidebarFocused, model.canManageFiles,
-                  !(window.firstResponder is NSTextView), !(window.firstResponder is NSTextField),
+            // The sidebar list holds focus; row clicks never reach this monitor.
+            guard let focused = window.firstResponder as? NSTableView, bounds.intersects(convert(focused.bounds, from: focused)), model.canManageFiles,
                   event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command else { return false }
             switch event.charactersIgnoringModifiers?.lowercased() {
             case "c": model.copyLibraryItem(model.librarySelection); return true

@@ -18,13 +18,19 @@ struct NeutralSidebarSelection: NSViewRepresentable {
     final class SelectionBridge: NSView {
         weak var model: Workbench?
         var accent = NSColor.controlAccentColor
-        private weak var table: NSTableView?
+        private(set) weak var table: NSTableView?
         private var monitor: Any?
         private var observers: [NSObjectProtocol] = []
-        private var sidebarFocused = false
-        private var selectionOverlay: SelectionOverlay?
+        var sidebarFocused = false
+        private(set) var selectionOverlay: SelectionOverlay?
         private var pointerMonitor: Any?
-        private var pointer = NotebookPointerReorder()
+        // Pointer state, driven by the library pointer extension.
+        var pointer = NotebookPointerReorder()
+        var press: LibraryPointerPress?
+        var anchorRow: Int?
+        var dragChip: NSView?
+        var dragTimer: Timer?
+        var lastDrag: NSEvent?
         override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); connect() }
         func connect() {
             if table == nil {
@@ -83,7 +89,7 @@ struct NeutralSidebarSelection: NSViewRepresentable {
                 for (name, object) in watched where object != nil {
                     observers.append(NotificationCenter.default.addObserver(forName: name, object: object, queue: .main) { [weak self] _ in
                         MainActor.assumeIsolated {
-                            if name == NSWindow.didResignKeyNotification { self?.pointer.cancel(); self?.selectionOverlay?.insertionY = nil }
+                            if name == NSWindow.didResignKeyNotification { self?.cancelPointer() }
                             self?.refresh()
                         }
                     })
@@ -97,54 +103,14 @@ struct NeutralSidebarSelection: NSViewRepresentable {
             }
             refresh()
         }
-        private func handlePointer(_ event: NSEvent) -> NSEvent? {
-            guard let outline = table as? NSOutlineView, let model else { return event }
-            let point = outline.convert(event.locationInWindow, from: nil)
-            let roots = (0..<outline.numberOfRows).filter { outline.level(forRow: $0) == 0 }
-            let ids = model.activeNotebooks.map(\.id)
-            guard roots.count == ids.count else { pointer.cancel(); selectionOverlay?.insertionY = nil; return event }
-            let headers = zip(ids, roots).map { NotebookPointerReorder.Header(id: $0.0, rect: outline.rect(ofRow: $0.1), subtreeEnd: outline.rect(ofRow: outline.numberOfRows - 1).maxY) }
-            if event.type == .leftMouseDown {
-                guard event.modifierFlags.intersection([.control, .command, .shift]).isEmpty, event.window === outline.window, outline.visibleRect.contains(point),
-                      let header = headers.first(where: { $0.rect.contains(point) }),
-                      point.x > outline.frameOfOutlineCell(atRow: roots[ids.firstIndex(of: header.id)!]).maxX + 3 else { return event }
-                sidebarFocused = true
-                refresh()
-                pointer.begin(id: header.id, at: point)
-                return nil
-            }
-            guard pointer.source != nil else { return event }
-            if event.type == .keyDown {
-                if event.keyCode == 53 { pointer.cancel(); selectionOverlay?.insertionY = nil; return nil }
-                return event
-            }
-            let inside = event.window === outline.window && outline.visibleRect.contains(point)
-            pointer.move(to: point, headers: headers, inside: inside)
-            selectionOverlay?.insertionY = pointer.insertionY
-            selectionOverlay?.lineColor = accent
-            if event.type == .leftMouseDragged {
-                outline.autoscroll(with: event)
-                return nil
-            }
-            if event.type == .leftMouseUp {
-                let result = pointer.finish()
-                selectionOverlay?.insertionY = nil
-                switch result {
-                case .click(let id): model.openNotebook(id)
-                case .move(let id, let target, let after): model.reorderNotebook(id, relativeTo: target, after: after)
-                case nil: break
-                }
-                return nil
-            }
-            return event
-        }
-        private func refresh() {
+        func refresh() {
             guard let table else { return }
             if table.selectionHighlightStyle != .none { table.selectionHighlightStyle = .none }
             guard let overlay = selectionOverlay else { return }
             // One stable drawing surface survives native row reuse and live resizing.
             // Avoid assigning animated row backgrounds after every SwiftUI layout.
             overlay.frame = table.bounds
+            overlay.lineColor = accent
             overlay.selectionColor = sidebarFocused && table.window?.isKeyWindow == true
                 ? accent.withAlphaComponent(0.28) : NSColor.labelColor.withAlphaComponent(0.09)
             overlay.needsDisplay = true
@@ -154,7 +120,7 @@ struct NeutralSidebarSelection: NSViewRepresentable {
             observers.forEach { NotificationCenter.default.removeObserver($0) }
             if let pointerMonitor { NSEvent.removeMonitor(pointerMonitor) }
             pointerMonitor = nil
-            pointer.cancel()
+            cancelPointer()
             selectionOverlay?.removeFromSuperview(); selectionOverlay = nil
             monitor = nil; observers = []; table = nil
         }
@@ -162,6 +128,12 @@ struct NeutralSidebarSelection: NSViewRepresentable {
     final class SelectionOverlay: NSView {
         weak var table: NSTableView?
         var insertionY: CGFloat? { didSet { needsDisplay = true } }
+        /// The row under a press that is not selected yet.
+        var pressedRow: Int? { didSet { if pressedRow != oldValue { needsDisplay = true } } }
+        /// The folder or notebook rows that would receive the dragged items.
+        /// The rectangle swept while selecting rows by dragging.
+        var marquee: NSRect? { didSet { if marquee != oldValue { needsDisplay = true } } }
+        var dropRows: ClosedRange<Int>? { didSet { if dropRows != oldValue { needsDisplay = true } } }
         var lineColor = NSColor.controlAccentColor
         var selectionColor = NSColor.labelColor.withAlphaComponent(0.09)
         init(table: NSTableView) { self.table = table; super.init(frame: .zero) }
@@ -178,10 +150,29 @@ struct NeutralSidebarSelection: NSViewRepresentable {
                 lineColor.setFill()
                 NSBezierPath(roundedRect: NSRect(x: 8, y: y - 1, width: max(0, bounds.width - 16), height: 2), xRadius: 1, yRadius: 1).fill()
             }
+            if let rows = dropRows, rows.upperBound < table.numberOfRows {
+                let rect = selectionRect(forRow: rows.lowerBound).union(selectionRect(forRow: rows.upperBound))
+                lineColor.withAlphaComponent(0.1).setFill()
+                NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7).fill()
+                lineColor.withAlphaComponent(0.7).setStroke()
+                let border = NSBezierPath(roundedRect: rect.insetBy(dx: 0.75, dy: 0.75), xRadius: 6.25, yRadius: 6.25)
+                border.lineWidth = 1.5; border.stroke()
+            }
+            if let row = pressedRow, row < table.numberOfRows, !table.isRowSelected(row) {
+                NSColor.labelColor.withAlphaComponent(0.07).setFill()
+                NSBezierPath(roundedRect: selectionRect(forRow: row), xRadius: 7, yRadius: 7).fill()
+            }
             selectionColor.setFill()
             for index in table.selectedRowIndexes where index < table.numberOfRows {
                 let rect = selectionRect(forRow: index)
                 if rect.intersects(dirtyRect) { NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7).fill() }
+            }
+            if let marquee {
+                let rect = convert(marquee, from: table).insetBy(dx: 0.5, dy: 0.5)
+                lineColor.withAlphaComponent(0.1).setFill()
+                NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).fill()
+                lineColor.withAlphaComponent(0.55).setStroke()
+                NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).stroke()
             }
         }
     }

@@ -86,6 +86,8 @@ public struct MediaJob: Codable, Identifiable, Sendable {
     public var transcriptionProvider: TranscriptionProvider? = nil
     public var transcriptionLanguage: String? = nil
     public var liveChunkSeconds: Double? = nil
+    /// Dictation cuts recognition clips at pauses instead of at fixed times.
+    public var liveVoiceSegments: Bool? = nil
     public var teacherReference: TeacherVoiceReference? = nil
     public init(notebookID: String, subject: String, note: String, sourceName: String, microphone: Bool = false) {
         self.notebookID = notebookID; self.subject = subject; targetNote = note
