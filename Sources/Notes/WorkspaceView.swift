@@ -50,7 +50,6 @@ struct WorkbenchView: View {
 
             }
             library
-                .padding(.horizontal, chrome.compact ? 4 : 0)
                 .frame(width: sidebarWidth)
                 .frame(maxHeight: .infinity)
                 .background { if chrome.compact { NotebookThemeBackground() } }
@@ -273,7 +272,7 @@ struct CourseSidebar: View {
     @AppStorage("notes.accent") private var accent = ""
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 HStack(spacing: 6) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                     TextField("Buscar", text: $query).textFieldStyle(.plain).accessibilityLabel("Filtrar archivos")
@@ -281,12 +280,12 @@ struct CourseSidebar: View {
                         Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
                             .buttonStyle(.plain).modifier(ControlHoverBackground()).help("Limpiar búsqueda")
                     }
-                }.padding(.horizontal, 11).frame(height: 34)
+                }.padding(.horizontal, 11).frame(height: 38)
                     .modifier(SidebarSearchGlass())
                 Button { model.creationInitialName = ""; model.creationKind = "nota" } label: {
-                    Image(systemName: "square.and.pencil").frame(width: 28, height: 34)
+                    Image(systemName: "square.and.pencil").frame(width: 28, height: 38)
                 }.buttonStyle(.plain).modifier(ControlHoverBackground()).help("Nueva nota · ⌘N").accessibilityLabel("Nueva nota")
-            }.padding(.horizontal, 12)
+            }.padding(.horizontal, 8)
             ScrollViewReader { proxy in
             List(selection: Binding<NotebookSidebarSelection?>(get: {
                 model.librarySelection

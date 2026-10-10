@@ -2,7 +2,7 @@
 
 Palladium is a native macOS notebook app for Markdown notes, AI-assisted editing, and chat dictation. It brings your documents and conversations into a calm workspace, whether you’re studying, collecting ideas, or working through a project.
 
-![Palladium showing a sample notebook, a Markdown checklist, and an assistant chat with a study-guide document](docs/images/palladium.png)
+![Palladium showing a study-guide table, notebook navigation, and an assistant chat with its activity log](docs/images/palladium.png)
 
 - **Notebooks and Markdown.** Organize notes into notebooks and folders. Write and read formatted Markdown with tables, checklists, and math, backed by autosave and undo.
 - **Notebook chats.** Work with an assistant that can use your notebook’s context, suggest changes, and help edit documents. Attach images, PDFs, or text files when a conversation needs them.
