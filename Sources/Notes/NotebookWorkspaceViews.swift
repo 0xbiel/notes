@@ -132,7 +132,7 @@ struct NotebookHomePicker: View {
             if selected { Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary) }
         }.padding(.horizontal, 8).padding(.vertical, 6)
             .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-            .background(selected || hovered == notebook.id ? Color.primary.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 5))
+            .modifier(SelectorRowBackground(highlighted: selected || hovered == notebook.id))
     }
 
 }
@@ -178,7 +178,7 @@ struct NotebookChatPicker: View {
                                     HStack(spacing: 2) {
                                     Button { assistant.selectChat(chat.id, notebook: notebook); presented = false } label: {
                                         chatRowLabel(chat)
-                                    }.buttonStyle(.plain).onHover { hovered = $0 ? chat.id : nil }
+                                    }.buttonStyle(.plain)
                                         .accessibilityAddTraits(assistant.chat(notebook)?.id == chat.id ? .isSelected : [])
                                         .accessibilityValue(assistant.isRunning(notebook, chatID: chat.id) ? (language == "en" ? "Working" : "Trabajando") : "")
                                         .accessibilityIdentifier("notebook.chat." + chat.id)
@@ -192,7 +192,8 @@ struct NotebookChatPicker: View {
                                     }.buttonStyle(.plain)
                                         .disabled(assistant.isRunning(notebook, chatID: chat.id))
                                         .accessibilityLabel((language == "en" ? "Delete chat: " : "Eliminar chat: ") + chat.title)
-                                    }
+                                    }.modifier(SelectorRowBackground(highlighted: assistant.chat(notebook)?.id == chat.id || hovered == chat.id))
+                                        .onHover { hovered = $0 ? chat.id : nil }
                                 }
                                 if chats.isEmpty { Text(language == "en" ? "No chats found" : "No se encontraron chats").font(.callout).foregroundStyle(.secondary).padding(8) }
                             }
@@ -228,7 +229,6 @@ struct NotebookChatPicker: View {
             if selected { Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary) }
         }.padding(.horizontal, 8).padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-            .background(selected || hovered == chat.id ? Color.primary.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 5))
     }
 
 }

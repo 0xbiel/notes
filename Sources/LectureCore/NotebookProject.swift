@@ -9,10 +9,15 @@ public struct NotebookProfile: Codable, Equatable, Sendable {
     public init() {}
 }
 
+public enum NotebookActivityKind: String, Codable, Sendable { case reasoning, tool, status }
+
 public struct NotebookActivity: Codable, Identifiable, Equatable, Sendable {
     public var id = UUID().uuidString
     public var title: String
     public var date = Date()
+    public var detail: String? = nil
+    public var kind: NotebookActivityKind? = nil
+    public var failed: Bool? = nil
     public init(_ title: String) { self.title = title }
 }
 

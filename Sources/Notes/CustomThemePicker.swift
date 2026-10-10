@@ -126,6 +126,8 @@ struct CustomThemePicker: View {
             HStack {
                 Text(label("Luminosidad", "Brightness")).font(.callout)
                 Slider(value: Binding(get: { stops.isEmpty ? 0 : stops[index].brightness }, set: { value in update { $0.brightness = value } }), in: 0...1)
+                    .controlSize(.regular)
+                    .accessibilityIdentifier(singleColor ? "theme.accentBrightness" : "theme.frameBrightness")
                     .accessibilityLabel(label("Luminosidad", "Brightness"))
                 ColorPicker(label("Color exacto", "Exact color"), selection: Binding(
                     get: { stops.isEmpty ? neutralColor : stops[index].color }, set: { color in update { $0 = .init(color: color) } }
@@ -138,7 +140,7 @@ struct CustomThemePicker: View {
     private func schemeButton(_ value: String, _ symbol: String, _ title: String) -> some View {
         Button { appearance = value } label: {
             Image(systemName: symbol).frame(width: 30, height: 30)
-                .background(appearance == value ? Color.primary.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 8))
+                .modifier(SelectorRowBackground(highlighted: appearance == value))
         }.buttonStyle(.plain).accessibilityLabel(title).help(title)
             .accessibilityAddTraits(appearance == value ? .isSelected : [])
     }

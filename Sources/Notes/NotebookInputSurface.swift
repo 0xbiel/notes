@@ -17,3 +17,12 @@ struct NotebookInputSurface: ViewModifier {
         .shadow(color: .black.opacity(floating ? 0.08 : 0), radius: 12, y: 4)
     }
 }
+
+/// Shared geometry for selected and hovered rows inside selector popovers.
+struct SelectorRowBackground: ViewModifier {
+    let highlighted: Bool
+    func body(content: Content) -> some View {
+        content.background(highlighted ? Color.primary.opacity(0.1) : .clear,
+                           in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}

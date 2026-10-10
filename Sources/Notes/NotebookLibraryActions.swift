@@ -20,7 +20,7 @@ extension Workbench {
     var selectedLibraryPath: String? { selectedNote ?? selectedFile }
     var showsDocumentComposer: Bool {
         selectedLibraryPath != nil && assistant != nil &&
-        ((selectedNote != nil && layout != "preview") || !hideStudyComposer)
+        !hideStudyComposer
     }
     var chatHistoryVisible: Bool { selectedLibraryPath == nil || documentChatVisible }
     var librarySelection: NotebookSidebarSelection {

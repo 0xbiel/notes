@@ -222,7 +222,10 @@ struct NotebookThemePreferences: View {
                 CustomThemePicker(palette: $palette)
                 HStack {
                     Text("Intensidad").font(.callout)
-                    Slider(value: $intensity, in: 0...0.5).accessibilityLabel("Intensidad del color")
+                    Slider(value: $intensity, in: 0...0.5)
+                        .controlSize(.regular)
+                        .accessibilityIdentifier("theme.intensity")
+                        .accessibilityLabel("Intensidad del color")
                 }
             }
             VStack(alignment: .leading, spacing: 8) {
@@ -233,6 +236,8 @@ struct NotebookThemePreferences: View {
                         .monospacedDigit().foregroundStyle(.secondary)
                 }
                 Slider(value: $transparency, in: 0...1, step: 0.01)
+                    .controlSize(.regular)
+                    .accessibilityIdentifier("theme.transparency")
                     .accessibilityLabel("Transparencia de la barra lateral")
                     .accessibilityValue(Text(transparency, format: .percent.precision(.fractionLength(0))))
                     .disabled(reduceTransparency)

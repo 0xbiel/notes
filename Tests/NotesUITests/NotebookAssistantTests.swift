@@ -98,6 +98,8 @@ final class NotebookAssistantTests: XCTestCase {
         model.openNote("Inicio.md"); model.layout = "preview"; model.hideStudyComposer = true
         XCTAssertFalse(model.showsDocumentComposer)
         model.layout = "edit"
+        XCTAssertFalse(model.showsDocumentComposer)
+        model.hideStudyComposer = false
         XCTAssertTrue(model.showsDocumentComposer)
         model.openNotebook(model.selectedNotebookID)
         XCTAssertFalse(model.showsDocumentComposer)

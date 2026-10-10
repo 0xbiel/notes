@@ -33,7 +33,7 @@ struct WorkbenchView: View {
                     }
                     if model.assistant == nil {
                         HStack { Spacer(); ListeningDock(model: model) }.padding(12)
-                    } else if model.selectedLibraryPath != nil && (model.selectedFile != nil || model.layout == "preview") && model.hideStudyComposer, let media = model.media {
+                    } else if model.selectedLibraryPath != nil && model.hideStudyComposer, let media = model.media {
                         RecordingOnlyDock(model: model, media: media)
                     }
                 }
@@ -241,9 +241,7 @@ struct NoteToolbar: View {
     private var controls: some View {
         HStack(spacing: 7) {
                 modeSelector
-                if model.layout == "preview" {
-                    NotebookAssistantToggle(model: model)
-                }
+                NotebookAssistantToggle(model: model)
                 Menu {
                         Button("Marcar/desmarcar tarea") { NSApp.sendAction(#selector(MarkdownTextView.toggleMarkdownTask(_:)), to: nil, from: nil) }.keyboardShortcut("l", modifiers: [.command, .shift])
                     Section("Formato") {

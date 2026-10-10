@@ -2,6 +2,172 @@ import XCTest
 @testable import LectureCore
 
 final class ProviderTests: XCTestCase {
+    func testNotebookRetentionRequiresExplicitOptInAndKeepsFreeTrainingPolicy() throws {
+        func policy(_ configuration: [String: Any]) throws -> [String: Any] {
+            let providers = try XCTUnwrap(configuration["provider"] as? [String: [String: Any]])
+            let models = try XCTUnwrap(providers["openrouter"]?["models"] as? [String: [String: Any]])
+            let options = try XCTUnwrap(models["openrouter/free"]?["options"] as? [String: Any])
+            return try XCTUnwrap(options["provider"] as? [String: Any])
+        }
+        XCTAssertEqual(try policy(OpenRouterHarness.config(notebookEditing: true))["zdr"] as? Bool, true)
+        let optedIn = OpenRouterHarness.config(notebookEditing: true, allowRetention: true)
+        let actual = try policy(optedIn)
+        XCTAssertEqual(actual["zdr"] as? Bool, false)
+        XCTAssertEqual(actual["data_collection"] as? String, "deny")
+        XCTAssertEqual(actual["max_price"] as? [String: Int], ["prompt": 0, "completion": 0])
+        let encoded = try JSONSerialization.data(withJSONObject: optedIn)
+        XCTAssertNoThrow(try OpenRouterHarness.verifyConfig(encoded, notebookEditing: true, allowRetention: true))
+        XCTAssertThrowsError(try OpenRouterHarness.verifyConfig(encoded, notebookEditing: true))
+        XCTAssertEqual(try policy(OpenRouterHarness.config(allowRetention: true))["zdr"] as? Bool, true)
+    }
+
+    func testProviderFailureReportsRetentionBlockWithoutLeakingRawMetadata() throws {
+        let data = try JSONSerialization.data(withJSONObject: ["type": "error", "error": ["data": ["statusCode": 404, "message": "No endpoints found matching your data policy (Zero data retention)", "responseHeaders": ["set-cookie": "private-cookie"]]]])
+        let message = try XCTUnwrap(OpenRouterHarness.providerFailure(data))
+        XCTAssertTrue(message.contains("zero data retention"))
+        XCTAssertFalse(message.contains("private-cookie"))
+        XCTAssertThrowsError(try OpenRouterHarness.decodeTextEvents(data))
+    }
+
+    func testProgressOnlyPublishesProviderReasoningAndLifecycle() throws {
+        let thought = Data(#"{"type":"reasoning","part":{"id":"r1","text":"Checking the requested sources."}}"#.utf8)
+        XCTAssertEqual(NotebookProviderProgress.decode(thought)?.detail, "Checking the requested sources.")
+        let response = Data(#"{"type":"text","part":{"text":"{private response JSON}"}}"#.utf8)
+        XCTAssertNil(NotebookProviderProgress.decode(response)?.detail)
+        XCTAssertEqual(NotebookProviderProgress.decode(response)?.title, "Redactando respuesta…")
+        XCTAssertNil(NotebookProviderProgress.decode(Data(#"{"type":"error","error":{"token":"secret"}}"#.utf8)))
+        let codex = Data(#"{"type":"item.completed","item":{"id":"c1","type":"reasoning","text":"Checking the math."}}"#.utf8)
+        XCTAssertEqual(NotebookProviderProgress.decode(codex)?.id, "thought-c1")
+    }
+
+    func testProgressArrivesBeforeProcessExitsAndPreservesCompleteOutput() async throws {
+        let command = NotesProcess(timeoutInterval: 5)
+        command.process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        let line = #"{"type":"reasoning","part":{"id":"r1","text":"Checking sources."}}"#
+        command.process.arguments = ["-c", "printf '%s\\n' '" + line + "'; sleep 1; printf '%s' '{\"type\":\"text\",\"part\":{\"text\":\"done\"}}'"]
+        let update = expectation(description: "Live reasoning")
+        let data = try await command.runStreaming { event in
+            if event.detail != nil {
+                XCTAssertTrue(command.process.isRunning)
+                XCTAssertEqual(event.detail, "Checking sources.")
+                update.fulfill()
+            }
+        }
+        await fulfillment(of: [update], timeout: 1)
+        XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("done"))
+    }
+
+    func testProgressClassifiesReasoningAndBlockedToolsWithoutExposingPayloads() throws {
+        let thought = Data(#"{"type":"reasoning","part":{"id":"r1","text":"Checking sources."}}"#.utf8)
+        XCTAssertEqual(NotebookProviderProgress.decode(thought)?.kind, .reasoning)
+        for line in [
+            #"{"type":"tool_use","part":{"id":"t1","tool":"read","state":{"input":{"token":"secret"},"output":"secret"}}}"#,
+            #"{"type":"item.started","item":{"id":"t1","type":"command_execution","command":"echo secret"}}"#
+        ] {
+            let event = try XCTUnwrap(NotebookProviderProgress.decode(Data(line.utf8)))
+            XCTAssertEqual(event.kind, .tool)
+            XCTAssertTrue(event.failed)
+            XCTAssertNil(event.detail)
+            XCTAssertFalse(event.title.contains("secret"))
+        }
+        let legacy = try JSONDecoder().decode(NotebookActivity.self, from: Data(#"{"id":"old","title":"Pensando…","date":0,"detail":"Saved reasoning"}"#.utf8))
+        XCTAssertNil(legacy.kind)
+        XCTAssertEqual(legacy.detail, "Saved reasoning")
+    }
+
+    func testOpenCodeSSEDeltasStayScopedAndSnapshotsDoNotDuplicateText() throws {
+        var decoder = OpenCodeProgressDecoder(sessionID: "s1")
+        func event(_ type: String, _ properties: [String: Any]) throws -> Data {
+            try JSONSerialization.data(withJSONObject: ["type": type, "properties": properties])
+        }
+        XCTAssertNil(decoder.accept(try event("message.part.updated", ["part": ["sessionID": "other", "id": "r", "type": "reasoning", "text": "private"]])))
+        XCTAssertEqual(decoder.accept(try event("message.part.updated", ["part": ["sessionID": "s1", "id": "r", "type": "reasoning", "text": "Check "]]))?.detail, "Check ")
+        XCTAssertEqual(decoder.accept(try event("message.part.delta", ["sessionID": "s1", "partID": "r", "field": "text", "delta": "the math."]))?.detail, "Check the math.")
+        XCTAssertEqual(decoder.accept(try event("message.part.updated", ["part": ["sessionID": "s1", "id": "r", "type": "reasoning", "text": "Check the math."]]))?.detail, "Check the math.")
+        XCTAssertNil(decoder.accept(try event("message.part.delta", ["sessionID": "s1", "partID": "response", "field": "text", "delta": "private JSON"])))
+        XCTAssertFalse(decoder.finished)
+        _ = decoder.accept(try event("session.status", ["sessionID": "s1", "status": ["type": "idle"]]))
+        XCTAssertTrue(decoder.finished)
+    }
+
+    func testOpenCodeHTTPReplyStillRejectsToolsAndPaidResponses() throws {
+        func reply(cost: Double, parts: [[String: Any]]) throws -> Data {
+            try JSONSerialization.data(withJSONObject: ["info": ["role": "assistant", "cost": cost], "parts": parts])
+        }
+        let parts: [[String: Any]] = [["type": "text", "text": "done"], ["type": "step-finish", "cost": 0, "reason": "stop"]]
+        XCTAssertEqual(try OpenRouterHarness.decodeTextEvents(OpenCodeStreamingSession.completeEvents(reply(cost: 0, parts: parts))), "done")
+        XCTAssertThrowsError(try OpenCodeStreamingSession.completeEvents(reply(cost: 1, parts: parts)))
+        XCTAssertThrowsError(try OpenRouterHarness.decodeTextEvents(OpenCodeStreamingSession.completeEvents(reply(cost: 0, parts: [["type": "tool", "tool": "read"]] + parts))))
+    }
+
+    func testLiveOpenRouterReasoningArrivesInMultipleChunksBeforeCompletion() async throws {
+        guard ProcessInfo.processInfo.environment["NOTES_LIVE_REASONING_TEST"] == "1" else { throw XCTSkip("Live OpenRouter test is opt-in.") }
+        let (workspace, _) = try environment()
+        let harness = OpenRouterHarness(store: LocalMediaStore(workspace: workspace), notebookEditing: true, allowRetention: true)
+        let probe = ReasoningChunkProbe()
+        let reply = try await harness.generateNotebook("Determine whether 10403 is prime and explain in one sentence. Do not read or edit files. Return JSON with reply, readFiles: [], edits: [].") { await probe.record($0) }
+        let lengths = await probe.evidence()
+        print("LIVE_REASONING_CHUNKS count=\(lengths.count) lengths=\(lengths.prefix(8))")
+        XCTAssertGreaterThan(lengths.count, 1, "Reasoning must grow before step-finish, rather than arrive as one final block.")
+        XCTAssertTrue(reply.contains("reply"))
+        XCTAssertNoThrow(try NotebookAssistantProtocol.decode(reply))
+    }
+
+    func testCodexReasoningDeltasSeparateSummaryPartsAndRejectForeignTurns() throws {
+        var decoder = CodexNotebookProgressDecoder(threadID: "thread")
+        _ = try decoder.accept("turn/started", ["threadId": "thread", "turn": ["id": "turn"]])
+        func delta(_ text: String, index: Int = 0, turn: String = "turn") -> [String: Any] {
+            ["threadId": "thread", "turnId": turn, "itemId": "r1", "summaryIndex": index, "delta": text]
+        }
+        XCTAssertEqual(try decoder.accept("item/reasoning/summaryTextDelta", delta("Check "))?.detail, "Check ")
+        XCTAssertEqual(try decoder.accept("item/reasoning/summaryTextDelta", delta("sources."))?.detail, "Check sources.")
+        XCTAssertEqual(try decoder.accept("item/reasoning/summaryTextDelta", delta("Next step.", index: 1))?.detail, "Check sources.\n\nNext step.")
+        XCTAssertNil(try decoder.accept("item/reasoning/summaryTextDelta", delta("foreign", turn: "other")))
+        XCTAssertThrowsError(try decoder.accept("item/started", ["threadId": "thread", "turnId": "turn", "item": ["type": "commandExecution"]]))
+        XCTAssertThrowsError(try decoder.accept("turn/completed", ["threadId": "thread", "turn": ["id": "turn", "status": "failed"]]))
+        XCTAssertFalse(decoder.finished)
+    }
+
+    func testAntigravityThoughtChunksArriveWhilePromptIsStillRunning() async throws {
+        let (workspace, root) = try environment()
+        let configuration = try mockACP(root, reasoning: true)
+        let probe = ReasoningChunkProbe()
+        let prompt = String(decoding: try OpenRouterHarness.payload(batch(workspace)), as: UTF8.self)
+        _ = try await AntigravityTextTransport(store: LocalMediaStore(workspace: workspace), configuration: configuration).generate(prompt, progress: { event in
+            if event.kind == .reasoning, event.detail?.isEmpty == false {
+                XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("acp-completed").path))
+            }
+            await probe.record(event)
+        })
+        let lengths = await probe.evidence()
+        XCTAssertEqual(lengths.count, 2)
+    }
+
+    func testLiveCodexAppServerStreamsReasoningBeforeTurnCompletion() async throws {
+        guard ProcessInfo.processInfo.environment["NOTES_LIVE_CODEX_REASONING_TEST"] == "1" else { throw XCTSkip("Live Codex test is opt-in.") }
+        let (workspace, _) = try environment()
+        let configuration = AIProviderConfiguration(provider: .codexCLI, executablePath: "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex", homePath: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex").path)
+        let probe = ReasoningChunkProbe()
+        let reply = try await CodexNotebookStreamingTransport(store: LocalMediaStore(workspace: workspace), configuration: configuration).generate("Determine whether 10403 is prime. Explain in one short sentence. Do not read or edit documents.", language: "en", images: []) { await probe.record($0) }
+        let lengths = await probe.evidence()
+        print("LIVE_CODEX_REASONING_CHUNKS count=\(lengths.count) lengths=\(lengths.prefix(8))")
+        XCTAssertGreaterThan(lengths.count, 1)
+        XCTAssertTrue(reply.contains("reply"))
+    }
+
+    func testLiveAntigravityACPStreamsThoughtChunksBeforeCompletion() async throws {
+        guard ProcessInfo.processInfo.environment["NOTES_LIVE_ANTIGRAVITY_REASONING_TEST"] == "1" else { throw XCTSkip("Live Antigravity test is opt-in.") }
+        let (workspace, _) = try environment()
+        let settings = try JSONDecoder().decode(AIProviderSettings.self, from: Data(contentsOf: URL(fileURLWithPath: "/Users/biel/Documents/notes/session-storage/ai-provider-settings.json")))
+        let probe = ReasoningChunkProbe()
+        let reply = try await AntigravityTextTransport(store: LocalMediaStore(workspace: workspace), configuration: settings.antigravity).generate("Determine whether 10403 is prime. Explain in one sentence. Do not read files, edit files, use tools or run commands.", progress: { await probe.record($0) })
+        let lengths = await probe.evidence()
+        print("LIVE_ANTIGRAVITY_REASONING_CHUNKS count=\(lengths.count) lengths=\(lengths.prefix(8))")
+        XCTAssertFalse(reply.isEmpty)
+        guard !lengths.isEmpty else { throw XCTSkip("Configured Antigravity model completed successfully but published no thought chunks.") }
+        XCTAssertGreaterThan(lengths.count, 1)
+    }
+
     func testGenerationDeadlineAndExplicitCancellation() throws {
         XCTAssertEqual(ProviderRequestLimits.generation, 600)
         XCTAssertEqual(ProviderRequestLimits.diagnostic, 90)
@@ -240,7 +406,7 @@ final class ProviderTests: XCTestCase {
         XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path).contains { $0.hasPrefix(".provider-helper-") })
     }
 
-    private func mockACP(_ root: URL, toolRequest: Bool = false, unresponsive: Bool = false, images: Bool = false) throws -> AIProviderConfiguration {
+    private func mockACP(_ root: URL, toolRequest: Bool = false, unresponsive: Bool = false, images: Bool = false, reasoning: Bool = false) throws -> AIProviderConfiguration {
         let script = root.appendingPathComponent("mock-acp.py")
         let content = """
         #!/usr/bin/python3
@@ -263,6 +429,11 @@ final class ProviderTests: XCTestCase {
                 assert request['params']['mcpServers']==[]
                 result={'sessionId':session}
             if method=='session/prompt':
+                if \(reasoning ? "True" : "False"):
+                    for chunk in ['Checking ', 'sources as they arrive.']:
+                        emit({'jsonrpc':'2.0','method':'session/update','params':{'sessionId':session,'update':{'sessionUpdate':'agent_thought_chunk','content':{'type':'text','text':chunk}}}})
+                        time.sleep(0.2)
+                    open('\(root.appendingPathComponent("acp-completed").path)','w').write('done')
                 if \(toolRequest ? "True" : "False"):
                     emit({'jsonrpc':'2.0','id':900,'method':'fs/read_text_file','params':{'path':'/private'}})
                     continue
@@ -329,4 +500,14 @@ final class ProviderTests: XCTestCase {
         try Data(#"{"mcpServers":{"outside":{}}}"#.utf8).write(to: folder.appendingPathComponent("mcp_config.json"))
         XCTAssertThrowsError(try AntigravityTextTransport.validateProfile(configuration.homePath))
     }
+}
+private actor ReasoningChunkProbe {
+    var lengths: [Int] = []
+    var finished = false
+    func record(_ event: NotebookProviderProgress) {
+        if event.id == "provider-finished" { finished = true }
+        if !finished, event.kind == .reasoning, let text = event.detail, !text.isEmpty,
+           text.count > (lengths.last ?? 0) { lengths.append(text.count) }
+    }
+    func evidence() -> [Int] { lengths }
 }

@@ -19,6 +19,9 @@ final class ProviderRPCConnection: @unchecked Sendable {
     private var timer: DispatchSourceTimer?
     var sessionID: String?
     var output = ""
+    var thought = ""
+    var progress: (@Sendable (NotebookProviderProgress) -> Void)?
+    var notificationHandler: ((String, [String: Any]) throws -> Void)?
 
     init(configuration: AIProviderConfiguration, directory: URL, environment: [String: String], arguments: [String] = []) {
         self.configuration = configuration; self.directory = directory; self.environment = environment
@@ -63,7 +66,7 @@ final class ProviderRPCConnection: @unchecked Sendable {
         try? FileManager.default.removeItem(at: directory)
     }
 
-    private func write(_ value: [String: Any]) throws {
+    func write(_ value: [String: Any]) throws {
         var data = try JSONSerialization.data(withJSONObject: value)
         data.append(10)
         try input.fileHandleForWriting.write(contentsOf: data)
@@ -82,7 +85,8 @@ final class ProviderRPCConnection: @unchecked Sendable {
                     try write(["jsonrpc": "2.0", "id": serverID, "error": ["code": -32601, "message": "Tools, filesystem, terminal and user input are disabled."]])
                     throw MediaError.invalid("El proveedor solicitó herramientas o permisos; respuesta rechazada.")
                 }
-                if requestMethod == "session/update", let params = event["params"] as? [String: Any] {
+                if let notificationHandler { try notificationHandler(requestMethod, event["params"] as? [String: Any] ?? [:]) }
+                else if requestMethod == "session/update", let params = event["params"] as? [String: Any] {
                     try acceptUpdate(params)
                 }
                 continue
@@ -93,7 +97,7 @@ final class ProviderRPCConnection: @unchecked Sendable {
         }
     }
 
-    private func readEvent() throws -> [String: Any] {
+    func readEvent() throws -> [String: Any] {
         while true {
             if let newline = buffer.firstIndex(of: 10) {
                 let line = buffer[..<newline]; buffer.removeSubrange(...newline)
@@ -113,8 +117,19 @@ final class ProviderRPCConnection: @unchecked Sendable {
 
     private func acceptUpdate(_ params: [String: Any]) throws {
         guard let update = params["update"] as? [String: Any], let kind = update["sessionUpdate"] as? String else { throw MediaError.invalid("Actualización ACP inválida.") }
-        if kind == "tool_call" || kind == "tool_call_update" { throw MediaError.invalid("Antigravity intentó usar herramientas; respuesta rechazada.") }
-        guard params["sessionId"] as? String == sessionID, kind == "agent_message_chunk", let content = update["content"] as? [String: Any], content["type"] as? String == "text", let text = content["text"] as? String else { return }
+        if kind == "tool_call" || kind == "tool_call_update" {
+            progress?(NotebookProviderProgress.blockedTool(id: update["toolCallId"] as? String, name: update["kind"] as? String))
+            throw MediaError.invalid("Antigravity intentó usar herramientas; respuesta rechazada.")
+        }
+        guard params["sessionId"] as? String == sessionID,
+              let content = update["content"] as? [String: Any], content["type"] as? String == "text", let text = content["text"] as? String else { return }
+        if kind == "agent_thought_chunk" {
+            thought = String((thought + text).prefix(12_000))
+            progress?(.init(id: "acp-thought", title: "Pensando…", detail: thought, kind: .reasoning))
+            return
+        }
+        guard kind == "agent_message_chunk" else { return }
+        progress?(.init(id: "provider-response", title: "Redactando respuesta…"))
         guard output.utf8.count + text.utf8.count <= 60_000 else { throw MediaError.invalid("Respuesta Antigravity demasiado grande.") }
         output += text
     }

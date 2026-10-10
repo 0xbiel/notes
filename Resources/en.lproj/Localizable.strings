@@ -239,3 +239,11 @@
 "Última modificación" = "Latest modified";
 "Mover cuaderno arriba" = "Move notebook up";
 "Mover cuaderno abajo" = "Move notebook down";
+
+"Transparencia de la barra lateral" = "Sidebar transparency";
+
+"Opaca" = "Opaque";
+
+"Translúcida" = "Translucent";
+
+"Desactiva Reducir transparencia en los ajustes de accesibilidad de macOS para usar este control." = "Turn off Reduce Transparency in macOS Accessibility settings to use this control.";

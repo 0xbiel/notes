@@ -292,8 +292,16 @@ struct ProviderPreferences: View {
             }
             Divider().opacity(0.35)
             VStack(alignment: .leading, spacing: 8) {
-                Text(accountProvider ? text("Usa tu cuenta iniciada en el cliente del proveedor.", "Use your account signed in through the provider's client.") : text("OpenRouter · router gratuito · retención cero para apuntes reales.", "OpenRouter · free router · zero retention for real notes."))
+                Text(accountProvider ? text("Usa tu cuenta iniciada en el cliente del proveedor.", "Use your account signed in through the provider's client.") : text("OpenRouter · router gratuito · entrenamiento prohibido.", "OpenRouter · free router · training prohibited."))
                     .font(.callout).foregroundStyle(.secondary)
+                if !accountProvider {
+                    Toggle(text("Permitir retención para el chat del cuaderno", "Allow provider retention for notebook chat"), isOn: Binding(
+                        get: { preferences.draft.openCode.openRouterAllowRetention == true },
+                        set: { preferences.draft.openCode.openRouterAllowRetention = $0 }
+                    )).modifier(NotebookToggleAccent()).accessibilityIdentifier("provider.openrouter.retention")
+                    Text(text("Los proveedores gratuitos pueden conservar las peticiones y el contexto enviado. Se prohíbe el entrenamiento y se mantiene el precio cero. Las transcripciones siguen exigiendo retención cero.", "Free providers may retain prompts and sent note context. Training remains prohibited and the price stays zero. Transcription batches still require zero retention."))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 if accountProvider {
                     Text(text("Se envían fragmentos y contexto limitado. Se aplican los costes y la retención de tu cuenta; el audio permanece local.", "Selected text and limited context are sent. Account costs and retention apply; audio stays local."))
                         .font(.caption).foregroundStyle(.secondary)

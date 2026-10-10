@@ -109,41 +109,89 @@ struct NotebookWorkLog: View {
     var running = false
     var failed = false
     @State private var expanded = false
-    private func symbol(_ title: String) -> String {
-        if title.contains("Leyendo") { return "doc.text.magnifyingglass" }
-        if title.contains("BOE") || title.contains("artículo") { return "globe" }
-        if title.contains("Guardando") || title.contains("Aplicando") { return "pencil.line" }
-        return "sparkles"
-    }
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 4) {
             Button { withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() } } label: {
                 HStack(spacing: 8) {
-                    if running { ChatWorkingIndicator().frame(width: 18) }
-                    else { Image(systemName: failed ? "exclamationmark.circle" : "checkmark").frame(width: 18) }
+                    if !running { Image(systemName: failed ? "exclamationmark.circle" : "checkmark").frame(width: 18) }
                     Text(running ? (language == "en" ? "Working" : "Trabajando") : (language == "en" ? "Worked through \(activities.count) steps" : "\(activities.count) pasos realizados"))
                     if running, let start = activities.first?.date { Text(start, style: .timer).monospacedDigit().foregroundStyle(.tertiary) }
                     Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.system(size: 9))
-                }.foregroundStyle(.secondary).font(.callout)
+                }.foregroundStyle(.secondary).font(.callout).frame(minHeight: 24)
                     .contentShape(Rectangle())
             }.buttonStyle(.plain)
-            if running && !expanded {
-                Text(NotebookAssistantText.display(activities.last?.title ?? "Preparando cambios…", language: language))
-                    .font(.caption).foregroundStyle(.secondary).padding(.leading, 26)
-            }
+                .accessibilityValue(expanded ? (language == "en" ? "Expanded" : "Expandido") : (language == "en" ? "Collapsed" : "Contraído"))
             if expanded {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(activities) { activity in
-                        HStack(alignment: .top, spacing: 8) {
-                            Image(systemName: symbol(activity.title)).frame(width: 18)
-                            Text(NotebookAssistantText.display(activity.title, language: language)).frame(maxWidth: .infinity, alignment: .leading)
-                            if running && activity.id == activities.last?.id {
-                                Text(language == "en" ? "Now" : "Ahora").foregroundStyle(.tertiary)
-                            } else { Image(systemName: "checkmark").font(.system(size: 9)).foregroundStyle(.tertiary) }
-                        }.font(.caption).foregroundStyle(.secondary).padding(.vertical, 5)
+                        NotebookWorkLogEntry(activity: activity, active: running && activity.id == activities.last?.id, language: language)
                     }
-                }.padding(.leading, 12).padding(.leading, 14)
-                    .overlay(alignment: .leading) { Rectangle().fill(.separator.opacity(0.5)).frame(width: 1).padding(.leading, 8) }
+                }.padding(.leading, 8)
+            } else if running, let activity = activities.last {
+                NotebookWorkLogEntry(activity: activity, active: true, language: language)
+                    .id(activity.id)
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("notebook.workLog")
+    }
+}
+
+/// Each entry owns its disclosure so opening the work log never unfolds reasoning.
+struct NotebookWorkLogEntry: View {
+    let activity: NotebookActivity
+    let active: Bool
+    let language: String
+    @State private var expanded = false
+    @State private var hovered = false
+    private var reasoning: Bool { activity.kind == .reasoning || activity.title.contains("Pensando") }
+    private var detail: String { activity.detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" }
+    private var preview: String {
+        String(detail.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression).prefix(240))
+    }
+    private var symbol: String? {
+        if reasoning { return nil }
+        if activity.failed == true { return "exclamationmark.circle" }
+        if activity.title.contains("Leyendo") { return "doc.text.magnifyingglass" }
+        if activity.title.contains("Conectando") { return "network" }
+        if activity.title.contains("Redactando") { return "text.alignleft" }
+        if activity.title.contains("Comprobando") || activity.title.contains("Validando") || activity.title.contains("comprobando") { return "checkmark.shield" }
+        if activity.title.contains("Guardando") || activity.title.contains("Aplicando") || activity.title.contains("Corrigiendo") { return "pencil.line" }
+        if activity.kind == .tool { return "wrench.and.screwdriver" }
+        return "doc.text"
+    }
+    @ViewBuilder private var label: some View {
+        HStack(spacing: 6) {
+            if let symbol { Image(systemName: symbol).frame(width: 18) }
+            Text(reasoning ? (language == "en" ? (active ? "Thinking…" : "Thought") : (active ? "Pensando…" : "Razonamiento")) : NotebookAssistantText.display(activity.title, language: language))
+                .lineLimit(1)
+            if reasoning && !expanded && !preview.isEmpty {
+                Text(preview).lineLimit(1).foregroundStyle(.tertiary)
+            }
+            Spacer(minLength: 4)
+            if active { Text(language == "en" ? "Now" : "Ahora").font(.caption2).foregroundStyle(.tertiary) }
+            if !detail.isEmpty { Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.system(size: 9)) }
+        }.font(.system(size: 13)).foregroundStyle(activity.failed == true ? Color.red : Color.secondary)
+            .frame(minHeight: 24).padding(.horizontal, 4).contentShape(Rectangle())
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if detail.isEmpty { label }
+            else {
+                Button { withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() } } label: { label }
+                    .buttonStyle(.plain)
+                    .background(hovered ? Color.primary.opacity(0.04) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+                    .onHover { hovered = $0 }
+                    .accessibilityLabel(reasoning ? (language == "en" ? "Thinking details" : "Detalles del razonamiento") : NotebookAssistantText.display(activity.title, language: language))
+                    .accessibilityValue(expanded ? (language == "en" ? "Expanded" : "Expandido") : (language == "en" ? "Collapsed" : "Contraído"))
+                    .accessibilityIdentifier("notebook.workLog.entry." + activity.id)
+            }
+            if expanded && !detail.isEmpty {
+                ScrollView {
+                    if reasoning { NotebookChatMarkdown(text: detail).font(.callout) }
+                    else { Text(NotebookAssistantText.display(detail, language: language)).font(.callout).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) }
+                }.frame(maxHeight: 220).fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, 8).padding(.leading, reasoning ? 4 : 28).padding(.trailing, 8)
+                    .accessibilityIdentifier("notebook.workLog.detail." + activity.id)
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }

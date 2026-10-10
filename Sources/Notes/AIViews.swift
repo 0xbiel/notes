@@ -29,7 +29,7 @@ struct AISendControls: View {
                 .font(.caption).disabled(job.syntheticFixture || job.asrQualityWarning != nil || (job.transcript.isEmpty && job.stage != .transcribing && job.stage != .recording))
             Text("Prepara propuestas aproximadamente cada 5 minutos, al terminar una frase. Adelanta el envío si hay mucho texto y espera hasta 7,5 minutos si hay poco. Incluye hasta dos fragmentos previos de contexto. Recibe la transcripción local durante la grabación o desde archivos importados. Se desactiva al cerrar, ante un error o si Whisper repite frases.").font(.caption2).foregroundStyle(.secondary)
             if let error = ai.error { Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
-        }.padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+        }.padding(12).modifier(NotebookInputSurface(radius: 12))
     }
 }
 
@@ -46,7 +46,7 @@ struct AIReviewInspector: View {
                     else if batches.contains(where: { $0.stage == .queued }) { Button("Continuar cola") { ai.continueQueue(notebookID: model.selectedNotebookID) } }
                 }
                 Text("Cada lote conserva su proveedor y permiso de edición. Las dudas siempre requieren revisión.").font(.caption).foregroundStyle(.secondary)
-                if batches.isEmpty { ContentUnavailableView("Sin propuestas", systemImage: "checkmark.bubble", description: Text("Selecciona fragmentos en Transcripción y pulsa Enviar selección.")) }
+                if batches.isEmpty { InspectorEmptyState(title: "Sin propuestas", symbol: "checkmark.bubble", detail: "Selecciona fragmentos en Transcripción y pulsa Enviar selección.") }
                 ForEach(batches.reversed()) { batch in
                     VStack(alignment: .leading, spacing: 10) {
                         HStack { Text(URL(fileURLWithPath: batch.targetNote).lastPathComponent).font(.subheadline.weight(.semibold)); Spacer(); Text(LocalizedStringKey(stage(batch.stage))).font(.caption).foregroundStyle(.secondary) }
@@ -61,7 +61,7 @@ struct AIReviewInspector: View {
                         Divider()
                     }
                 }
-            }.padding(16)
+            }.padding(12)
         }
     }
     private func stage(_ value: AIStage) -> String {
@@ -104,7 +104,7 @@ struct AIProposalCard: View {
                 if !excluded { Button("Aplicar propuesta") { model.applyAI(batch: batch, proposal: decision, text: text, quote: quote.isEmpty ? nil : quote) }.buttonStyle(.borderedProminent).disabled(candidate == nil || model.hasDraft(for: batch.targetNote)) }
             }
             if model.hasDraft(for: batch.targetNote) { Text("Guarda el borrador de esta nota antes de aplicar.").font(.caption).foregroundStyle(.orange) }
-        }.padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+        }.padding(12).modifier(NotebookInputSurface(radius: 12))
     }
     private func label(_ action: AIAction) -> String {
         switch action { case .add: "Añadir"; case .correct: "Corregir cita"; case .retract: "Retirar cita"; case .omit: "No copiar"; case .aside: "Inciso"; case .priority: "Prioridad indicada"; case .uncertain: "Duda · confirma el sentido" }

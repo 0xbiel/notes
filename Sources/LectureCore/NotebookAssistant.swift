@@ -174,32 +174,19 @@ public enum NotebookAssistantProtocol {
 }
 
 extension NotesProviderTransport {
-    public func sendNotebook(_ request: NotebookTextRequest, configuration: AIProviderConfiguration, images: [NotebookInputImage] = []) async throws -> NotebookAssistantResponse {
+    public func sendNotebook(_ request: NotebookTextRequest, configuration: AIProviderConfiguration, images: [NotebookInputImage] = [], progress: @escaping @Sendable (NotebookProviderProgress) async -> Void = { _ in }) async throws -> NotebookAssistantResponse {
         try configuration.validateSending()
         let prompt = try request.prompt() + (images.isEmpty ? "" : "\nAttached image order: " + images.map(\.name).joined(separator: ", "))
         let text: String
         switch configuration.provider {
         case .antigravity:
-            text = try await AntigravityTextTransport(store: store, configuration: configuration).generate(prompt, images: images)
+            text = try await AntigravityTextTransport(store: store, configuration: configuration).generate(prompt, images: images, progress: progress)
         case .openCode:
             guard images.isEmpty else { throw MediaError.invalid("This provider does not support image/PDF attachments. Select Codex or an image-capable Antigravity provider.") }
-            text = try await OpenRouterHarness(store: store, executablePath: configuration.executablePath, notebookEditing: true).generateNotebook(prompt)
+            text = try await OpenRouterHarness(store: store, executablePath: configuration.executablePath, notebookEditing: true, allowRetention: configuration.openRouterAllowRetention == true).generateNotebook(prompt, progress: progress)
         case .codexCLI:
             _ = try await diagnose(configuration)
-            let directory = try temporaryDirectory()
-            defer { try? FileManager.default.removeItem(at: directory) }
-            let schema = directory.appendingPathComponent("response-schema.json"), input = directory.appendingPathComponent("input.txt")
-            try JSONSerialization.data(withJSONObject: NotebookAssistantProtocol.schema, options: [.sortedKeys]).write(to: schema)
-            try Data(prompt.utf8).write(to: input)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: input.path)
-            var arguments = Self.codexArguments(configuration, schema: schema, instructions: NotebookAssistantProtocol.instructions(language: request.language), allowWebSearch: false)
-            for (index, image) in images.enumerated() {
-                let path = directory.appendingPathComponent("attachment-\(index).png")
-                try image.data.write(to: path)
-                arguments.insert(contentsOf: ["--image", path.path], at: arguments.count - 1)
-            }
-            let data = try await invoke(configuration, arguments: arguments, input: input, directory: directory)
-            text = try Self.decodeCodexText(data)
+            text = try await CodexNotebookStreamingTransport(store: store, configuration: configuration).generate(prompt, language: request.language, images: images, progress: progress)
         }
         try Task.checkCancellation()
         return try NotebookAssistantProtocol.decode(text)

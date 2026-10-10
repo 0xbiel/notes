@@ -111,7 +111,7 @@ struct AIModelSelectorPopover: View {
                 if let value { ProviderLogo(provider: value, size: 20) }
                 else { Image(systemName: "star.fill").font(.system(size: 19)) }
             }.frame(width: 32, height: 32)
-                .background(provider == value ? Color.primary.opacity(0.11) : .clear, in: RoundedRectangle(cornerRadius: 6))
+                .modifier(SelectorRowBackground(highlighted: provider == value))
                 .overlay(alignment: .leading) {
                     if provider == value { Capsule().fill(NotebookAccent.color(accent)).frame(width: 2, height: 18).offset(x: -6) }
                 }
@@ -148,7 +148,7 @@ struct AIModelSelectorPopover: View {
                     .frame(width: 20, height: 28)
             }.buttonStyle(.plain).accessibilityLabel(text("Favorito ", "Favorite ") + entry.model.name)
         }.padding(.horizontal, 8).padding(.vertical, 8)
-            .background(selected || hovered == entry.id ? Color.primary.opacity(0.09) : .clear, in: RoundedRectangle(cornerRadius: 6))
+            .modifier(SelectorRowBackground(highlighted: selected || hovered == entry.id))
             .onHover { hovered = $0 ? entry.id : nil }
     }
 }

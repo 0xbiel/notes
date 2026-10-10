@@ -21,6 +21,7 @@ public struct AIProviderConfiguration: Codable, Equatable, Sendable {
     public var accountSendingAllowed: Bool
     public var reasoningEffort: String? = nil
     public var fastMode: Bool? = nil
+    public var openRouterAllowRetention: Bool? = nil
 
     public init(provider: NotesAIProvider, executablePath: String, model: String = "default", homePath: String = "", harnessPath: String = "", accountSendingAllowed: Bool = true) {
         self.provider = provider; self.executablePath = executablePath; self.model = model

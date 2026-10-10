@@ -4,7 +4,9 @@ prototype_root="${0:A:h:h}"
 cd "$prototype_root"
 export CLANG_MODULE_CACHE_PATH="$prototype_root/.build/module-cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$prototype_root/.build/module-cache"
-swift build --build-system native --disable-sandbox --scratch-path .build-native --cache-path .build/cache --config-path .build/config --security-path .build/security --product Notes
+# Record the actual build SDK so macOS enables its current native control design.
+notes_sdk_version="$(xcrun --sdk macosx --show-sdk-version)"
+swift build --build-system native --disable-sandbox --scratch-path .build-native --cache-path .build/cache --config-path .build/config --security-path .build/security --product Notes -Xlinker -platform_version -Xlinker macos -Xlinker 14.0 -Xlinker "$notes_sdk_version"
 notes_workspace="${1:-${NOTES_WORKSPACE:-$prototype_root}}"
 python3 - "$notes_workspace" <<'PY'
 from pathlib import Path

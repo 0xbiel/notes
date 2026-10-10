@@ -6,17 +6,18 @@ struct SessionInspector: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text(LocalizedStringKey(title)).font(.headline)
+                Text(LocalizedStringKey(title)).font(.system(size: 13, weight: .semibold))
                 Spacer()
                 Button { model.showInspector = false } label: { Image(systemName: "xmark").frame(width: 28, height: 28) }
                     .buttonStyle(.plain).modifier(ControlHoverBackground()).help("Cerrar inspector").accessibilityLabel("Cerrar inspector")
-            }.padding(18)
-            Picker("Inspector", selection: $model.selectedTab) {
-                Label("Grabaciones", systemImage: "waveform").tag("library")
-                Label("Transcripción", systemImage: "text.bubble").tag("replay")
-                Label("Revisión", systemImage: "checkmark.bubble").tag("review")
-                Label("Cambios", systemImage: "clock.arrow.circlepath").tag("changes")
-            }.pickerStyle(.segmented).labelStyle(.iconOnly).labelsHidden().padding(.horizontal, 16).padding(.bottom, 16)
+            }.padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 6)
+            HStack(spacing: 4) {
+                inspectorTab("library", title: "Grabaciones", symbol: "waveform")
+                inspectorTab("replay", title: "Transcripción", symbol: "text.bubble")
+                inspectorTab("review", title: "Revisión", symbol: "checkmark.bubble")
+                inspectorTab("changes", title: "Versiones", symbol: "clock.arrow.circlepath")
+            }.padding(4).modifier(NotebookInputSurface(radius: 10))
+                .padding(.horizontal, 12).padding(.bottom, 12)
             Divider()
             Group {
                 switch model.selectedTab {
@@ -26,7 +27,7 @@ struct SessionInspector: View {
                     if let media = model.media, let job = media.selected, !job.syntheticFixture, job.notebookID == model.selectedNotebookID {
                         MediaTranscriptEditor(media: media, model: model, job: job).id(job.id)
                     } else {
-                        ContentUnavailableView("Sin transcripción", systemImage: "text.bubble", description: Text("Selecciona una grabación o importa audio para transcribirlo."))
+                        InspectorEmptyState(title: "Sin transcripción", symbol: "text.bubble", detail: "Selecciona una grabación o importa audio para transcribirlo.")
                     }
                 case "review":
                     if let ai = model.ai { AIReviewInspector(ai: ai, model: model) }
@@ -34,7 +35,19 @@ struct SessionInspector: View {
                     HistoryInspector(model: model, session: model.document)
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
-        }.background(Color(nsColor: .windowBackgroundColor))
+        }.background(.ultraThinMaterial)
+            .accessibilityElement(children: .contain)
+    }
+    private func inspectorTab(_ id: String, title: String, symbol: String) -> some View {
+        Button { model.selectedTab = id } label: {
+            Image(systemName: symbol).font(.system(size: 13))
+                .frame(maxWidth: .infinity).frame(height: 28)
+                .contentShape(Rectangle())
+                .modifier(SelectorRowBackground(highlighted: model.selectedTab == id))
+        }.buttonStyle(.plain).help(LocalizedStringKey(title))
+            .accessibilityLabel(LocalizedStringKey(title))
+            .accessibilityIdentifier("document.inspector." + id)
+            .accessibilityAddTraits(model.selectedTab == id ? .isSelected : [])
     }
     private var title: String {
         switch model.selectedTab { case "library": "Grabaciones"; case "replay": "Transcripción"; case "review": "Revisión"; default: "Versiones" }
@@ -54,8 +67,10 @@ struct HistoryInspector: View {
     private var after: String { draft ? model.draftText : manual ? editorChange?.after ?? "" : sessionChange?.after ?? "" }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Picker("Historial", selection: $model.inspectorHistoryMode) { if session != nil { Text("Sesión").tag("session") }; Text("Edición").tag("editor") }
-                .pickerStyle(.segmented).onChange(of: model.inspectorHistoryMode) { _, _ in selectedHistoryID = nil }
+            AIOptionSelector(title: "Historial", symbol: "clock.arrow.circlepath",
+                             options: (session != nil ? [AIOption(id: "session", title: "Sesión")] : []) + [AIOption(id: "editor", title: "Edición")],
+                             selection: $model.inspectorHistoryMode)
+                .onChange(of: model.inspectorHistoryMode) { _, _ in selectedHistoryID = nil }
             if draft {
                 HStack { Label("Sin guardar", systemImage: "pencil").font(.callout).foregroundStyle(.orange); Spacer(); Button { model.saveDraft() } label: { Image(systemName: "square.and.arrow.down") }.help("Guardar copia") }
             } else if manual && !(model.editor?.history.isEmpty ?? true) {
@@ -68,7 +83,7 @@ struct HistoryInspector: View {
                 }.labelsHidden()
             }
             if before == after {
-                ContentUnavailableView("Sin cambios", systemImage: "clock.arrow.circlepath", description: Text("Las versiones guardadas aparecerán aquí."))
+                InspectorEmptyState(title: "Sin cambios", symbol: "clock.arrow.circlepath", detail: "Las versiones guardadas aparecerán aquí.")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
@@ -94,6 +109,27 @@ struct HistoryInspector: View {
                         .disabled(model.busy || model.isDirty || model.targetHasDraft || (manual ? model.editor?.history.contains(where: { !$0.undone }) != true : !sessionHistory.contains(where: { !$0.undone })))
                 }
             }
-        }.padding(16).onAppear { if session == nil { model.inspectorHistoryMode = "editor" } }
+        }.padding(12).onAppear { if session == nil { model.inspectorHistoryMode = "editor" } }
+    }
+}
+
+struct InspectorEmptyState: View {
+    let title: String
+    let symbol: String
+    let detail: String
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: symbol).font(.system(size: 24, weight: .light)).foregroundStyle(.tertiary)
+            Text(LocalizedStringKey(title)).font(.system(size: 13, weight: .medium))
+            Text(LocalizedStringKey(detail)).font(.callout).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+        }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+struct InspectorTextField: ViewModifier {
+    func body(content: Content) -> some View {
+        content.textFieldStyle(.plain).padding(.horizontal, 10).padding(.vertical, 8)
+            .modifier(NotebookInputSurface(radius: 8))
     }
 }
