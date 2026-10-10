@@ -293,7 +293,7 @@ private struct CreationLocationSelector: View {
                                 if selection == option.id { Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold)) }
                             }.font(.system(size: 13)).padding(.horizontal, 8).padding(.vertical, 6)
                                 .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                                .background(selection == option.id || hovered == option.id ? Color.primary.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 5))
+                                .modifier(SelectorRowBackground(highlighted: selection == option.id || hovered == option.id))
                         }.buttonStyle(.plain).onHover { hovered = $0 ? option.id : nil }
                             .accessibilityAddTraits(selection == option.id ? .isSelected : [])
                     }

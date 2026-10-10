@@ -216,3 +216,11 @@
 "Última modificación" = "Última modificación";
 "Mover cuaderno arriba" = "Mover cuaderno arriba";
 "Mover cuaderno abajo" = "Mover cuaderno abajo";
+
+"Transparencia de la barra lateral" = "Transparencia de la barra lateral";
+
+"Opaca" = "Opaca";
+
+"Translúcida" = "Translúcida";
+
+"Desactiva Reducir transparencia en los ajustes de accesibilidad de macOS para usar este control." = "Desactiva Reducir transparencia en los ajustes de accesibilidad de macOS para usar este control.";

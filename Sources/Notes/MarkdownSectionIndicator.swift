@@ -284,7 +284,7 @@ struct MarkdownSectionPicker: View {
                                     .accessibilityIdentifier("document.goToSection." + String(section.id))
                                     .accessibilityAddTraits(state.currentID == section.id ? .isSelected : [])
                             }.padding(.leading, search.isEmpty ? CGFloat(max(0, MarkdownSectionNavigation.path(to: section.id, in: state.sections).count - 1)) * 12 : 0)
-                                .background(state.currentID == section.id || hoveredID == section.id ? Color.primary.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 5))
+                                .modifier(SelectorRowBackground(highlighted: state.currentID == section.id || hoveredID == section.id))
                                 .onHover { hoveredID = $0 ? section.id : nil }.id(section.id)
                         }
                         if visible.isEmpty {

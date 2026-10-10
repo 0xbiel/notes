@@ -6,6 +6,7 @@ struct MediaInspector: View {
     @ObservedObject var media: MediaController
     @ObservedObject var model: Workbench
     @State private var filter = ""
+    @State private var hoveredID: String?
     @State private var grouping = "Fecha"
     private var filtered: [MediaJob] { media.jobs.filter { !$0.syntheticFixture && $0.notebookID == model.selectedNotebookID && (filter.isEmpty || ([$0.sourceName, $0.targetNote] + $0.unitTags + $0.examTags).joined(separator: " ").localizedCaseInsensitiveContains(filter)) } }
     private var groups: [(String, [MediaJob])] {
@@ -20,11 +21,18 @@ struct MediaInspector: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
-                    Picker("Agrupar", selection: $grouping) { ForEach(["Fecha", "Unidad", "Examen"], id: \.self) { Text(LocalizedStringKey($0)) } }.labelsHidden()
+                    AIOptionSelector(title: "Agrupar grabaciones", symbol: "line.3.horizontal.decrease", options: [AIOption(id: "Fecha", title: "Fecha"), AIOption(id: "Unidad", title: "Unidad"), AIOption(id: "Examen", title: "Examen")], selection: $grouping)
                     Spacer()
-                    Button { model.importMedia() } label: { Image(systemName: "square.and.arrow.down") }.help("Importar audio o MP4").disabled(media.busy || media.isRecording)
+                    Button { model.importMedia() } label: { Image(systemName: "square.and.arrow.down").frame(width: 28, height: 28) }.buttonStyle(.plain).modifier(ControlHoverBackground()).accessibilityLabel("Importar audio o MP4").help("Importar audio o MP4").disabled(media.busy || media.isRecording)
                 }
-                TextField("Buscar grabaciones", text: $filter).textFieldStyle(.roundedBorder)
+                HStack(spacing: 7) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Buscar grabaciones", text: $filter).textFieldStyle(.plain)
+                    if !filter.isEmpty {
+                        Button { filter = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                            .buttonStyle(.plain).accessibilityLabel("Borrar búsqueda")
+                    }
+                }.padding(9).modifier(NotebookInputSurface(radius: 8))
                 ForEach(groups, id: \.0) { group in
                     Group {
                         if group.0 == "Sin unidad" || group.0 == "Sin examen" { Text(LocalizedStringKey(group.0)) }
@@ -33,19 +41,23 @@ struct MediaInspector: View {
                     ForEach(group.1) { job in
                         Button { media.select(job.id) } label: {
                             HStack {
-                                Image(systemName: job.isMicrophone ? "mic" : "film")
+                                Image(systemName: job.isMicrophone ? "mic" : "waveform").foregroundStyle(.secondary).frame(width: 24)
                                 VStack(alignment: .leading, spacing: 4) { Text(job.sourceName).lineLimit(1); (Text(timestamp(job.duration) + " · ") + Text(LocalizedStringKey(job.stage.label))).font(.caption).foregroundStyle(.secondary) }
                                 Spacer(); if job.id == media.selectedID { Image(systemName: "checkmark") }
-                            }.padding(8).background(job.id == media.selectedID ? Color.accentColor.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 8))
+                            }.font(.callout).padding(10).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                                .modifier(SelectorRowBackground(highlighted: job.id == media.selectedID || hoveredID == job.id))
                         }.buttonStyle(.plain).disabled(media.isRecording)
+                            .onHover { hoveredID = $0 ? job.id : nil }
+                            .accessibilityAddTraits(job.id == media.selectedID ? .isSelected : [])
                     }
                 }
                 if let job = media.selected, !job.syntheticFixture, job.notebookID == model.selectedNotebookID {
                     Divider()
                     MediaDetail(media: media, job: job).id(job.id)
-                } else if filtered.isEmpty { Text("Importa audio/MP4 o pulsa Grabar. El audio se guarda en este Mac.").font(.callout).foregroundStyle(.secondary) }
+                        .padding(12).modifier(NotebookInputSurface(radius: 12))
+                } else if filtered.isEmpty { InspectorEmptyState(title: filter.isEmpty ? "Sin grabaciones" : "Sin resultados", symbol: "waveform", detail: filter.isEmpty ? "Importa audio/MP4 o pulsa Grabar. El audio se guarda en este Mac." : "Prueba con otro nombre, unidad o examen.").frame(minHeight: 180) }
                 if let error = media.error { Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
-            }.padding(16)
+            }.padding(12)
         }
     }
 }
@@ -72,8 +84,8 @@ struct MediaDetail: View {
             }
             Picker("Entrada", selection: $mode) { ForEach(InputMode.allCases, id: \.self) { Text(LocalizedStringKey($0.rawValue)).tag($0) } }.onChange(of: mode) { _, _ in save() }.disabled(media.busy || media.isRecording)
             DatePicker("Fecha de clase", selection: $date, displayedComponents: [.date]).onChange(of: date) { _, _ in save() }.disabled(media.busy || media.isRecording)
-            TextField("Unidad (separada por comas)", text: $units).textFieldStyle(.roundedBorder).onChange(of: units) { _, _ in save() }.disabled(media.busy || media.isRecording)
-            TextField("Examen", text: $exams).textFieldStyle(.roundedBorder).onChange(of: exams) { _, _ in save() }.disabled(media.busy || media.isRecording)
+            TextField("Unidad (separada por comas)", text: $units).modifier(InspectorTextField()).onChange(of: units) { _, _ in save() }.disabled(media.busy || media.isRecording)
+            TextField("Examen", text: $exams).modifier(InspectorTextField()).onChange(of: exams) { _, _ in save() }.disabled(media.busy || media.isRecording)
             if job.audioRelativePath != nil {
                 HStack { Button { media.playPause() } label: { Image(systemName: media.playing ? "pause.fill" : "play.fill") }; Text("\(timestamp(media.position)) / \(timestamp(job.duration))").font(.caption.monospaced()) }
                 Slider(value: Binding(get: { min(media.position, max(job.duration, 1)) }, set: { media.seek($0) }), in: 0...max(job.duration, 1)).disabled(media.isRecording)
@@ -127,10 +139,10 @@ struct MediaTranscriptEditor: View {
                         }
                         if segment.boundaryReview == true { Text("Unión de audio · revisa negaciones y correcciones").font(.caption2).foregroundStyle(.orange) }
                         TextEditor(text: Binding(get: { media.selected?.transcript.first { $0.id == segment.id }?.text ?? segment.text }, set: { media.editSegment(segment.id, text: $0) }))
-                            .font(.callout).frame(minHeight: 60, maxHeight: 130).disabled(job.syntheticFixture || media.busy || media.isRecording)
+                            .font(.callout).scrollContentBackground(.hidden).padding(6).frame(minHeight: 60, maxHeight: 130).modifier(NotebookInputSurface(radius: 8)).disabled(job.syntheticFixture || media.busy || media.isRecording)
                     }
                 }
-            }.padding(16)
+            }.padding(12)
         }
     }
 }

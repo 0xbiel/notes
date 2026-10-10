@@ -298,7 +298,7 @@ struct NotebookTrashMenu: View {
                 Spacer(minLength: 4)
                 Image(systemName: "arrow.uturn.backward").font(.system(size: 12)).foregroundStyle(.secondary)
             }.padding(.horizontal, 8).padding(.vertical, 7).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                .background(hovered == id ? Color.primary.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 5))
+                .modifier(SelectorRowBackground(highlighted: hovered == id))
         }.buttonStyle(.plain).disabled(!enabled).onHover { hovered = $0 ? id : nil }
             .help(text("Restaurar ", "Restore ") + name)
             .accessibilityLabel(text("Restaurar ", "Restore ") + name)

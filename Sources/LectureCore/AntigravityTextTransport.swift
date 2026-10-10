@@ -59,7 +59,7 @@ public struct AntigravityTextTransport: Sendable {
         return result
     }
 
-    func generate(_ prompt: String, images: [NotebookInputImage] = [], checked: @escaping @Sendable () async -> Void = {}) async throws -> String {
+    func generate(_ prompt: String, images: [NotebookInputImage] = [], checked: @escaping @Sendable () async -> Void = {}, progress: @escaping @Sendable (NotebookProviderProgress) async -> Void = { _ in }) async throws -> String {
         try configuration.validateSending()
         let token = URL(fileURLWithPath: configuration.homePath).appendingPathComponent("antigravity-acp/acp_token.json")
         guard FileManager.default.fileExists(atPath: token.path) else { throw MediaError.invalid("Inicia sesión en Antigravity desde su cliente; Palladium no abre login ni copia credenciales.") }
@@ -86,14 +86,19 @@ public struct AntigravityTextTransport: Sendable {
                 } catch { connection.close(); throw error }
             }.value
             await checked()
-            return try await Task.detached {
-                defer { connection.close() }
+            let events = AsyncStream<NotebookProviderProgress>.makeStream()
+            connection.progress = { events.continuation.yield($0) }
+            await progress(.init(id: "provider-start", title: "Pensando…", kind: .reasoning))
+            let worker = Task.detached {
+                defer { connection.close(); events.continuation.finish() }
                 var content: [[String: Any]] = [["type": "text", "text": prompt]]
                 content += images.map { ["type": "image", "mimeType": "image/png", "data": $0.data.base64EncodedString()] }
                 let finish = try connection.request("session/prompt", params: ["sessionId": prepared, "prompt": content])
                 guard finish["stopReason"] as? String == "end_turn" else { throw MediaError.invalid("Antigravity no completó el lote; no se aplica nada.") }
                 return connection.output
-            }.value
+            }
+            for await event in events.stream { await progress(event) }
+            return try await worker.value
         } onCancel: { connection.cancel() }
     }
 

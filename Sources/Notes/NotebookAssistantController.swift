@@ -28,10 +28,30 @@ final class NotebookAssistantController: ObservableObject {
         guard let id = chat(notebook)?.id else { return [] }
         return runs[RunKey(notebookID: notebook.id, chatID: id)]?.activities ?? []
     }
-    private func report(_ title: String, run: RunKey) {
+    private func report(_ title: String, run: RunKey, detail: String? = nil, kind: NotebookActivityKind = .status) {
         guard var state = runs[run] else { return }
         state.progress = title
-        state.activities.append(.init(title))
+        var activity = NotebookActivity(title)
+        activity.detail = detail; activity.kind = kind
+        state.activities.append(activity)
+        runs[run] = state
+    }
+    private func report(_ update: NotebookProviderProgress, run: RunKey, round: String) {
+        guard var state = runs[run] else { return }
+        let id = round + "." + update.id
+        state.progress = update.title
+        if update.kind == .reasoning, update.detail?.isEmpty == false {
+            state.activities.removeAll { $0.id == round + ".provider-start" && $0.detail == nil }
+        }
+        if let index = state.activities.firstIndex(where: { $0.id == id }) {
+            state.activities[index].title = update.title
+            state.activities[index].detail = update.detail ?? state.activities[index].detail
+            state.activities[index].kind = update.kind; state.activities[index].failed = update.failed
+        } else {
+            var activity = NotebookActivity(update.title)
+            activity.id = id; activity.detail = update.detail; activity.kind = update.kind; activity.failed = update.failed
+            state.activities.append(activity)
+        }
         runs[run] = state
     }
     @Published var error: String? { didSet { recordedErrorNotebookID = nil; recordedErrorChatID = nil } }
@@ -322,7 +342,7 @@ final class NotebookAssistantController: ObservableObject {
             report("Leyendo el cuaderno…", run: run)
             error = nil
             var request = candidate
-            for path in request.documents.keys.sorted() { report("Leyendo · \(path)", run: run) }
+            for path in request.documents.keys.sorted() { report("Leyendo · \(path)", run: run, detail: path, kind: .tool) }
             let generate = self.generate
             workers[run] = Task { [weak self] in
                 guard let self else { return }
@@ -335,10 +355,13 @@ final class NotebookAssistantController: ObservableObject {
                     var repairRounds = 0
                     for _ in 0..<6 {
                         try Task.checkCancellation()
-                        self.report("Preparando cambios…", run: run)
+                        self.report("Conectando con el proveedor…", run: run)
+                        let round = UUID().uuidString
                         let response: NotebookAssistantResponse
                         if let generate { response = try await generate(request, configuration) }
-                        else { response = try await self.transport.sendNotebook(request, configuration: configuration, images: images) }
+                        else { response = try await self.transport.sendNotebook(request, configuration: configuration, images: images, progress: { [weak self] update in
+                            await self?.report(update, run: run, round: round)
+                        }) }
                         try Task.checkCancellation()
                         if !response.readFiles.isEmpty {
                             guard response.edits.isEmpty else { throw MediaError.invalid("El asistente pidió contexto y cambios a la vez.") }
@@ -347,7 +370,7 @@ final class NotebookAssistantController: ObservableObject {
                                 try library.validate(path, notebookID: notebook.id)
                                 guard request.catalog[path] != nil else { throw MediaError.invalid("Documento solicitado inexistente: \(path)") }
                                 if request.documents[path] == nil {
-                                    self.report("Leyendo · \(path)", run: run)
+                                    self.report("Leyendo · \(path)", run: run, detail: path, kind: .tool)
                                     if let text = texts[path] { request.documents[path] = text }
                                     else {
                                         do {
@@ -388,7 +411,7 @@ final class NotebookAssistantController: ObservableObject {
                             continue
                         }
                         try Task.checkCancellation()
-                        self.report("Validando y guardando \(changes.count) archivo(s)…", run: run)
+                        self.report("Validando y guardando \(changes.count) archivo(s)…", run: run, detail: changes.isEmpty ? "Sin cambios en los documentos." : changes.map(\.path).joined(separator: "\n"), kind: .tool)
                         let checkpoint = try apply(changes, request.documents, prompt)
                         let reply = response.reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? (changes.isEmpty ? "Sin cambios." : "Cambios guardados · \(changes.count) archivo(s).") : response.reply
                         try self.append(.init(role: "assistant", text: reply, files: changes.map(\.path), checkpointID: checkpoint?.id, activities: self.runs[run]?.activities ?? [], appGenerated: response.reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), notebook: notebook, chatID: chat.id)

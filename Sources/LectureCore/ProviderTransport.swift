@@ -52,7 +52,7 @@ public struct NotesProviderTransport: Sendable {
         return path
     }
 
-    func invoke(_ configuration: AIProviderConfiguration, arguments: [String], input: URL? = nil, directory: URL? = nil) async throws -> Data {
+    func invoke(_ configuration: AIProviderConfiguration, arguments: [String], input: URL? = nil, directory: URL? = nil, progress: (@Sendable (NotebookProviderProgress) async -> Void)? = nil) async throws -> Data {
         let command = NotesProcess(timeoutInterval: input == nil ? ProviderRequestLimits.diagnostic : ProviderRequestLimits.generation)
         command.process.executableURL = URL(fileURLWithPath: configuration.executablePath)
         command.process.arguments = arguments
@@ -65,7 +65,8 @@ public struct NotesProviderTransport: Sendable {
         command.process.standardInput = reader ?? FileHandle.nullDevice
         defer { try? reader?.close() }
         return try await withTaskCancellationHandler {
-            try await Task.detached { try command.run() }.value
+            if let progress { return try await command.runStreaming(progress: progress) }
+            return try await Task.detached { try command.run() }.value
         } onCancel: { command.cancel() }
     }
 
