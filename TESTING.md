@@ -27,11 +27,11 @@ This explicitly enables an external request using only `SyntheticAIFixture`'s ex
 
 ## Installed-provider diagnostics
 
-Run `NOTES_PROVIDER_PROBES=1 zsh scripts/test.sh` to check the existing OpenCode, Codex CLI, and Antigravity ACP installations without prompts or login. No installation occurs. All three must be present and compatible; missing or incompatible runtimes fail rather than count as passes. Ordinary tests use mock ACP processes and synthetic Codex events. See `PROVIDERS.md` for the settings contract and UI-worker handoff.
+Run `NOTES_PROVIDER_PROBES=1 zsh scripts/test.sh` to check the existing OpenCode, Codex CLI, Claude Code, and Antigravity ACP installations without prompts or login. No installation occurs. All four must be present and compatible; missing or incompatible runtimes fail rather than count as passes. Ordinary tests use mock ACP and Claude CLI processes and synthetic Codex events. See `PROVIDERS.md` for the settings contract and UI-worker handoff.
 
 ## Account generation and model catalogs
 
-`NOTES_MODEL_PROBES=1 zsh scripts/test.sh` queries installed provider catalogs. `NOTES_ACCOUNT_AI_DEMO=codexCLI,antigravity zsh scripts/test.sh` sends only invented fixture text through existing accounts and checks generation, review/apply, and undo. Set `NOTES_CODEX_DEMO_MODEL=gpt-6.1-sol` to check that model explicitly.
+`NOTES_MODEL_PROBES=1 zsh scripts/test.sh` queries installed provider catalogs. `NOTES_ACCOUNT_AI_DEMO=codexCLI,claudeCode,antigravity zsh scripts/test.sh` sends only invented fixture text through existing accounts and checks generation, review/apply, and undo. `NOTES_LIVE_CLAUDE_TEST=1` with `--filter ClaudeProviderTests/testLiveClaude` sends the connection probe and one invented notebook prompt through the installed Claude Code account, using Haiku 5.5 unless `NOTES_CLAUDE_TEST_MODEL` names another model. Set `NOTES_CODEX_DEMO_MODEL=gpt-6.1-sol` to check that model explicitly.
 
 ## Integration scope
 

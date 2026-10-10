@@ -520,8 +520,8 @@ struct NotebookModelControls: View {
     }
     private var selector: some View { AIModelSelector(preferences: preferences, manageProviders: manage) }
     @ViewBuilder private var reasoning: some View {
-        if preferences.draft.selectedProvider == .codexCLI, let selected = preferences.selectedModel, !selected.reasoning.isEmpty {
-            AIReasoningSelector(levels: selected.reasoning, modelName: selected.name, fastMode: preferences.supportsFastMode ? Binding(get: { preferences.draft.selected.fastMode == true }, set: { preferences.draft.selected.fastMode = $0 }) : nil, selection: Binding(get: { preferences.draft.selected.reasoningEffort ?? "auto" }, set: { preferences.draft.selected.reasoningEffort = $0 == "auto" ? nil : $0 }))
+        if let selected = preferences.reasoningModel {
+            AIReasoningSelector(levels: selected.reasoning, modelName: selected.name, fastMode: preferences.fastModeSelection, selection: preferences.reasoningSelection)
         }
     }
 }
@@ -659,7 +659,9 @@ private struct ChatDictationStatus: View {
     var body: some View {
         if media.isRecording || media.busy {
             Text(media.isRecording
-                 ? (language == "en" ? "Listening… Text appears here as it is transcribed. Stop to review and send." : "Escuchando… El texto aparecerá aquí. Detén el dictado para revisar y enviar.")
+                 ? (media.stopOnSilence
+                    ? (language == "en" ? "Listening… Text appears after each phrase. Dictation stops when you stop speaking." : "Escuchando… El texto aparece tras cada frase. El dictado se detiene cuando dejas de hablar.")
+                    : (language == "en" ? "Listening… Text appears after each phrase. Stop to review and send." : "Escuchando… El texto aparece tras cada frase. Detén el dictado para revisar y enviar."))
                  : (language == "en" ? "Finishing dictation…" : "Terminando dictado…"))
                 .font(.caption).foregroundStyle(.secondary)
         }

@@ -26,6 +26,7 @@ final class NotesProcess: @unchecked Sendable {
     private var cancelled = false
     private var timedOut = false
     let timeoutInterval: TimeInterval
+    var outputLimit = 2_000_000
     init(timeoutInterval: TimeInterval = ProviderRequestLimits.generation) { self.timeoutInterval = timeoutInterval }
     private func expire() { lock.lock(); timedOut = true; cancelled = true; process.stopProviderHelper(); lock.unlock() }
     func cancel() { lock.lock(); cancelled = true; process.stopProviderHelper(); lock.unlock() }
@@ -52,7 +53,7 @@ final class NotesProcess: @unchecked Sendable {
             if count == 0 { break }
             guard count > 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
             let chunk = Data(storage.prefix(count))
-            guard data.count + chunk.count <= 2_000_000 else { cancel(); throw MediaError.invalid("Salida del proveedor demasiado grande.") }
+            guard data.count + chunk.count <= outputLimit else { cancel(); throw MediaError.invalid("Salida del proveedor demasiado grande.") }
             data.append(chunk)
             if let onLine {
                 pending.append(chunk)
@@ -81,6 +82,12 @@ public struct OpenRouterHarness: Sendable {
     public let notebookEditing: Bool
     public let allowRetention: Bool
     public static let supportedVersions = ["1.3.13", "1.18.35"]
+    /// The provider instance whose environment variables reach the CLI.
+    var instance: AIProviderConfiguration? = nil
+    init(store: LocalMediaStore, configuration: AIProviderConfiguration, notebookEditing: Bool = false) {
+        self.init(store: store, executablePath: configuration.executablePath, notebookEditing: notebookEditing, allowRetention: notebookEditing && configuration.openRouterAllowRetention == true)
+        instance = configuration
+    }
     public init(store: LocalMediaStore, executablePath: String = "/opt/homebrew/bin/opencode", notebookEditing: Bool = false, allowRetention: Bool = false) { self.store = store; self.executablePath = executablePath; self.notebookEditing = notebookEditing; self.allowRetention = allowRetention }
     public static var policy: [String: Any] { ["data_collection": "deny", "zdr": true, "allow_fallbacks": false, "max_price": ["prompt": 0, "completion": 0]] }
     public static var syntheticDemoPolicy: [String: Any] { ["data_collection": "deny", "zdr": false, "allow_fallbacks": false, "max_price": ["prompt": 0, "completion": 0]] }
@@ -144,6 +151,8 @@ public struct OpenRouterHarness: Sendable {
         for folder in [directory, config, cache] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
         try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: config.path)
         var env = ProcessInfo.processInfo.environment
+        // Instance variables go first so the limits below prevail.
+        if let instance { try ProviderEnvironment.apply(instance, to: &env) }
         env.removeValue(forKey: "OPENCODE_CONFIG")
         env["XDG_CONFIG_HOME"] = config.deletingLastPathComponent().path; env["XDG_CACHE_HOME"] = cache.path; env["OPENCODE_CONFIG_DIR"] = config.path
         for name in ["OPENCODE_DISABLE_PROJECT_CONFIG", "OPENCODE_DISABLE_CLAUDE_CODE", "OPENCODE_DISABLE_AUTOUPDATE", "OPENCODE_DISABLE_MODELS_FETCH", "OPENCODE_DISABLE_AUTOCOMPACT", "OPENCODE_DISABLE_LSP_DOWNLOAD"] { env[name] = "true" }

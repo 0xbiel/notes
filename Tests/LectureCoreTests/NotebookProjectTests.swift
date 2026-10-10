@@ -119,7 +119,7 @@ final class NotebookProjectTests: XCTestCase {
         XCTAssertEqual(changes[0].after, "One\n\nProvider content with citation")
         XCTAssertThrowsError(try NotebookAssistantProtocol.changes(response, documents: ["One.md": "One One"]))
         XCTAssertFalse((NotebookAssistantProtocol.schema["properties"] as? [String: Any])?.keys.contains("articles") == true)
-        let arguments = NotesProviderTransport.codexArguments(AIProviderConfiguration(provider: .codexCLI, executablePath: "/usr/bin/false"), schema: URL(fileURLWithPath: "/tmp/response.json"), instructions: NotebookAssistantProtocol.instructions, allowWebSearch: true)
+        let arguments = try NotesProviderTransport.codexArguments(AIProviderConfiguration(provider: .codexCLI, executablePath: "/usr/bin/false"), schema: URL(fileURLWithPath: "/tmp/response.json"), instructions: NotebookAssistantProtocol.instructions, allowWebSearch: true)
         XCTAssertTrue(arguments.contains("web_search=\"live\""))
         XCTAssertTrue(arguments.contains("read-only")); XCTAssertTrue(arguments.contains("shell_tool"))
         let legacy = Data("{\"purpose\":\"Saved\",\"instructions\":\"Keep\",\"formatting\":\"\",\"sourceRules\":\"Cite\",\"resolveArticles\":true}".utf8)

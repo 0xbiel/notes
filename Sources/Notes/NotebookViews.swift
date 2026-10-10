@@ -171,9 +171,9 @@ extension Workbench {
     }
     func openWikilink(_ url: URL) -> OpenURLAction.Result {
         guard let target = NotebookMarkdown.target(url) else {
-            // The prototype never opens an external browser. Links remain
-            // selectable text for manual use outside the app.
-            errorText = "Enlace externo: este prototipo no abre el navegador."
+            // Web and mail links open in the user's default app; nothing else leaves the notebook.
+            if let scheme = url.scheme?.lowercased(), ["https", "http", "mailto"].contains(scheme) { NSWorkspace.shared.open(url) }
+            else { errorText = UserDefaults.standard.string(forKey: "notes.language") == "en" ? "This kind of link cannot be opened: " + url.absoluteString : "No se puede abrir este tipo de enlace: " + url.absoluteString }
             return .handled
         }
         let name = target.note

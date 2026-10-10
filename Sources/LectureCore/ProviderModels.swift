@@ -80,11 +80,10 @@ extension NotesProviderTransport {
             return [.init(id: OpenRouterHarness.model, name: "OpenRouter Free", detail: "Router gratuito configurado en Palladium", isDefault: true)]
         }
         if configuration.provider == .antigravity { return try await AntigravityTextTransport(store: store, configuration: configuration).models() }
+        if configuration.provider == .claudeCode { return try await ClaudeTextTransport(store: store, configuration: configuration).models() }
+        let environment = try Self.codexEnvironment(configuration)
         let directory = try temporaryDirectory()
-        var environment = ProcessInfo.processInfo.environment
-        for key in Array(environment.keys) where key.hasPrefix("CODEX_") || key.hasPrefix("T3CODE_") { environment.removeValue(forKey: key) }
-        if !configuration.homePath.isEmpty { environment["CODEX_HOME"] = configuration.homePath }
-        let connection = ProviderRPCConnection(configuration: configuration, directory: directory, environment: environment, arguments: ["app-server", "--config", "mcp_servers={}", "--disable", "hooks"])
+        let connection = ProviderRPCConnection(configuration: configuration, directory: directory, environment: environment, arguments: ["app-server"] + (try ProviderLaunchArguments.resolve(configuration)) + ["--config", "mcp_servers={}", "--disable", "hooks"])
         return try await withTaskCancellationHandler {
             try await Task.detached {
                 defer { connection.close() }

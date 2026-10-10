@@ -305,6 +305,36 @@ extension Workbench {
         librarySelections.contains(item) ? librarySelections : [item]
     }
 
+    /// Command-click: adds or removes one document or folder. Notebooks never join a group.
+    func toggleLibrarySelection(_ item: NotebookSidebarSelection) {
+        var next = librarySelections.filter { if case .notebook = $0 { false } else { true } }
+        if next.contains(item) { next.remove(item) } else { next.insert(item) }
+        selectLibraryGroup(next)
+    }
+
+    /// A group chosen with the pointer. One item opens; several only select.
+    func selectLibraryGroup(_ items: Set<NotebookSidebarSelection>) {
+        guard !items.isEmpty, items != librarySelections else { return }
+        if items.count == 1 { setLibrarySelections(items) } else { librarySelections = items }
+    }
+
+    /// False when a drop would leave everything in place or put a folder inside itself.
+    func libraryMoveIsUseful(_ items: Set<NotebookSidebarSelection>, into directory: String) -> Bool {
+        var useful = false
+        for item in items {
+            let path: String
+            switch item {
+            case .notebook: continue
+            case .note(let value): path = value
+            case .folder(let value):
+                if directory == value || directory.hasPrefix(value + "/") { return false }
+                path = value
+            }
+            if path.components(separatedBy: "/").dropLast().joined(separator: "/") != directory { useful = true }
+        }
+        return useful
+    }
+
     func setLibrarySelections(_ values: Set<NotebookSidebarSelection>) {
         // Outline rebuilds can emit stale/empty selections while moved rows are inserted.
         guard !values.isEmpty, values.allSatisfy({ item in
@@ -314,9 +344,9 @@ extension Workbench {
             case .notebook(let id): return activeNotebooks.contains { $0.id == id }
             }
         }) else { return }
-        let added = values.subtracting(librarySelections)
         librarySelections = values
-        guard values.count == 1 || added.count == 1, let value = added.first ?? values.first else { return }
+        // A group only selects; the open document stays as it is.
+        guard values.count == 1, let value = values.first else { return }
         switch value {
         case .notebook(let id): openNotebook(id)
         case .note(let path): if libraryFiles.contains(path) { openLibraryFile(path) }

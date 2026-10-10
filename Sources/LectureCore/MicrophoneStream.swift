@@ -32,8 +32,18 @@ public final class MicrophoneStream: @unchecked Sendable {
     private var converter: PCMStreamConverter?
     private let changed: @Sendable (LiveCaptureManifest) -> Void
     private let failure: @Sendable (String) -> Void
-    public init(recorder: RollingPCMRecorder, changed: @escaping @Sendable (LiveCaptureManifest) -> Void, failure: @escaping @Sendable (String) -> Void) {
-        self.recorder = recorder; self.changed = changed; self.failure = failure
+    private let silence: SilenceLimit?
+    private let quiet: @Sendable () -> Void
+    private var reportedQuiet = false
+    /// Seconds without speech after which `quiet` is called once: the speaker finished, or never began.
+    public struct SilenceLimit: Sendable {
+        public var afterSpeech: Double
+        public var withoutSpeech: Double
+        public init(afterSpeech: Double = 2.5, withoutSpeech: Double = 10) { self.afterSpeech = afterSpeech; self.withoutSpeech = withoutSpeech }
+        public func reached(heard: Bool, silent: Double) -> Bool { silent >= (heard ? afterSpeech : withoutSpeech) }
+    }
+    public init(recorder: RollingPCMRecorder, silence: SilenceLimit? = nil, changed: @escaping @Sendable (LiveCaptureManifest) -> Void, failure: @escaping @Sendable (String) -> Void, quiet: @escaping @Sendable () -> Void = { }) {
+        self.recorder = recorder; self.silence = silence; self.changed = changed; self.failure = failure; self.quiet = quiet
     }
     public func start() throws {
         let input = engine.inputNode
@@ -62,6 +72,7 @@ public final class MicrophoneStream: @unchecked Sendable {
         try converter.consume(buffer)
         let snapshot = recorder.snapshot
         if snapshot.chunks.count != before { changed(snapshot) }
+        if let silence, !reportedQuiet, let voice = recorder.voice, silence.reached(heard: voice.heard, silent: voice.silent) { reportedQuiet = true; quiet() }
     }
     private func fail(_ message: String) {
         lock.lock(); let first = !failed; failed = true; lock.unlock()

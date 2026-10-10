@@ -51,7 +51,7 @@ struct AIReviewInspector: View {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack { Text(URL(fileURLWithPath: batch.targetNote).lastPathComponent).font(.subheadline.weight(.semibold)); Spacer(); Text(LocalizedStringKey(stage(batch.stage))).font(.caption).foregroundStyle(.secondary) }
                         Text("\(batch.providerConfiguration?.provider.title ?? NotesAIProvider.openCode.title) · \(batch.model)").font(.caption).foregroundStyle(.secondary)
-                        if batch.syntheticDemoProvenance != nil { Text(batch.providerConfiguration?.provider == .codexCLI || batch.providerConfiguration?.provider == .antigravity ? "Datos inventados · condiciones de la cuenta externa" : "Datos inventados · retención permitida · entrenamiento prohibido").font(.caption).foregroundStyle(.orange) }
+                        if batch.syntheticDemoProvenance != nil { Text((batch.providerConfiguration.map { $0.provider != .openCode } ?? false) ? "Datos inventados · condiciones de la cuenta externa" : "Datos inventados · retención permitida · entrenamiento prohibido").font(.caption).foregroundStyle(.orange) }
                         Text("\(timestamp(batch.segments.first?.start ?? 0)) · \(batch.createdAt.formatted(date: .abbreviated, time: .shortened))").font(.caption2).foregroundStyle(.secondary)
                         if let error = batch.error { Text(error).font(.caption).foregroundStyle(.orange) }
                         if [.failed, .interrupted, .cancelled].contains(batch.stage) { Button("Reintentar este lote") { ai.retry(batch.id) }.disabled(ai.running || batch.invalidatedByNotebook == true) }

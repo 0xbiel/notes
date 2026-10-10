@@ -1,4 +1,5 @@
 Provider artwork adapted from pingdotgg/t3code, commit d6f47ff9725f0902b526f854519cb7e92dcee52f, apps/web/src/components/Icons.tsx.
+claude.png: same file at commit 8c777fbfade340f2092c011483c7fb0cde44c675.
 Brand marks belong to their respective owners.
 
 MIT License

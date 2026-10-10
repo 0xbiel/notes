@@ -11,7 +11,7 @@ struct AIModelSelector: View {
     var body: some View {
         Button { isPresented.toggle() } label: {
             HStack(spacing: 7) {
-                ProviderLogo(provider: preferences.draft.selectedProvider, size: 17)
+                ProviderLogo(provider: preferences.draft.selectedProvider, size: 17, accent: preferences.draft.selected.accentColor)
                 Text(preferences.selectedModel?.name ?? preferences.draft.selected.model).lineLimit(1)
                 Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
             }.font(.callout).padding(.horizontal, 10).frame(height: 34)
@@ -38,11 +38,15 @@ struct AIModelSelectorPopover: View {
     @AppStorage("notes.accent") private var accent = ""
 
     private func text(_ es: String, _ en: String) -> String { language == "en" ? en : es }
+    /// Picker order; every provider added to the app appears here.
+    private static let providers: [NotesAIProvider] = [.codexCLI, .claudeCode, .openCode, .antigravity]
     private func providerName(_ value: NotesAIProvider) -> String {
-        switch value { case .codexCLI: "Codex"; case .openCode: "OpenCode · OpenRouter"; case .antigravity: "Antigravity" }
+        let configuration = preferences.draft.configuration(for: value)
+        return value == .openCode && configuration.name == value.shortName ? "OpenCode · OpenRouter" : configuration.name
     }
+    private func accent(_ value: NotesAIProvider) -> String? { preferences.draft.configuration(for: value).accentColor }
     private var rows: [SelectorEntry] {
-        (provider.map { [$0] } ?? [.codexCLI, .openCode, .antigravity]).flatMap { source in
+        (provider.map { [$0] } ?? Self.providers).flatMap { source in
             guard preferences.draft.configuration(for: source).accountSendingAllowed else { return [SelectorEntry]() }
             let options = preferences.draft.modelPreferences?[source.rawValue] ?? .init()
             return preferences.models(for: source).filter { model in
@@ -55,12 +59,14 @@ struct AIModelSelectorPopover: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .top, spacing: 0) {
-                VStack(spacing: 6) {
-                    railButton(nil)
-                    Divider().padding(.horizontal, 5)
-                    ForEach([NotesAIProvider.codexCLI, .openCode, .antigravity].filter { preferences.draft.configuration(for: $0).accountSendingAllowed }) { railButton($0) }
-                    Spacer()
-                }.padding(6).frame(width: 44)
+                // The rail scrolls once there are more providers than fit.
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 6) {
+                        railButton(nil)
+                        Divider().padding(.horizontal, 5)
+                        ForEach(Self.providers.filter { preferences.draft.configuration(for: $0).accountSendingAllowed }) { railButton($0) }
+                    }.padding(6)
+                }.frame(width: 44, height: 292)
                 Divider()
                 VStack(spacing: 0) {
                     HStack(spacing: 6) {
@@ -86,7 +92,7 @@ struct AIModelSelectorPopover: View {
             }
             Divider()
             HStack(spacing: 7) {
-                ProviderLogo(provider: preferences.draft.selectedProvider, size: 13)
+                ProviderLogo(provider: preferences.draft.selectedProvider, size: 13, accent: preferences.draft.selected.accentColor)
                 Text(preferences.draft.selectedProvider == .openCode ? "OpenRouter" : text("Cuenta del proveedor", "Provider account"))
                     .lineLimit(1).foregroundStyle(.secondary)
                 Spacer()
@@ -108,7 +114,7 @@ struct AIModelSelectorPopover: View {
     private func railButton(_ value: NotesAIProvider?) -> some View {
         Button { provider = value; query = "" } label: {
             Group {
-                if let value { ProviderLogo(provider: value, size: 20) }
+                if let value { ProviderLogo(provider: value, size: 20, accent: accent(value)) }
                 else { Image(systemName: "star.fill").font(.system(size: 19)) }
             }.frame(width: 32, height: 32)
                 .modifier(SelectorRowBackground(highlighted: provider == value))
@@ -134,7 +140,7 @@ struct AIModelSelectorPopover: View {
                     VStack(alignment: .leading, spacing: 5) {
                         Text(entry.model.name).font(.system(size: 12, weight: .medium)).foregroundStyle(.primary)
                         HStack(spacing: 5) {
-                            ProviderLogo(provider: entry.provider, size: 12)
+                            ProviderLogo(provider: entry.provider, size: 12, accent: accent(entry.provider))
                             Text(providerName(entry.provider)).font(.system(size: 11)).foregroundStyle(.secondary)
                         }
                     }

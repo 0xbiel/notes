@@ -233,6 +233,40 @@ final class NotebookAssistantTests: XCTestCase {
         XCTAssertThrowsError(try NotebookAssistantProtocol.changes(.init(reply: "", edits: [.init(path: "Guía 1.txt", find: "guide", replacement: "changed")]), documents: ["Guía 1.txt": "guide"]))
     }
 
+    @MainActor func testLongSourceIsReadInPartsByPagesOrSearch() throws {
+        let (model, _, _) = try fixture()
+        func page(_ text: String) throws -> PDFPage {
+            let view = NSTextView(frame: NSRect(x: 0, y: 0, width: 500, height: 700)); view.string = text; view.font = .systemFont(ofSize: 9)
+            return try XCTUnwrap(PDFDocument(data: view.dataWithPDF(inside: view.bounds))?.page(at: 0)?.copy() as? PDFPage)
+        }
+        let filler = String(repeating: "Texto de relleno sobre otra materia. ", count: 110)
+        let document = PDFDocument()
+        for index in 0..<60 { document.insert(try page(index == 44 ? "Artículo 16. Contrato fijo-discontinuo. " + filler : "Sección \(index + 1). " + filler), at: index) }
+        try model.workspace!.createAsset("Ley.pdf", data: try XCTUnwrap(document.dataRepresentation()))
+        let library = NotebookFileLibrary(projects: model.projects!), id = model.currentNotebook.id
+        let whole = try NotebookLibraryContext.read("Ley.pdf", library: library, notebookID: id)
+        XCTAssertTrue(whole.text.contains("60 pages")); XCTAssertTrue(whole.text.contains("Ley.pdf#find="))
+        XCTAssertTrue(whole.text.contains("[Page 1]")); XCTAssertFalse(whole.text.contains("fijo-discontinuo"))
+        XCTAssertLessThan(whole.text.utf8.count, 90_000)
+        let found = try NotebookLibraryContext.read("Ley.pdf", selection: .find("articulo  16"), library: library, notebookID: id)
+        XCTAssertTrue(found.text.contains("[Page 45]")); XCTAssertTrue(found.text.contains("fijo-discontinuo")); XCTAssertTrue(found.text.contains("[Page 46]"))
+        XCTAssertFalse(found.text.contains("[Page 44]"))
+        let range = try NotebookLibraryContext.read("Ley.pdf", selection: .pages(44...45), library: library, notebookID: id)
+        XCTAssertTrue(range.text.contains("[Page 44]")); XCTAssertTrue(range.text.contains("fijo-discontinuo")); XCTAssertFalse(range.text.contains("[Page 46]"))
+        XCTAssertTrue(try NotebookLibraryContext.read("Ley.pdf", selection: .find("inexistente"), library: library, notebookID: id).text.contains("does not appear"))
+        XCTAssertThrowsError(try NotebookLibraryContext.read("Ley.pdf", selection: .pages(90...95), library: library, notebookID: id))
+        XCTAssertEqual(NotebookLibraryContext.parse("a/Ley.pdf#pages=12-18").selection, .pages(12...18))
+        XCTAssertEqual(NotebookLibraryContext.parse("a/Ley.pdf#pages=7").selection, .pages(7...7))
+        XCTAssertEqual(NotebookLibraryContext.parse("a/Ley.pdf#find=Artículo 16").selection, .find("Artículo 16"))
+        XCTAssertEqual(NotebookLibraryContext.parse("a/Ley.pdf#find=Artículo 16").path, "a/Ley.pdf")
+        XCTAssertNil(NotebookLibraryContext.parse("a/Tema #1.md").selection)
+        if let real = ProcessInfo.processInfo.environment["NOTES_LONG_PDF"] {
+            try model.workspace!.createAsset("Real.pdf", data: Data(contentsOf: URL(fileURLWithPath: real)))
+            let article = try NotebookLibraryContext.read("Real.pdf", selection: .find(ProcessInfo.processInfo.environment["NOTES_LONG_PDF_FIND"] ?? "Artículo 16"), library: library, notebookID: id)
+            print("LONG_PDF", article.text.utf8.count, "bytes;", article.text.prefix(260).replacingOccurrences(of: "\n", with: " "))
+            if let at = article.text.range(of: "Artículo 16. Contrato") { print("LONG_PDF_TEXT", article.text[at.lowerBound...].prefix(300).replacingOccurrences(of: "\n", with: " ")) }
+        }
+    }
     @MainActor func testImportedPDFBeyondAttachmentPageLimitIsReadable() throws {
         let (model, _, _) = try fixture()
         let view = NSTextView(frame: NSRect(x: 0, y: 0, width: 500, height: 500))

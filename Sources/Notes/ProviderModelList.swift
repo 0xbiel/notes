@@ -12,7 +12,6 @@ struct ProviderModelList: View {
     private var rows: [AIProviderModel] {
         preferences.models.filter { query.isEmpty || ($0.name + " " + $0.id).localizedCaseInsensitiveContains(query) }
     }
-    private var chosen: AIProviderModel? { preferences.selectedModel }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -28,8 +27,8 @@ struct ProviderModelList: View {
                         .font(.callout)
                 }.buttonStyle(.plain).accessibilityIdentifier("provider.model.default")
             }
-            if let chosen, preferences.draft.selectedProvider == .codexCLI, !chosen.reasoning.isEmpty {
-                AIReasoningSelector(levels: chosen.reasoning, modelName: chosen.name, fastMode: preferences.supportsFastMode ? Binding(get: { preferences.draft.selected.fastMode == true }, set: { preferences.draft.selected.fastMode = $0 }) : nil, selection: Binding(get: { preferences.draft.selected.reasoningEffort ?? "auto" }, set: { preferences.draft.selected.reasoningEffort = $0 == "auto" ? nil : $0 }))
+            if let chosen = preferences.reasoningModel {
+                AIReasoningSelector(levels: chosen.reasoning, modelName: chosen.name, fastMode: preferences.fastModeSelection, selection: preferences.reasoningSelection)
                     .accessibilityIdentifier("provider.reasoning")
             }
             if !preferences.models.isEmpty {
@@ -54,7 +53,7 @@ struct ProviderModelList: View {
             } else if !preferences.checking {
                 Text(text("Actualiza para cargar los modelos disponibles.", "Refresh to load available models.")).font(.callout).foregroundStyle(.secondary)
             }
-            if preferences.draft.selectedProvider == .codexCLI {
+            if preferences.draft.selectedProvider.supportsCustomModels {
                 DisclosureGroup(text("Añadir modelo personalizado", "Add custom model"), isExpanded: $showCustom) {
                     HStack {
                         TextField(text("Identificador del modelo", "Model identifier"), text: $customID).textFieldStyle(.plain)

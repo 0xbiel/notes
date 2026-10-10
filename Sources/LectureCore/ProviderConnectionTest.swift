@@ -30,15 +30,18 @@ public enum ProviderConnectionTest {
             try Data(prompt.utf8).write(to: input)
             let instructions = directory.appendingPathComponent("instructions.txt")
             try Data("Return the requested JSON. Do not use tools.".utf8).write(to: instructions)
-            var arguments = NotesProviderTransport.codexArguments(testConfiguration, schema: schema, instructions: "Return the requested JSON. Do not use tools.")
+            var arguments = try NotesProviderTransport.codexArguments(testConfiguration, schema: schema, instructions: "Return the requested JSON. Do not use tools.")
             let encoder = JSONEncoder(); encoder.outputFormatting = [.withoutEscapingSlashes]
             arguments.insert(contentsOf: ["--config", "model_instructions_file=" + String(decoding: try encoder.encode(instructions.path), as: UTF8.self)], at: arguments.count - 1)
             let events = try await transport.invoke(testConfiguration, arguments: arguments, input: input, directory: directory)
             reply = try NotesProviderTransport.decodeCodexText(events)
+        case .claudeCode:
+            let schema: [String: Any] = ["type": "object", "additionalProperties": false, "required": ["ok"], "properties": ["ok": ["type": "boolean", "enum": [true]]]]
+            reply = try await ClaudeTextTransport(store: store, configuration: testConfiguration).generate(prompt, schema: schema, instructions: "Return the requested JSON. Do not use tools.")
         case .antigravity:
             reply = try await AntigravityTextTransport(store: store, configuration: testConfiguration).generate(prompt)
         case .openCode:
-            reply = try await OpenRouterHarness(store: store, executablePath: configuration.executablePath).connectionProbe()
+            reply = try await OpenRouterHarness(store: store, configuration: configuration).connectionProbe()
         }
         try validateReply(reply)
         try Task.checkCancellation()

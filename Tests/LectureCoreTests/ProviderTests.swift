@@ -260,9 +260,9 @@ final class ProviderTests: XCTestCase {
         XCTAssertNil(try JSONDecoder().decode(AIBatch.self, from: JSONSerialization.data(withJSONObject: object)).providerConfiguration)
     }
 
-    func testCodexArgumentsDisableToolsHooksAndAmbientInstructions() {
+    func testCodexArgumentsDisableToolsHooksAndAmbientInstructions() throws {
         let configuration = AIProviderConfiguration(provider: .codexCLI, executablePath: "/test/codex")
-        let arguments = NotesProviderTransport.codexArguments(configuration, schema: URL(fileURLWithPath: "/tmp/schema.json"))
+        let arguments = try NotesProviderTransport.codexArguments(configuration, schema: URL(fileURLWithPath: "/tmp/schema.json"))
         for required in ["--ephemeral", "--ignore-user-config", "--ignore-rules", "read-only", "shell_tool", "hooks", "multi_agent", "apps", "browser_use", "computer_use", "mcp_servers={}", "project_doc_max_bytes=0", "web_search=\"disabled\""] {
             XCTAssertTrue(arguments.contains(required), required)
         }
@@ -301,10 +301,10 @@ final class ProviderTests: XCTestCase {
     func testCodexFastModePersistsAndLeavesLegacySettingsCompatible() throws {
         var configuration = AIProviderConfiguration(provider: .codexCLI, executablePath: "/test/codex", model: "gpt-6-luna")
         let schema = URL(fileURLWithPath: "/tmp/schema.json")
-        XCTAssertFalse(NotesProviderTransport.codexArguments(configuration, schema: schema).contains("service_tier=\"fast\""))
+        XCTAssertFalse(try NotesProviderTransport.codexArguments(configuration, schema: schema).contains("service_tier=\"fast\""))
         configuration.fastMode = true
         let restored = try JSONDecoder().decode(AIProviderConfiguration.self, from: JSONEncoder().encode(configuration))
-        XCTAssertTrue(NotesProviderTransport.codexArguments(restored, schema: schema).contains("service_tier=\"fast\""))
+        XCTAssertTrue(try NotesProviderTransport.codexArguments(restored, schema: schema).contains("service_tier=\"fast\""))
         var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(configuration)) as? [String: Any])
         legacy.removeValue(forKey: "fastMode")
         XCTAssertNil(try JSONDecoder().decode(AIProviderConfiguration.self, from: JSONSerialization.data(withJSONObject: legacy)).fastMode)
@@ -344,7 +344,7 @@ final class ProviderTests: XCTestCase {
             XCTAssertNoThrow(try configuration.validate())
             let restored = try JSONDecoder().decode(AIProviderConfiguration.self, from: JSONEncoder().encode(configuration))
             XCTAssertEqual(restored, configuration)
-            let arguments = NotesProviderTransport.codexArguments(restored, schema: URL(fileURLWithPath: "/tmp/schema.json"))
+            let arguments = try NotesProviderTransport.codexArguments(restored, schema: URL(fileURLWithPath: "/tmp/schema.json"))
             XCTAssertTrue(arguments.contains("gpt-6.1-sol"))
             XCTAssertTrue(arguments.contains("model_reasoning_effort=\"\(effort)\""))
         }

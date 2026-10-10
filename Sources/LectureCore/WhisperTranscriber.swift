@@ -62,20 +62,12 @@ public struct WhisperTranscriber: Sendable {
             let log = try store.destination(for: job, name: "asr-\(index)-\(UUID().uuidString).log")
             try Data().write(to: log.url, options: .withoutOverwriting)
             let logHandle = try FileHandle(forWritingTo: log.url)
-            let command = LocalProcess()
-            command.process.executableURL = binary
-            command.process.arguments = configuration.arguments(model: model(for: configuration), audio: wav.url, output: base.url, language: job.transcriptionLanguage ?? "es")
-            command.process.currentDirectoryURL = store.root
-            command.process.standardOutput = logHandle; command.process.standardError = logHandle
             do {
                 var segments: [MediaTranscriptSegment]
                 if job.transcriptionProvider == .openAI {
                     segments = try await APIAudioTranscriber().transcribe(audio: wav.url, offset: offset, duration: duration, chunk: index, language: job.transcriptionLanguage ?? "es")
                 } else {
-                    try await withTaskCancellationHandler {
-                        try await Task.detached(priority: .utility) { try command.run() }.value
-                        try Task.checkCancellation()
-                    } onCancel: { command.cancel() }
+                    try await run(configuration, audio: wav.url, output: base.url, language: job.transcriptionLanguage ?? "es", log: logHandle)
                     segments = try Self.decode(Data(contentsOf: store.url(resultPath)), offset: offset, chunk: index)
                 }
                 if let reference = job.teacherReference {
@@ -115,15 +107,39 @@ public struct WhisperTranscriber: Sendable {
         let log = try store.destination(for: job, name: "live-asr-\(chunk.index)-\(UUID().uuidString).log")
         try Data().write(to: log.url, options: .withoutOverwriting)
         let handle = try FileHandle(forWritingTo: log.url); defer { try? handle.close() }
-        let command = LocalProcess(); command.process.executableURL = binary
-        command.process.arguments = configuration.arguments(model: model(for: configuration), audio: audio, output: base.url, language: job.transcriptionLanguage ?? "es")
-        command.process.currentDirectoryURL = store.root; command.process.standardOutput = handle; command.process.standardError = handle
-        try await withTaskCancellationHandler {
-            try await Task.detached(priority: .utility) { try command.run() }.value; try Task.checkCancellation()
-        } onCancel: { command.cancel() }
+        try await run(configuration, audio: audio, output: base.url, language: job.transcriptionLanguage ?? "es", log: handle)
         guard try store.fingerprint(chunk.path) == chunk.digest else { throw MediaError.invalid("El audio cambió durante la transcripción.") }
-        return try Self.decode(Data(contentsOf: store.url(base.relative + ".json")), offset: chunk.start, chunk: chunk.index)
-            .filter { $0.start <= chunk.end + 0.25 && $0.end <= chunk.end + 0.5 }
+        let segments = try Self.decode(Data(contentsOf: store.url(base.relative + ".json")), offset: chunk.start, chunk: chunk.index)
+        guard job.liveVoiceSegments == true else { return segments.filter { $0.start <= chunk.end + 0.25 && $0.end <= chunk.end + 0.5 } }
+        // A pause-cut clip holds one whole utterance: keep its text and only bound the times.
+        return segments.filter { $0.start < chunk.end && !Self.isAnnotation($0.text) }.map { var segment = $0; segment.end = min(segment.end, chunk.end); return segment }
+    }
+
+    /// Whisper's labels for sound that is not speech, such as "[BLANK_AUDIO]" or "(música)".
+    static func isAnnotation(_ text: String) -> Bool {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = value.first, let last = value.last else { return true }
+        return (first == "[" && last == "]") || (first == "(" && last == ")") || (first == "*" && last == "*") || !value.contains(where: \.isLetter) && !value.contains(where: \.isNumber)
+    }
+
+    /// Runs whisper-cli once. A failed GPU run repeats on the CPU, so a Metal problem slows a transcription instead of losing it.
+    private func run(_ configuration: WhisperConfiguration, audio: URL, output: URL, language: String, log: FileHandle) async throws {
+        func attempt(_ configuration: WhisperConfiguration) async throws {
+            let command = LocalProcess()
+            command.process.executableURL = binary
+            command.process.arguments = configuration.arguments(model: model(for: configuration), audio: audio, output: output, language: language)
+            command.process.currentDirectoryURL = store.root
+            command.process.standardOutput = log; command.process.standardError = log
+            try await withTaskCancellationHandler {
+                try await Task.detached(priority: configuration.useGPU == true ? .userInitiated : .utility) { try command.run() }.value
+                try Task.checkCancellation()
+            } onCancel: { command.cancel() }
+        }
+        do { try await attempt(configuration) } catch {
+            guard configuration.useGPU == true, !(error is CancellationError), !Task.isCancelled else { throw error }
+            var fallback = configuration; fallback.useGPU = false
+            try await attempt(fallback)
+        }
     }
 
     public static func decode(_ data: Data, offset: Double, chunk: Int) throws -> [MediaTranscriptSegment] {

@@ -37,10 +37,11 @@ final class GenerationIntegrationTests: XCTestCase {
 
     func testLiveCodexInventedGeneration() async throws { try await accountGeneration(.codexCLI) }
     func testLiveAntigravityInventedGeneration() async throws { try await accountGeneration(.antigravity) }
+    func testLiveClaudeInventedGeneration() async throws { try await accountGeneration(.claudeCode) }
 
     private func accountGeneration(_ provider: NotesAIProvider) async throws {
         guard ProcessInfo.processInfo.environment["NOTES_ACCOUNT_AI_DEMO"]?.split(separator: ",").contains(Substring(provider.rawValue)) == true else {
-            throw XCTSkip("Set NOTES_ACCOUNT_AI_DEMO to codexCLI and/or antigravity to send the invented fixture through an existing account.")
+            throw XCTSkip("Set NOTES_ACCOUNT_AI_DEMO to codexCLI, claudeCode and/or antigravity to send the invented fixture through an existing account.")
         }
         let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cache/notes-provider-tests/AccountGeneration-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root.appendingPathComponent("copied-course"), withIntermediateDirectories: true)

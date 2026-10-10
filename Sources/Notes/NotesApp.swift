@@ -53,7 +53,8 @@ final class Workbench: ObservableObject {
     @Published var libraryFiles: [String] = []
     @Published var selectedFile: String?
     @Published var selectedFolder: String?
-    @Published var libraryDropDestination: String?
+    /// A collapsed folder or notebook a drag has rested on; its row opens.
+    @Published var libraryExpandRequest: NotebookSidebarSelection?
     @Published var librarySelections: Set<NotebookSidebarSelection> = []
     @Published var documentChatVisible = false
     @Published var folders: [String] = []
@@ -143,6 +144,7 @@ final class Workbench: ObservableObject {
             self.projects = projects
             notes = try workspace.noteNames(); libraryFiles = try workspace.fileNames(); folders = try workspace.folderNames()
             assistant = try NotebookAssistantController(store: projects)
+            assistant?.onLibraryChange = { [weak self] paths in self?.refreshProjectFiles(paths) }
             assistant?.dispatchQueued = { [weak self] notebook, chatID, item in
                 self?.dispatchNotebookPrompt(notebook: notebook, chatID: chatID, item: item)
             }

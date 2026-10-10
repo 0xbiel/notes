@@ -58,6 +58,9 @@ public final class RollingPCMRecorder: @unchecked Sendable {
     private var freshFrames: UInt64 = 0
     private var tail = Data()
     private var state: LiveCaptureManifest
+    private var segmenter: VoiceSegmenter?
+    /// Whether anything was said, and for how long nothing has been. Nil for fixed-time capture.
+    public var voice: (heard: Bool, silent: Double)? { lock.lock(); defer { lock.unlock() }; return segmenter.map { ($0.heardSpeech, $0.silentSeconds) } }
     public init(store: LocalMediaStore, job: MediaJob) throws {
         guard [5.0, 10.0, 30.0].contains(job.liveChunkSeconds ?? 30), store.maximumDuration > 0, store.maximumDuration <= 28_800 else { throw MediaError.invalid("Límite de captura inválido.") }
         self.store = store; self.job = job
@@ -66,7 +69,8 @@ public final class RollingPCMRecorder: @unchecked Sendable {
         let source = try store.destination(for: job, name: "live-source.wav")
         sourcePath = source.relative; full = try PCMFile(url: source.url)
         state = LiveCaptureManifest(mediaID: job.id, source: source.relative, frames: 0, closed: false, chunks: [])
-        try openChunk(); try persist()
+        if job.liveVoiceSegments == true { segmenter = VoiceSegmenter() } else { try openChunk() }
+        try persist()
     }
     public var snapshot: LiveCaptureManifest { lock.lock(); defer { lock.unlock() }; return state }
     public func appendPCM16(_ data: Data) throws {
@@ -75,6 +79,14 @@ public final class RollingPCMRecorder: @unchecked Sendable {
         let remaining = maximumFrames - state.frames
         let accepted = data.prefix(Int(min(UInt64(data.count / 2), remaining) * 2))
         if !accepted.isEmpty { try full.append(Data(accepted)) }
+        if segmenter != nil {
+            state.frames += UInt64(accepted.count / 2)
+            let segments = segmenter?.append(Data(accepted)) ?? []
+            for segment in segments { try seal(segment) }
+            if !segments.isEmpty { try full.checkpoint(); try persist() }
+            if state.frames >= maximumFrames { try finishLocked(); throw MediaError.invalid("Captura detenida al alcanzar el límite de duración o almacenamiento; el audio guardado se conserva.") }
+            return
+        }
         var position = 0
         while position < accepted.count {
             let free = UInt64(chunkSeconds * 16_000) - freshFrames
@@ -104,7 +116,20 @@ public final class RollingPCMRecorder: @unchecked Sendable {
         self.current = nil; currentPath = nil; freshFrames = 0
         guard state.chunks.count <= 5761 else { throw MediaError.invalid("Demasiados fragmentos de audio.") }
     }
+    /// Writes one utterance as its own clip. Whisper needs about a second of audio, so a short one is padded with silence.
+    private func seal(_ segment: VoiceSegmenter.Segment) throws {
+        guard state.chunks.count < 5761 else { throw MediaError.invalid("Demasiados fragmentos de audio.") }
+        let target = try store.destination(for: job, name: String(format: "live-%04d.wav", state.chunks.count))
+        let samples = segment.samples + Data(count: max(0, 19_200 - Int(segment.frames)) * 2)
+        try (Self.header(frames: UInt64(samples.count / 2)) + samples).write(to: target.url, options: .withoutOverwriting)
+        let start = Double(segment.start) / 16_000
+        state.chunks.append(LiveAudioChunk(index: state.chunks.count, path: target.relative, start: start, end: start + Double(segment.frames) / 16_000, digest: try store.fingerprint(target.relative)))
+    }
     private func finishLocked() throws {
+        if segmenter != nil {
+            if let last = segmenter?.finish() { try seal(last) }
+            try full.close(); state.closed = true; try persist(); return
+        }
         if freshFrames > 0 { try sealChunk() }
         else if let current, let currentPath { try current.close(); try store.removeTemporary(currentPath); self.current = nil; self.currentPath = nil }
         try full.close(); state.closed = true; try persist()
@@ -147,7 +172,8 @@ public final class RollingPCMRecorder: @unchecked Sendable {
         state.frames = (size - 44) / 2
         let writer = try FileHandle(forWritingTo: source); try writer.write(contentsOf: header(frames: state.frames)); try writer.close()
         let processedBoundary = state.chunks.last?.end ?? 0
-        if state.duration > processedBoundary + 0.0001 {
+        // Pause-cut captures seal each utterance as it ends; what follows the last one is silence or lost with the crash.
+        if job.liveVoiceSegments != true, state.duration > processedBoundary + 0.0001 {
             let target = try store.destination(for: job, name: String(format: "live-%04d.wav", state.chunks.count))
             if FileManager.default.fileExists(atPath: target.url.path) { try store.removeTemporary(target.relative) }
             let start = max(0, processedBoundary - (state.chunks.isEmpty ? 0 : 2))

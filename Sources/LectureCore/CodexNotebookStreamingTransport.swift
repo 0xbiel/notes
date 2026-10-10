@@ -11,20 +11,18 @@ struct CodexNotebookStreamingTransport {
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         // Retain the configured account, but exclude its config, rules, plugins,
         // hooks and skills from this ephemeral text-only helper.
-        let accountHome = configuration.homePath.isEmpty ? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex") : URL(fileURLWithPath: configuration.homePath)
+        let accountHome = configuration.accountHomePath.isEmpty ? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex") : URL(fileURLWithPath: configuration.accountHomePath)
         let auth = accountHome.appendingPathComponent("auth.json")
         if FileManager.default.fileExists(atPath: auth.path) {
             let target = home.appendingPathComponent("auth.json")
             try FileManager.default.copyItem(at: auth, to: target)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
         }
-        var environment = ProcessInfo.processInfo.environment
-        for name in environment.keys where name.hasPrefix("CODEX_") || name.hasPrefix("T3CODE_") { environment.removeValue(forKey: name) }
-        environment["CODEX_HOME"] = home.path
+        let environment = try NotesProviderTransport.codexEnvironment(configuration, home: home.path)
         let instructions = NotebookAssistantProtocol.instructions(language: language) + "\n" + NotebookAssistantProtocol.webInstructions(enabled: webEnabled, native: true)
-        let exec = NotesProviderTransport.codexArguments(configuration, schema: directory.appendingPathComponent("unused-schema"), instructions: instructions, allowWebSearch: webEnabled)
+        let exec = try NotesProviderTransport.codexArguments(configuration, schema: directory.appendingPathComponent("unused-schema"), instructions: instructions, allowWebSearch: webEnabled)
         var arguments = ["app-server", "--listen", "stdio://", "--config", "sandbox_mode=\"read-only\"", "--config", "cli_auth_credentials_store=\"file\""]
-        for index in exec.indices where ["--config", "--disable"].contains(exec[index]) && index + 1 < exec.count { arguments += [exec[index], exec[index + 1]] }
+        for index in exec.indices where ["--config", "--enable", "--disable"].contains(exec[index]) && index + 1 < exec.count { arguments += [exec[index], exec[index + 1]] }
         let connection = ProviderRPCConnection(configuration: configuration, directory: directory, environment: environment, arguments: arguments)
         let events = AsyncStream<NotebookProviderProgress>.makeStream()
         return try await withTaskCancellationHandler {

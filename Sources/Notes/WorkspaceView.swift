@@ -311,6 +311,7 @@ struct CourseSidebar: View {
                                 // The native outline arrow follows the label baseline; anchor it to the row center.
                                 .alignmentGuide(.firstTextBaseline) { dimensions in dimensions[VerticalAlignment.center] + 2 }
                         }.buttonStyle(.plain)
+                            .background(LibraryRowMarker(item: .notebook(notebook.id)))
                             .accessibilityIdentifier("notebook.open." + notebook.id)
                             .accessibilityAddTraits(model.selectedNotebookID == notebook.id && model.selectedLibraryPath == nil ? .isSelected : [])
 
@@ -380,6 +381,7 @@ struct CourseSidebar: View {
                 ImportFolderAsNotebookButton(model: model)
             }
             .onChange(of: model.selectedNotebookID) { _, id in expanded.insert(id) }
+            .onChange(of: model.libraryExpandRequest) { _, item in if case .notebook(let id) = item { expanded.insert(id) } }
             .onChange(of: model.notebookRevealRequest) { _, _ in
                 query = ""; expanded.insert(model.selectedNotebookID)
             }
@@ -406,14 +408,15 @@ struct CourseTreeRow: View {
                     ForEach(children) { child in CourseTreeRow(model: model, node: child, expandAll: expandAll, createInFolder: createInFolder) }
                 } label: {
                     HStack(spacing: 9) {
-                        Image(systemName: "folder").frame(width: 18, height: 20, alignment: .center)
-                        Text(node.name).lineLimit(2).truncationMode(.tail)
-                            .fixedSize(horizontal: false, vertical: true)
+                        HStack(spacing: 9) {
+                            Image(systemName: "folder").frame(width: 18, height: 20, alignment: .center)
+                            Text(node.name).lineLimit(2).truncationMode(.tail)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }.background(LibraryRowMarker(item: .folder(node.path)))
                         Spacer(minLength: 2)
                     }.foregroundStyle(.secondary).font(.callout)
                         .padding(.vertical, 6).padding(.leading, 8).padding(.trailing, 2)
                         .alignmentGuide(.firstTextBaseline) { dimensions in dimensions[VerticalAlignment.center] + 2 }
-                        .modifier(LibraryDragSource(model: model, item: .folder(node.path)))
                         .contextMenu {
                             Button("Nueva nota aquí") { createInFolder(node.path) }
                             Button("Nueva carpeta aquí") { model.createFolderInside(node.path) }
@@ -433,16 +436,18 @@ struct CourseTreeRow: View {
                 .onChange(of: model.selectedLibraryPath) { _, _ in revealSelection() }
                 .onChange(of: model.selectedFolder) { _, _ in revealSelection() }
                 .onChange(of: expandAll) { _, value in if value { expanded = true } }
+                .onChange(of: model.libraryExpandRequest) { _, item in if item == .folder(node.path) { expanded = true } }
             } else {
                 HStack(spacing: 9) {
-                    Image(systemName: LibraryFileIcon.symbol(node.path))
-                        .foregroundStyle(model.selectedLibraryPath == node.path ? .primary : .secondary)
-                    Text(node.name).font(.callout).lineLimit(2)
+                    HStack(spacing: 9) {
+                        Image(systemName: LibraryFileIcon.symbol(node.path))
+                            .foregroundStyle(model.selectedLibraryPath == node.path ? .primary : .secondary)
+                        Text(node.name).font(.callout).lineLimit(2)
+                    }.background(LibraryRowMarker(item: .note(node.path)))
                     Spacer(minLength: 2)
                     if model.hasDraft(for: node.path) { Circle().fill(Color.orange).frame(width: 5, height: 5).accessibilityLabel("Sin guardar") }
                 }.padding(.vertical, 6).padding(.horizontal, 2)
                     .help(node.name).tag(NotebookSidebarSelection.note(node.path))
-                    .modifier(LibraryDragSource(model: model, item: .note(node.path)))
                     .contextMenu {
                         Button("Abrir") { model.openLibraryFile(node.path) }
                         if node.path.hasSuffix(".md") {

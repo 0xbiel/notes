@@ -13,7 +13,7 @@ struct NotebookPointerReorder {
     }
     private(set) var source: String?
     private var origin = NSPoint.zero
-    private var dragging = false
+    private(set) var dragging = false
     private var inside = true
     private var target: (String, Bool)?
     private(set) var insertionY: CGFloat?
