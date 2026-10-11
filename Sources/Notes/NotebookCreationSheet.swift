@@ -32,7 +32,8 @@ struct NotebookCreationSheet: View {
     private func t(_ es: String, _ en: String) -> String { language == "en" ? en : es }
     private var notebook: Notebook? { model.activeNotebooks.first { $0.id == notebookID } }
     private var title: String {
-        kind == "cuaderno" ? t("Nuevo cuaderno", "New notebook") : kind == "carpeta" ? t("Nueva carpeta", "New folder") : t("Nueva nota", "New note")
+        if kind == "latex" { return t("Nuevo documento LaTeX", "New LaTeX document") }
+        return kind == "cuaderno" ? t("Nuevo cuaderno", "New notebook") : kind == "carpeta" ? t("Nueva carpeta", "New folder") : t("Nueva nota", "New note")
     }
     private var folders: [AIOption] {
         guard let notebook else { return [] }

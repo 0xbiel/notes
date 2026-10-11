@@ -462,9 +462,14 @@ final class NotebookAssistantController: ObservableObject {
                         }
                         try Task.checkCancellation()
                         self.report("Validando y guardando \(changes.count) archivo(s)…", run: run, detail: changes.isEmpty ? "Sin cambios en los documentos." : changes.map(\.path).joined(separator: "\n"), kind: .tool)
+                        let outputs = try NotebookDocumentOutputWriter.prepare(response.outputs ?? [], documents: request.documents, changes: changes, store: self.store, notebook: notebook)
                         let checkpoint = try apply(changes, request.documents, prompt)
+                        try NotebookDocumentOutputWriter.publish(outputs, workspace: self.store.workspace)
+                        let outputPaths = outputs.map { $0.0 }
+                        if !outputPaths.isEmpty { self.onLibraryChange?(outputPaths) }
                         let reply = response.reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? (changes.isEmpty ? "Sin cambios." : "Cambios guardados · \(changes.count) archivo(s).") : response.reply
-                        try self.append(.init(role: "assistant", text: reply, files: changes.map(\.path), checkpointID: checkpoint?.id, activities: self.runs[run]?.activities ?? [], appGenerated: response.reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), notebook: notebook, chatID: chat.id)
+                        let receipt = outputPaths.isEmpty ? reply : reply + "\n\nGenerated files: " + outputPaths.joined(separator: ", ")
+                        try self.append(.init(role: "assistant", text: receipt, files: changes.map(\.path) + outputPaths, checkpointID: checkpoint?.id, activities: self.runs[run]?.activities ?? [], appGenerated: response.reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), notebook: notebook, chatID: chat.id)
                         return
                     }
                     throw MediaError.invalid("La petición necesita demasiado contexto. Acótala para continuar.")

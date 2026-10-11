@@ -18,6 +18,21 @@ struct RenderedMarkdownMath {
         init(_ image: NSImage, _ ascent: CGFloat, _ descent: CGFloat) { self.image = image; self.ascent = ascent; self.descent = descent }
     }
     private static let cache: NSCache<NSString, Cached> = { let cache = NSCache<NSString, Cached>(); cache.countLimit = 256; return cache }()
+    private static func rasterized(_ image: NSImage) -> NSImage? {
+        let scale: CGFloat = 3
+        let width = Int(ceil(image.size.width * scale)), height = Int(ceil(image.size.height * scale))
+        guard width * height <= 8_000_000,
+              let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+              let context = NSGraphicsContext(bitmapImageRep: bitmap) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        context.cgContext.scaleBy(x: scale, y: scale)
+        image.draw(in: NSRect(origin: .zero, size: image.size), from: .zero, operation: .copy, fraction: 1)
+        NSGraphicsContext.restoreGraphicsState()
+        bitmap.size = image.size
+        let result = NSImage(size: image.size); result.addRepresentation(bitmap)
+        return result
+    }
     static func render(_ span: MarkdownMathSpan, source: String, fontSize: CGFloat = 16, color: NSColor = .labelColor) -> RenderedMarkdownMath? {
         let latex = (source as NSString).substring(with: span.content)
         guard latex.utf16.count <= 8_000 else { return nil }
@@ -28,9 +43,11 @@ struct RenderedMarkdownMath {
         let (error, image, info) = math.asImage()
         guard error == nil, let image, let info, image.size.width.isFinite, image.size.height.isFinite,
               image.size.width > 0, image.size.width < 10_000, image.size.height > 0, image.size.height < 2_000 else { return nil }
-        image.accessibilityDescription = latex
-        cache.setObject(Cached(image, info.ascent, info.descent), forKey: key)
-        return .init(span: span, image: image, ascent: info.ascent, descent: info.descent)
+        let stableImage: NSImage
+        stableImage = rasterized(image) ?? image
+        stableImage.accessibilityDescription = latex
+        cache.setObject(Cached(stableImage, info.ascent, info.descent), forKey: key)
+        return .init(span: span, image: stableImage, ascent: info.ascent, descent: info.descent)
     }
 }
 

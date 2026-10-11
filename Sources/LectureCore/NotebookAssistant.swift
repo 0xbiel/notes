@@ -11,13 +11,24 @@ public struct NotebookEdit: Codable, Equatable, Sendable {
         self.path = path; self.find = find; self.replacement = replacement; self.create = create; self.replaceEntireFile = replaceEntireFile ? true : nil; self.delete = delete ? true : nil
     }
 }
+public struct NotebookDocumentOutput: Codable, Sendable {
+    public var path: String
+    public var sourcePath: String
+    public var format: String
+    public var source: String
+    public init(path: String, sourcePath: String = "", format: String, source: String = "") {
+        self.path = path; self.sourcePath = sourcePath; self.format = format; self.source = source
+    }
+}
 public struct NotebookAssistantResponse: Codable, Sendable {
     public var reply: String
     public var readFiles: [String]
     public var edits: [NotebookEdit]
     public var webActions: [NotebookWebAction]?
-    public init(reply: String, readFiles: [String] = [], edits: [NotebookEdit] = [], webActions: [NotebookWebAction] = []) {
+    public var outputs: [NotebookDocumentOutput]?
+    public init(reply: String, readFiles: [String] = [], edits: [NotebookEdit] = [], webActions: [NotebookWebAction] = [], outputs: [NotebookDocumentOutput] = []) {
         self.reply = reply; self.readFiles = readFiles; self.edits = edits; self.webActions = webActions
+        self.outputs = outputs
     }
 }
 public enum NotebookEditValidationError: LocalizedError {
@@ -74,10 +85,13 @@ public struct NotebookTextRequest: Codable, Sendable {
     public func prompt() throws -> String {
         let data = try JSONEncoder().encode(self)
         guard data.count <= 600_000 else { throw MediaError.invalid("El contexto supera el límite de esta petición. Inicia un chat nuevo o acota los documentos.") }
-        return NotebookAssistantProtocol.instructions(language: language) + "\n" + NotebookAssistantProtocol.webInstructions(enabled: webEnabled, native: nativeWebSearch) + (language == "en" ? "\nRequest JSON:\n" : "\nJSON de la petición:\n") + String(decoding: data, as: UTF8.self)
+        return NotebookAssistantProtocol.instructions(language: language) + "\n" + NotebookAssistantProtocol.outputInstructions + "\n" + NotebookAssistantProtocol.webInstructions(enabled: webEnabled, native: nativeWebSearch) + (language == "en" ? "\nRequest JSON:\n" : "\nJSON de la petición:\n") + String(decoding: data, as: UTF8.self)
     }
 }
 public enum NotebookAssistantProtocol {
+    public static let outputInstructions = """
+    Additional current capability: include outputs=[] in every response. When the user requests a PDF of a Markdown note, use outputs=[{path:"notebook/root/output/name.pdf",sourcePath:"exact/read/note.md",format:"pdf",source:""}]. Use real notebook-relative paths from notebook.rootPrefix, not the example paths. Palladium generates a paginated PDF with its native Markdown renderer including math, tables and images. The source must have been read into documents (or created/updated by edits in this response). Request readFiles first if necessary. Parent folders are created automatically. For a LaTeX homework document, use format="latex", a new .tex path, sourcePath="", source=complete standalone LaTeX document. This creates editable source, not a compiled PDF. Compilation uses the explicit Compile PDF action in the LaTeX editor. Do not claim a .tex file is a PDF. Never claim PDF export is unavailable. Imported PDFs cannot be edited or converted automatically into LaTeX: read/extract their content and create a faithful new standalone .tex document when requested. Output paths must be new and within this notebook; never overwrite existing files. Do not return outputs together with readFiles or webActions. Only generate outputs the user requested, never print automatically. Unsupported conversions must be explained honestly.
+    """
     public static var instructions: String {
         // Provider-level policy is language-neutral; each request supplies the UI language.
         "Follow the user's requested language and the language of teaching/source material, as specified in the request instructions. The language field describes the UI only. " + instructions(language: "en").components(separatedBy: "Follow the user request and profile;").dropFirst().joined(separator: "Follow the user request and profile;")
@@ -129,6 +143,7 @@ public enum NotebookAssistantProtocol {
         return object([
             "reply": string,
             "readFiles": ["type": "array", "items": string],
+            "outputs": ["type": "array", "items": object(["path": string, "sourcePath": string, "format": ["type": "string", "enum": ["pdf", "latex"]], "source": string])],
             "webActions": ["type": "array", "items": object(["kind": ["type": "string", "enum": ["search", "read", "downloadImage", "downloadFile"]], "query": string, "url": string, "path": string])],
             "edits": ["type": "array", "items": object(["path": string, "find": string, "replacement": string, "create": ["type": "boolean"], "replaceEntireFile": ["type": "boolean"], "delete": ["type": "boolean"]])]
         ])
@@ -140,6 +155,8 @@ public enum NotebookAssistantProtocol {
         }
         let result = try JSONDecoder().decode(NotebookAssistantResponse.self, from: Data(json.utf8))
         guard text.utf8.count <= 1_000_000, result.edits.count <= 300, result.readFiles.count <= 30,
+              (result.outputs ?? []).count <= 10,
+              (result.outputs ?? []).isEmpty || (result.readFiles.isEmpty && (result.webActions ?? []).isEmpty),
               result.readFiles.isEmpty || result.edits.isEmpty,
               (result.webActions ?? []).count <= 3,
               (result.webActions ?? []).isEmpty || (result.edits.isEmpty && result.readFiles.isEmpty) else { throw MediaError.invalid("Respuesta del asistente inválida.") }

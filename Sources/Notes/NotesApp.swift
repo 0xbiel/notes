@@ -32,12 +32,17 @@ struct NotesApp: App {
             }
             CommandGroup(replacing: .newItem) {
                 Button("Nueva nota") { model.creationInitialName = ""; model.creationKind = "nota" }.keyboardShortcut("n")
+                Button("Nuevo documento LaTeX") { model.creationInitialName = ""; model.creationKind = "latex" }
             }
             CommandGroup(after: .saveItem) {
                 Button("Guardar nota en la copia") { model.saveDraft() }.keyboardShortcut("s").disabled(!model.isDirty)
             }
+            CommandGroup(replacing: .printItem) {
+                Button("Imprimir…") { model.printSelectedDocument() }.keyboardShortcut("p").disabled(!model.canPrintDocument)
+                Button("Exportar PDF…") { model.exportSelectedPDF() }.disabled(model.selectedLibraryPath.map { !["md", "tex"].contains(URL(fileURLWithPath: $0).pathExtension) } ?? true)
+            }
             CommandMenu("Notas") {
-                Button("Abrir nota…") { model.showQuickOpen = true }.keyboardShortcut("p")
+                Button("Abrir nota…") { model.showQuickOpen = true }.keyboardShortcut("p", modifiers: [.command, .shift])
                 Button("Buscar nota…") { model.showQuickOpen = true }.keyboardShortcut("t")
             }
         }
@@ -46,6 +51,7 @@ struct NotesApp: App {
 
 @MainActor
 final class Workbench: ObservableObject {
+    var latexEditors: [String: LaTeXEditorController] = [:]
     @Published var sessions: [SessionDocument] = []
     @Published var selectedID: String?
     @Published var document: SessionDocument?
