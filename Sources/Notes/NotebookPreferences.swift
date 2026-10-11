@@ -114,6 +114,7 @@ struct NotebookPreferences: View {
     @AppStorage("notes.language") private var language = "es"
     @AppStorage("notes.confirmChatDeletion") private var confirmChatDeletion = true
     @AppStorage("notes.documentWidth") private var documentWidth = "wide"
+    @AppStorage("notes.latexDownloads") private var allowLaTeXDownloads = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -143,6 +144,15 @@ struct NotebookPreferences: View {
                             Text(language == "en" ? "Text documents" : "Documentos de texto").font(.headline)
                             DocumentReadingWidthPicker(selection: $documentWidth)
                             Text(language == "en" ? "Standard centers an A4-like reading column. Wide uses the available space. Both shrink with the window." : "Estándar centra una columna de lectura similar a A4. Amplio aprovecha el espacio disponible. Ambos se adaptan al reducir la ventana.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Divider()
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("LaTeX").font(.headline)
+                            Toggle(language == "en" ? "Allow missing TeX package downloads" : "Permitir descargar paquetes TeX faltantes", isOn: $allowLaTeXDownloads)
+                                .modifier(NotebookToggleAccent(switchStyle: true))
+                                .accessibilityIdentifier("preferences.latexDownloads")
+                            Text(language == "en" ? "Compilation stays on your Mac. Tectonic can download missing packages; turn this off to use only cached packages." : "La compilación se realiza en tu Mac. Tectonic puede descargar paquetes faltantes; desactívalo para usar solo los paquetes en caché.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         Divider()

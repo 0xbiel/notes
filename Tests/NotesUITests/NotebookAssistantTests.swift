@@ -5,6 +5,26 @@ import LectureCore
 @testable import Notes
 
 final class NotebookAssistantTests: XCTestCase {
+    @MainActor func testAssistantCreatesRenderedPDFAndEditableLaTeXInOutputFolder() async throws {
+        _ = NSApplication.shared
+        let (model, assistant, _) = try fixture()
+        assistant.generate = { request, _ in
+            XCTAssertNotNil(request.documents["Inicio.md"])
+            XCTAssertTrue(try request.prompt().contains("native Markdown renderer"))
+            return .init(reply: "Created the requested documents.", outputs: [
+                .init(path: "output/Inicio.pdf", sourcePath: "Inicio.md", format: "pdf"),
+                .init(path: "output/Homework.tex", format: "latex", source: LaTeXDocument.template)
+            ])
+        }
+        assistant.setDraft("Create an output folder, export this note as PDF and create a LaTeX homework document.", notebook: model.currentNotebook)
+        model.submitNotebookPrompt(); await assistant.waitUntilFinished()
+        XCTAssertNil(assistant.error)
+        XCTAssertTrue(model.libraryFiles.contains("output/Inicio.pdf"))
+        XCTAssertTrue(model.libraryFiles.contains("output/Homework.tex"))
+        let pdf = try XCTUnwrap(PDFDocument(data: model.workspace!.readFile("output/Inicio.pdf")))
+        XCTAssertTrue(pdf.string?.contains("Texto inicial") == true)
+        XCTAssertEqual(assistant.chat(model.currentNotebook)?.messages.last?.files, ["output/Inicio.pdf", "output/Homework.tex"])
+    }
     @MainActor private func fixture() throws -> (Workbench, NotebookAssistantController, URL) {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent(".test-workspaces/NotebookAssistant-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root.appendingPathComponent("copied-course"), withIntermediateDirectories: true)

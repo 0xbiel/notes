@@ -157,6 +157,11 @@ extension Workbench {
             let relative = (directory.isEmpty ? "" : directory + "/") + clean
             try projects?.validate(relative.hasSuffix(".md") ? relative : relative + ".md", notebookID: notebook.id)
             if kind == "carpeta" { try workspace.createFolder(relative) }
+            else if kind == "latex" {
+                let filename = relative.hasSuffix(".tex") ? relative : relative + ".tex"
+                try workspace.createAsset(filename, data: Data(LaTeXDocument.template.utf8))
+                libraryFiles = try workspace.fileNames(); openLibraryFile(filename)
+            }
             else {
                 let filename = relative.hasSuffix(".md") ? relative : relative + ".md"
                 let title = URL(fileURLWithPath: filename).deletingPathExtension().lastPathComponent

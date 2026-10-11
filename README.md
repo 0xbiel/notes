@@ -30,3 +30,10 @@ See the [developer guide](docs/development.md) for architecture, testing, and wo
 ## License
 
 Palladium is available under the [MIT license](LICENSE). Third-party components retain their [license and copyright notices](docs/development.md#third-party-notices).
+# Document output
+
+- Markdown math uses the same native renderer in the editor and in PDF export. Use **Export PDF** in the document header, or ask the notebook assistant to export a read note into a new `output/*.pdf` file. Export includes current editor content, headings, math, tables and local images, with A4 pagination and a light print appearance.
+- **Print** in the header or **⌘P** opens the macOS print dialog for Markdown, PDF, DOCX, RTF, text and supported raster images. DOCX is imported through AppKit's rich-text reader; complex Word layouts may differ from Microsoft Word. Quick Open is **⇧⌘P** (or **⌘T**).
+- Choose **New LaTeX document** from the File menu or note options to create a standalone `.tex` homework document. Imported `.tex` files open in the source editor with local draft recovery, conflict-checked saving and a compiled PDF preview. Native text editing provides undo. Save the source before renaming or moving files.
+- LaTeX compilation requires a local `tectonic` executable (`brew install tectonic`). Compilation runs only on explicit Compile, Export PDF or Print actions, with `--untrusted` and a 60-second timeout. Tectonic may fetch missing TeX packages; turn off **Allow missing TeX package downloads** in **Preferences → General → LaTeX** for cached-only operation. Source is compiled locally, not sent to an AI or compilation service. Multi-file projects, bibliography workflows and source-to-preview synchronization are not supported yet.
+- The assistant can create `.tex` source and native Markdown PDFs in new notebook-scoped destinations, including automatic parent folders. It does not compile LaTeX or print automatically, and generated files never overwrite an existing file. Markdown edits retain the existing checkpoints; generated PDF/TeX files are library assets, not part of Markdown edit undo.

@@ -15,7 +15,7 @@ struct NotebookTrashEntry: Codable, Identifiable {
 extension Workbench {
     var activeNotebooks: [Notebook] { orderedNotebooks(notebooks.filter { $0.archivedAt == nil }) }
     var visibleNotes: [String] { notes.filter { projects?.owner(of: $0)?.archivedAt == nil } }
-    var canManageFiles: Bool { assistant?.runningNotebookID == nil && ai?.running != true && media?.busy != true && media?.isRecording != true && !busy }
+    var canManageFiles: Bool { assistant?.runningNotebookID == nil && ai?.running != true && media?.busy != true && media?.isRecording != true && !busy && !latexEditors.values.contains { $0.dirty || $0.compiling } }
     func loadTrash() throws {
         guard let workspace, FileManager.default.fileExists(atPath: workspace.storageRoot.appendingPathComponent("projects/trash.json").path) else { return }
         trash = try JSONDecoder().decode([NotebookTrashEntry].self, from: workspace.readStorage("projects/trash.json"))

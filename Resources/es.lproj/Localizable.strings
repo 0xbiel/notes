@@ -47,7 +47,7 @@
 "Guardado" = "Guardado";
 "Abrir" = "Abrir";
 "Sesiones de esta nota" = "Sesiones de esta nota";
-"⌘P para buscar" = "⌘P para buscar";
+"⇧⌘P para buscar" = "⇧⌘P para buscar";
 "Grabaciones" = "Grabaciones";
 "Transcripción" = "Transcripción";
 "Sin versiones guardadas" = "Sin versiones guardadas";
@@ -85,7 +85,7 @@
 "Abrir nota…" = "Abrir nota…";
 "Buscar nota…" = "Buscar nota…";
 "Mostrar inspector" = "Mostrar inspector";
-"Abrir nota  ⌘T / ⌘P\nModo compacto  ⌥⌘C" = "Abrir nota  ⌘T / ⌘P\nModo compacto  ⌥⌘C";
+"Abrir nota  ⌘T / ⌘P\nModo compacto  ⌥⌘C" = "Abrir nota  ⌘T / ⇧⌘P\nModo compacto  ⌥⌘C";
 
 "Tema" = "Tema";
 
@@ -224,3 +224,6 @@
 "Translúcida" = "Translúcida";
 
 "Desactiva Reducir transparencia en los ajustes de accesibilidad de macOS para usar este control." = "Desactiva Reducir transparencia en los ajustes de accesibilidad de macOS para usar este control.";
+"Nuevo documento LaTeX" = "Nuevo documento LaTeX";
+"Imprimir…" = "Imprimir…";
+"Exportar PDF…" = "Exportar PDF…";

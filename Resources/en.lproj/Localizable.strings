@@ -47,7 +47,7 @@
 "Guardado" = "Saved";
 "Abrir" = "Open";
 "Sesiones de esta nota" = "Sessions for this note";
-"⌘P para buscar" = "⌘P to search";
+"⇧⌘P para buscar" = "⇧⌘P to search";
 "Grabaciones" = "Recordings";
 "Transcripción" = "Transcript";
 "Sin versiones guardadas" = "No saved versions";
@@ -85,7 +85,7 @@
 "Abrir nota…" = "Open note…";
 "Buscar nota…" = "Find note…";
 "Mostrar inspector" = "Show inspector";
-"Abrir nota  ⌘T / ⌘P\nModo compacto  ⌥⌘C" = "Open note  ⌘T / ⌘P\nCompact mode  ⌥⌘C";
+"Abrir nota  ⌘T / ⌘P\nModo compacto  ⌥⌘C" = "Open note  ⌘T / ⇧⌘P\nCompact mode  ⌥⌘C";
 
 "Tema" = "Theme";
 
@@ -280,3 +280,6 @@
 "Revisión y versiones" = "Review and versions";
 
 "Dictado" = "Dictation";
+"Nuevo documento LaTeX" = "New LaTeX document";
+"Imprimir…" = "Print…";
+"Exportar PDF…" = "Export PDF…";

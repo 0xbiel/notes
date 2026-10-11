@@ -176,6 +176,14 @@ struct DocumentFileActions: View {
     @AppStorage("notes.language") private var language = "es"
     var body: some View {
         HStack(spacing: 14) {
+            Button { model.printSelectedDocument() } label: {
+                Label(language == "en" ? "Print" : "Imprimir", systemImage: "printer")
+            }.disabled(!model.canPrintDocument).accessibilityIdentifier("document.print")
+            if ["md", "tex"].contains(URL(fileURLWithPath: path).pathExtension.lowercased()) {
+                Button { model.exportSelectedPDF() } label: {
+                    Label(language == "en" ? "Export PDF" : "Exportar PDF", systemImage: "arrow.down.document")
+                }.accessibilityIdentifier("document.exportPDF")
+            }
             Button {
                 if path == model.selectedNote { model.flushAutosave(); guard !model.isDirty else { return } }
                 if let url = try? model.workspace?.fileURL(path) { NSWorkspace.shared.open(url) }
@@ -248,6 +256,7 @@ struct NoteToolbar: View {
                         .disabled(model.isDirty || model.editor?.history.contains(where: { !$0.undone && $0.superseded != true }) != true)
                     Divider()
                     Button("Nueva nota") { model.creationInitialName = ""; model.creationKind = "nota" }
+                    Button("Nuevo documento LaTeX") { model.creationInitialName = ""; model.creationKind = "latex" }
                     Button("Nueva carpeta") { model.creationInitialName = ""; model.creationKind = "carpeta" }
                     Button("Nuevo cuaderno") { model.creationInitialName = ""; model.creationKind = "cuaderno" }
                 } label: {
@@ -482,7 +491,9 @@ struct NoteWorkspace: View {
                     Button("Nuevo cuaderno") { model.creationInitialName = ""; model.creationKind = "cuaderno" }
                 }
             } else if let file = model.selectedFile, let workspace = model.workspace {
-                NotebookFilePreview(workspace: workspace, path: file)
+                if LaTeXDocument.isSource(file), let controller = try? model.latexController(file) {
+                    LaTeXEditor(controller: controller, bottomInset: showsComposer ? composerHeight : 0).id(file)
+                } else { NotebookFilePreview(workspace: workspace, path: file) }
             } else if let note = model.selectedNote {
                 LiveMarkdownEditor(documentID: note, text: model.draftText, editing: model.layout == "edit", heading: model.previewHeading,
                     bottomInset: showsComposer ? composerHeight : 0,
@@ -492,7 +503,7 @@ struct NoteWorkspace: View {
                     onChange: { model.changeDraft($0) }, onLink: { _ = model.openWikilink($0) }, onTaskToggle: { _ in if model.layout == "preview" { model.saveDraft() } })
             } else {
                 if let assistant = model.assistant { NotebookHome(model: model, assistant: assistant) }
-                else { ContentUnavailableView("Abre una nota", systemImage: "doc.text", description: Text("⌘P para buscar")) }
+                else { ContentUnavailableView("Abre una nota", systemImage: "doc.text", description: Text("⇧⌘P para buscar")) }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
