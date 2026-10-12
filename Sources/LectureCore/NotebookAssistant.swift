@@ -16,8 +16,12 @@ public struct NotebookDocumentOutput: Codable, Sendable {
     public var sourcePath: String
     public var format: String
     public var source: String
-    public init(path: String, sourcePath: String = "", format: String, source: String = "") {
+    public var page: Int?
+    public var crop: NotebookImageCrop?
+    public var test: NotebookPracticeTest?
+    public init(path: String, sourcePath: String = "", format: String, source: String = "", page: Int? = nil, crop: NotebookImageCrop? = nil, test: NotebookPracticeTest? = nil) {
         self.path = path; self.sourcePath = sourcePath; self.format = format; self.source = source
+        self.page = page; self.crop = crop; self.test = test
     }
 }
 public struct NotebookAssistantResponse: Codable, Sendable {
@@ -57,6 +61,7 @@ public struct NotebookTextRequest: Codable, Sendable {
     public var nativeWebSearch = false
     public var webResults: [NotebookWebResult] = []
     public var contextUpdate = ""
+    public var sourceDigests: [String: String] = [:]
     public init(notebook: Notebook, profile: NotebookProfile, messages: [NotebookMessage], currentDocument: String?, texts: [String: String], language: String = "es", libraryFiles: [String] = []) {
         self.language = language == "en" ? "en" : "es"
         self.notebook = notebook; self.profile = profile; self.messages = messages; self.currentDocument = currentDocument
@@ -91,6 +96,13 @@ public struct NotebookTextRequest: Codable, Sendable {
 public enum NotebookAssistantProtocol {
     public static let outputInstructions = """
     Additional current capability: include outputs=[] in every response. When the user requests a PDF of a Markdown note, use outputs=[{path:"notebook/root/output/name.pdf",sourcePath:"exact/read/note.md",format:"pdf",source:""}]. Use real notebook-relative paths from notebook.rootPrefix, not the example paths. Palladium generates a paginated PDF with its native Markdown renderer including math, tables and images. The source must have been read into documents (or created/updated by edits in this response). Request readFiles first if necessary. Parent folders are created automatically. For a LaTeX homework document, use format="latex", a new .tex path, sourcePath="", source=complete standalone LaTeX document. This creates editable source, not a compiled PDF. Compilation uses the explicit Compile PDF action in the LaTeX editor. Do not claim a .tex file is a PDF. Never claim PDF export is unavailable. Imported PDFs cannot be edited or converted automatically into LaTeX: read/extract their content and create a faithful new standalone .tex document when requested. Output paths must be new and within this notebook; never overwrite existing files. Do not return outputs together with readFiles or webActions. Only generate outputs the user requested, never print automatically. Unsupported conversions must be explained honestly.
+    """ + artifactInstructions
+    public static let artifactInstructions = """
+    Practice-test reference images: each question may include images=[{path,alt,caption}] or images=null. Paths are literal local paths relative to the .quiz.json file, confined to the same notebook (no URLs or absolute paths); do not percent-encode them. Use existing notebook image assets, or request format="image" extraction outputs in the same response first. Include a useful alt description and an optional caption (empty string if none). Limit to 4 images per question and 24 per test. Put question reference figures in this structured images field, not Markdown image syntax; the app displays them before the answer choices in both layouts. Questions can refer to visible labels, regions or features in the figure. Ground them in images you have actually read; do not invent unseen details or put the correct answer in the caption/alt text.
+
+    Image extraction: use outputs with format="image", a new .png path inside this notebook (prefer notebook.rootPrefix/.palladium-images/figure.png), source="", test=null, sourcePath=the exact source file you have read, page=the one-based PDF page number (null for a raster image), crop=null for the whole image/page or {x,y,width,height} for a crop. Crop numbers are fractions in [0,1] measured from the TOP LEFT of the visually supplied page/image; width and height must be positive and the rectangle must fit. PDF readFiles now supplies visual page previews even when a text layer exists, so read the relevant #pages=A-B before identifying a figure. sourcePath may include #entry= for a file inside a read ZIP. Previously attached images/PDFs use sourcePath="attachment:" + the attachment object's id from messages; do not invent attachment IDs. Palladium rasterizes/crops original local files, rather than asking you for base64 or generated pictures. Images are bounded to 2400 pixels and extraction is not vector extraction. To insert the result in a note, return the image output and the Markdown edits together, using a standalone ![descriptive caption](relative/path.png) line relative to that note, with URL-encoded spaces. Never merely describe the crop as if you saved it. You may also use webActions downloadImage first for an external source, then read that local image and return edits/extraction in the following round. Do not download when web access is off. Imported originals remain unchanged.
+    Native practice tests: when the user requests a quiz/test they can take in Palladium, create outputs with format="quiz", a new notebook-scoped .quiz.json path, sourcePath="", source="", page=null, crop=null, and test={title,instructions,questions:[{id,prompt,options:[{id,text,explanation}],correctOptionID,explanation}]}. Use unique stable string IDs, 1-100 questions and 2-8 distinct choices per question, exactly one correctOptionID matching an option ID. Every question and option needs a substantive explanation: explain why the correct answer follows and why each distractor is wrong. Generate only question content and answers, not HTML, CSS, JavaScript or a model-designed UI. The app supplies native styling, saves progress/attempts, hides answer keys until submission, grades locally and shuffles options again on each retake. Avoid position-dependent answers such as "A and C" or "all of the above" because choices are shuffled. Question/option content supports Markdown and math. Ground tests in the requested/read notes, not invented facts; follow the user's requested language and difficulty. You can create a regular Markdown study note with edits, and add a relative link to the .quiz.json test in that same response. Use editable Markdown instead when the user explicitly requests a printable question sheet rather than an interactive test.
+    Every output uses the keys path,sourcePath,format,source,page,crop,test; page/crop/test are null when not applicable. Other fields for existing pdf/latex outputs remain as described above.
     """
     public static var instructions: String {
         // Provider-level policy is language-neutral; each request supplies the UI language.
@@ -140,10 +152,17 @@ public enum NotebookAssistantProtocol {
     public static var schema: [String: Any] {
         func object(_ fields: [String: Any]) -> [String: Any] { ["type": "object", "additionalProperties": false, "required": fields.keys.sorted(), "properties": fields] }
         let string: [String: Any] = ["type": "string"]
+        let option = object(["id": string, "text": string, "explanation": string])
+        let referenceImage = object(["path": string, "alt": string, "caption": string])
+        let question = object(["id": string, "prompt": string, "options": ["type": "array", "items": option], "correctOptionID": string, "explanation": string,
+            "images": ["anyOf": [["type": "array", "items": referenceImage], ["type": "null"]]]])
+        let test = object(["title": string, "instructions": string, "questions": ["type": "array", "items": question]])
+        let crop = object(["x": ["type": "number"], "y": ["type": "number"], "width": ["type": "number"], "height": ["type": "number"]])
         return object([
             "reply": string,
             "readFiles": ["type": "array", "items": string],
-            "outputs": ["type": "array", "items": object(["path": string, "sourcePath": string, "format": ["type": "string", "enum": ["pdf", "latex"]], "source": string])],
+            "outputs": ["type": "array", "items": object(["path": string, "sourcePath": string, "format": ["type": "string", "enum": ["pdf", "latex", "image", "quiz"]], "source": string,
+                "page": ["type": ["integer", "null"]], "crop": ["anyOf": [crop, ["type": "null"]]], "test": ["anyOf": [test, ["type": "null"]]]])],
             "webActions": ["type": "array", "items": object(["kind": ["type": "string", "enum": ["search", "read", "downloadImage", "downloadFile"]], "query": string, "url": string, "path": string])],
             "edits": ["type": "array", "items": object(["path": string, "find": string, "replacement": string, "create": ["type": "boolean"], "replaceEntireFile": ["type": "boolean"], "delete": ["type": "boolean"]])]
         ])

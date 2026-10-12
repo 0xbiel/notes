@@ -5,6 +5,101 @@ import LectureCore
 @testable import Notes
 
 final class NotebookAssistantTests: XCTestCase {
+    private func practiceTest() -> NotebookPracticeTest {
+        .init(title: "Pipeline practice", instructions: "Choose one answer for each question.", questions: [
+            .init(id: "latency", prompt: "What is the initial pipeline latency?", options: [
+                .init(id: "correct", text: "$k\\cdot t$", explanation: "The first result crosses all k stages, each lasting t."),
+                .init(id: "wrong", text: "$t/k$", explanation: "Dividing stage time by the number of stages does not describe traversing the pipeline.")
+            ], correctOptionID: "correct", explanation: "Latency measures time until the first complete result, not throughput.")
+        ])
+    }
+
+    @MainActor func testAssistantExtractsPDFImagesAndCreatesNativeTestsWithLinkedNotes() async throws {
+        _ = NSApplication.shared
+        let (model, assistant, _) = try fixture()
+        let workspace = assistant.store.workspace
+        let pdf = try DocumentOutput.markdownPDF("# Source figure\n\nPipeline latency is $k\\cdot t$.", directory: workspace.courseRoot, root: workspace.courseRoot)
+        try workspace.createAsset("Pipeline.pdf", data: pdf)
+        var test = practiceTest()
+        test.questions[0].images = [.init(path: ".palladium-images/pipeline.png", alt: "Pipeline reference page", caption: "Use the figure to answer the question.")]
+        let illustratedTest = test
+        var rounds = 0
+        assistant.generate = { request, _ in
+            rounds += 1
+            if request.documents["Pipeline.pdf#pages=1"] == nil { return .init(reply: "", readFiles: ["Pipeline.pdf#pages=1"]) }
+            XCTAssertEqual(request.sourceDigests["Pipeline.pdf"], NotebookSourceImage.digest(pdf))
+            XCTAssertTrue(try request.prompt().contains("Native practice tests"))
+            return .init(reply: "Created your note and test.", edits: [
+                .init(path: "Practice.md", replacement: "# Pipeline practice\n\n![Source figure](.palladium-images/pipeline.png)\n\n[Take the test](Pipeline.quiz.json)\n", create: true)
+            ], outputs: [
+                .init(path: ".palladium-images/pipeline.png", sourcePath: "Pipeline.pdf", format: "image", page: 1, crop: .init(x: 0, y: 0, width: 1, height: 0.3)),
+                .init(path: "Pipeline.quiz.json", format: "quiz", test: illustratedTest),
+                .init(path: "Practice.pdf", sourcePath: "Practice.md", format: "pdf")
+            ])
+        }
+        assistant.setDraft("Use the figure from Pipeline.pdf, create a study note and a practice test, and export the note as PDF.", notebook: model.currentNotebook)
+        model.submitNotebookPrompt(); await assistant.waitUntilFinished()
+        XCTAssertNil(assistant.error); XCTAssertEqual(rounds, 2)
+        XCTAssertEqual(try NotebookPracticeTest.decode(workspace.readFile("Pipeline.quiz.json")), test)
+        let note = try workspace.readNote("Practice.md")
+        XCTAssertTrue(note.contains("Pipeline.quiz.json"))
+        XCTAssertEqual(DocumentOutput.markdownView(note, directory: workspace.courseRoot, root: workspace.courseRoot).renderedImages.count, 1)
+        XCTAssertNotNil(PDFDocument(data: try workspace.readFile("Practice.pdf")))
+        XCTAssertEqual(try workspace.readFile("Pipeline.pdf"), pdf)
+        XCTAssertTrue(model.libraryFiles.contains("Pipeline.quiz.json"))
+        let controller = NotebookPracticeTestController(workspace: workspace, path: "Pipeline.quiz.json")
+        XCTAssertEqual(controller.totalCount, 1); XCTAssertNil(controller.result)
+    }
+
+    @MainActor func testInvalidTestRollsBackExtractedImagesBeforeApplyingNotes() async throws {
+        let (model, assistant, _) = try fixture()
+        let workspace = assistant.store.workspace
+        let pdf = try DocumentOutput.markdownPDF("# Source", directory: workspace.courseRoot, root: workspace.courseRoot)
+        try workspace.createAsset("Source.pdf", data: pdf)
+        var invalid = practiceTest(); invalid.questions[0].correctOptionID = "missing"
+        let test = invalid
+        assistant.generate = { request, _ in
+            if request.documents["Source.pdf"] == nil { return .init(reply: "", readFiles: ["Source.pdf"]) }
+            return .init(reply: "Created.", edits: [.init(path: "Invalid.md", replacement: "![Image](.palladium-images/invalid.png)", create: true)], outputs: [
+                .init(path: ".palladium-images/invalid.png", sourcePath: "Source.pdf", format: "image", page: 1),
+                .init(path: "Invalid.quiz.json", format: "quiz", test: test)
+            ])
+        }
+        assistant.setDraft("Create an illustrated test from Source.pdf", notebook: model.currentNotebook)
+        model.submitNotebookPrompt(); await assistant.waitUntilFinished()
+        XCTAssertNotNil(assistant.error)
+        for path in ["Invalid.md", ".palladium-images/invalid.png", "Invalid.quiz.json"] {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: try workspace.fileURL(path).path))
+        }
+    }
+
+    @MainActor func testDeletingHistoricalChatPreservesCachedUsage() throws {
+        let (model, assistant, _) = try fixture()
+        let notebook = model.currentNotebook
+        var chat = NotebookChat()
+        chat.messages = [.init(role: "user", text: "Historical question"), .init(role: "assistant", text: "Historical answer")]
+        var state = NotebookProjectState()
+        state.chats = [chat]
+        state.activeChatID = chat.id
+        try assistant.installCopiedState(state, notebook: notebook)
+        let log = ProviderUsageLog(workspace: assistant.store.workspace)
+        let records = log.records()
+        XCTAssertEqual(records.count, 1)
+        try assistant.deleteChat(chat.id, notebook: notebook)
+        XCTAssertTrue(assistant.state(notebook).chats.isEmpty)
+        XCTAssertEqual(log.records(), records)
+        _ = try NotebookAssistantController(store: assistant.store)
+        XCTAssertEqual(log.records(), records)
+    }
+
+    func testUsagePreferencesLabelsHaveEnglishTranslations() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let data = try Data(contentsOf: root.appendingPathComponent("Resources/en.lproj/Localizable.strings"))
+        let translations = try XCTUnwrap(PropertyListSerialization.propertyList(from: data, format: nil) as? [String: String])
+        XCTAssertEqual(translations["Uso"], "Usage")
+        XCTAssertEqual(translations["Abre un espacio local para ver el uso."], "Open a local workspace to see usage.")
+    }
+
     @MainActor func testAssistantCreatesRenderedPDFAndEditableLaTeXInOutputFolder() async throws {
         _ = NSApplication.shared
         let (model, assistant, _) = try fixture()
@@ -372,7 +467,7 @@ final class NotebookAssistantTests: XCTestCase {
         let content = try NotebookLibraryContext.read("Guía 1.pdf", library: NotebookFileLibrary(projects: model.projects!), notebookID: model.currentNotebook.id)
         XCTAssertTrue(content.text.contains("[Page 30]"))
         XCTAssertTrue(content.text.contains("transition function"))
-        XCTAssertTrue(content.images.isEmpty)
+        XCTAssertEqual(content.images.count, NotebookAttachmentImport.maximumImages)
         try model.createNotebookItem(kind: "cuaderno", name: "Other")
         let other = model.currentNotebook
         XCTAssertThrowsError(try NotebookLibraryContext.read("Guía 1.pdf", library: NotebookFileLibrary(projects: model.projects!), notebookID: other.id))

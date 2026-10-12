@@ -13,6 +13,53 @@ struct RenderedMarkdownMath {
 }
 
 @MainActor enum MarkdownMathRenderer {
+    static func renderingSource(_ source: String, depth: Int = 0) -> String {
+        guard depth < 64 else { return source }
+        let characters = Array(source)
+        func argument(at start: Int) -> (String, Int)? {
+            var index = start
+            while index < characters.count, characters[index].isWhitespace { index += 1 }
+            guard index < characters.count else { return nil }
+            let first = index
+            if characters[index] == "{" {
+                var depth = 0
+                while index < characters.count {
+                    if characters[index] == "\\" { index += min(2, characters.count - index); continue }
+                    if characters[index] == "{" { depth += 1 }
+                    if characters[index] == "}" { depth -= 1 }
+                    index += 1
+                    if depth == 0 { return (String(characters[first..<index]), index) }
+                }
+                return nil
+            }
+            if characters[index] == "\\" {
+                index += 1
+                if index < characters.count, characters[index].isLetter {
+                    while index < characters.count, characters[index].isLetter { index += 1 }
+                } else { index += min(1, characters.count - index) }
+            } else { index += 1 }
+            return ("{" + String(characters[first..<index]) + "}", index)
+        }
+        var result = "", index = 0
+        while index < characters.count {
+            guard characters[index] == "\\" else { result.append(characters[index]); index += 1; continue }
+            let start = index
+            index += 1
+            while index < characters.count, characters[index].isLetter { index += 1 }
+            let command = String(characters[(start + 1)..<index])
+            if command.isEmpty {
+                result.append("\\")
+                if index < characters.count { result.append(characters[index]); index += 1 }
+            } else if command == "dots" { result += "\\ldots" }
+            else if (command == "dfrac" || command == "tfrac"),
+                    let numerator = argument(at: index), let denominator = argument(at: numerator.1) {
+                let style = command == "dfrac" ? "displaystyle" : "textstyle"
+                result += "{\\" + style + "\\frac" + renderingSource(numerator.0, depth: depth + 1) + renderingSource(denominator.0, depth: depth + 1) + "}"
+                index = denominator.1
+            } else { result += String(characters[start..<index]) }
+        }
+        return result
+    }
     private final class Cached: NSObject {
         let image: NSImage; let ascent: CGFloat; let descent: CGFloat
         init(_ image: NSImage, _ ascent: CGFloat, _ descent: CGFloat) { self.image = image; self.ascent = ascent; self.descent = descent }
@@ -39,7 +86,7 @@ struct RenderedMarkdownMath {
         let resolved = color.usingColorSpace(.deviceRGB) ?? .black
         let key = "\(latex)|\(span.display)|\(fontSize)|\(resolved)" as NSString
         if let cached = cache.object(forKey: key) { return .init(span: span, image: cached.image, ascent: cached.ascent, descent: cached.descent) }
-        var math = MathImage(latex: latex, fontSize: fontSize, textColor: resolved, labelMode: span.display ? .display : .text, textAlignment: .left)
+        var math = MathImage(latex: renderingSource(latex), fontSize: fontSize, textColor: resolved, labelMode: span.display ? .display : .text, textAlignment: .left)
         let (error, image, info) = math.asImage()
         guard error == nil, let image, let info, image.size.width.isFinite, image.size.height.isFinite,
               image.size.width > 0, image.size.width < 10_000, image.size.height > 0, image.size.height < 2_000 else { return nil }

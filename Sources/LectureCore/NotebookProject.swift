@@ -34,6 +34,7 @@ public struct NotebookMessage: Codable, Identifiable, Equatable, Sendable {
     public var appGenerated: Bool?
     public var activities: [NotebookActivity]?
     public var attachments: [NotebookAttachment]?
+    public var usageTracked: Bool?
     public init(role: String, text: String, files: [String] = [], checkpointID: String? = nil, activities: [NotebookActivity]? = nil, appGenerated: Bool? = nil) {
         self.role = role; self.text = text; self.files = files; self.checkpointID = checkpointID; self.activities = activities; self.appGenerated = appGenerated
     }
@@ -98,6 +99,8 @@ public final class NotebookProjectStore {
     public var notebooks: [Notebook]
     public private(set) var checkpoints: [NotebookCheckpoint] = []
     private var applying = false
+    private var cachedUsageMessages: Set<String> = []
+    private var loadedUsageNotebooks: Set<String> = []
     public var didChange: (() -> Void)?
     private let index = "projects/checkpoints.json"
     private let journal = "projects/transaction.json"
@@ -112,13 +115,34 @@ public final class NotebookProjectStore {
     private func statePath(_ id: String) -> String { "projects/" + Self.digest(id) + "/state.json" }
     public func loadState(_ notebook: Notebook) throws -> NotebookProjectState {
         let path = statePath(notebook.id)
-        return exists(path) ? try JSONDecoder().decode(NotebookProjectState.self, from: workspace.readStorage(path)) : .init()
+        let state = exists(path) ? try JSONDecoder().decode(NotebookProjectState.self, from: workspace.readStorage(path)) : .init()
+        try cacheUsage(state, notebookID: notebook.id)
+        loadedUsageNotebooks.insert(notebook.id)
+        return state
     }
     public func saveState(_ state: NotebookProjectState, notebookID: String) throws {
+        try cacheSavedUsage(notebookID)
+        try cacheUsage(state, notebookID: notebookID)
         try workspace.writeStorage(statePath(notebookID), data: JSONEncoder().encode(state))
+    }
+    private func cacheSavedUsage(_ notebookID: String) throws {
+        guard !loadedUsageNotebooks.contains(notebookID) else { return }
+        let path = statePath(notebookID)
+        if exists(path) {
+            let state = try JSONDecoder().decode(NotebookProjectState.self, from: workspace.readStorage(path))
+            try cacheUsage(state, notebookID: notebookID)
+        }
+        loadedUsageNotebooks.insert(notebookID)
+    }
+    private func cacheUsage(_ state: NotebookProjectState, notebookID: String) throws {
+        let identifiers = Set(state.chats.flatMap(\.messages).filter { $0.role == "assistant" }.map(\.id))
+        guard !identifiers.isSubset(of: cachedUsageMessages) else { return }
+        try ProviderUsageLog(workspace: workspace).cacheHistory(state, notebookID: notebookID)
+        cachedUsageMessages.formUnion(identifiers)
     }
     public func forgetNotebook(_ notebookID: String) throws {
         guard !applying else { throw ReplayError.conflict }
+        try cacheSavedUsage(notebookID)
         let remaining = checkpoints.filter { $0.notebookID != notebookID }
         try workspace.writeStorage(index, data: JSONEncoder().encode(remaining))
         checkpoints = remaining

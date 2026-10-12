@@ -5,6 +5,31 @@ import LectureCore
 @testable import Notes
 
 final class MarkdownMathTests: XCTestCase {
+    @MainActor func testScreenshotFormulasRenderInNotesTablesAndChatWithoutSourceChanges() throws {
+        let formulas = [#"T_{orig}(n)=n\cdot T"#, #"t=\max{t_1,\dots,t_k}+d"#,
+                        #"TLI=k\cdot t"#, #"T_{seg}(n)=TLI+(n-1)t=kt+(n-1)t"#,
+                        #"S(n)=\dfrac{n,T}{k,t+(n-1),t}"#,
+                        #"S_{max}=\lim_{n\to\infty}S(n)=\dfrac{T}{t}"#,
+                        #"W_k(n)=\dfrac{n}{k,t+(n-1),t}"#, #"W_{max}=\dfrac{1}{t}"#]
+        let source = formulas.map { "$" + $0 + "$" }.joined(separator: "\n\n")
+        let spans = MarkdownMath.spans(in: source)
+        XCTAssertEqual(spans.count, formulas.count)
+        for span in spans { XCTAssertNotNil(MarkdownMathRenderer.render(span, source: source)) }
+        let chat = MarkdownMathText.attributed(source)
+        XCTAssertEqual(chat.string.filter { $0 == "\u{fffc}" }.count, formulas.count)
+        let view = MarkdownTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 700))
+        view.string = source; view.liveEditing = false; view.renderMarkdown()
+        XCTAssertEqual(view.string, source)
+        XCTAssertEqual(view.renderedMath.count, formulas.count)
+        let markdown = "| Formula |\n| --- |\n" + formulas.map { "| $" + $0 + "$ |" }.joined(separator: "\n")
+        let table = try XCTUnwrap(MarkdownTables.blocks(in: markdown).first?.table)
+        let layout = MarkdownTableLayout(table: table, width: 680)
+        XCTAssertEqual(layout.texts.reduce(0) { $0 + $1.string.filter { $0 == "\u{fffc}" }.count }, formulas.count)
+        XCTAssertEqual(MarkdownMathRenderer.renderingSource(#"\dfrac{\dfrac{1}{2}}{\dots}"#), #"{\displaystyle\frac{{\displaystyle\frac{1}{2}}}{\ldots}}"#)
+        XCTAssertEqual(MarkdownMathRenderer.renderingSource(#"\dfracUnknown{1}{2} \unknown \{dots\}"#), #"\dfracUnknown{1}{2} \unknown \{dots\}"#)
+        let fraction = #"$\tfrac12$"#
+        XCTAssertNotNil(MarkdownMathRenderer.render(try XCTUnwrap(MarkdownMath.spans(in: fraction).first), source: fraction))
+    }
     static let example = #"""
     ### 1.1 Fundamental Definitions
     - **Alphabet ($\Sigma$):** A finite, non-empty set of symbols (e.g., $\Sigma = \{a, b\}$ or $\Gamma = \{0, 1\}$).

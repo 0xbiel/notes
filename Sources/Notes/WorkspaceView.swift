@@ -163,7 +163,10 @@ struct WorkspaceTitleBar: View {
                     DocumentFileActions(model: model, path: path)
                 }
                 if model.selectedNote != nil { NoteToolbar(model: model) }
-                else if model.selectedFile != nil { NotebookAssistantToggle(model: model) }
+                else if let file = model.selectedFile {
+                    if NotebookPracticeTest.isPracticeTest(file) { NotebookPracticeLayoutSelector() }
+                    NotebookAssistantToggle(model: model)
+                }
             }
             .padding(.horizontal, 18).frame(height: 58)
             .background(WindowDragRegion())
@@ -492,7 +495,9 @@ struct CourseTreeRow: View {
 struct NoteWorkspace: View {
     @ObservedObject var model: Workbench
     @State private var composerHeight: CGFloat = 130
+    @State private var quizFooterHeight: CGFloat = 64
     private var showsComposer: Bool { model.showsDocumentComposer }
+    private var isPracticeTest: Bool { model.selectedFile.map(NotebookPracticeTest.isPracticeTest) == true }
     var body: some View {
         Group {
             if model.activeNotebooks.isEmpty {
@@ -500,7 +505,10 @@ struct NoteWorkspace: View {
             } else if let file = model.selectedFile, let workspace = model.workspace {
                 if LaTeXDocument.isSource(file), let controller = try? model.latexController(file) {
                     LaTeXEditor(controller: controller, bottomInset: showsComposer ? composerHeight : 0).id(file)
-                } else { NotebookFilePreview(workspace: workspace, path: file) }
+                } else {
+                    NotebookFilePreview(workspace: workspace, path: file, bottomInset: showsComposer ? composerHeight : 0,
+                        imageRoot: workspace.courseRoot.appendingPathComponent(model.currentNotebook.rootPrefix), onFooterHeight: { quizFooterHeight = $0 })
+                }
             } else if let note = model.selectedNote {
                 LiveMarkdownEditor(documentID: note, text: model.draftText, editing: model.layout == "edit", heading: model.previewHeading,
                     bottomInset: showsComposer ? composerHeight : 0,
@@ -519,6 +527,7 @@ struct NoteWorkspace: View {
                 NotebookComposer(model: model, assistant: assistant).frame(maxWidth: 740)
                     .padding(.horizontal, 18).padding(.top, 8).padding(.bottom, 16)
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
+                    .padding(.bottom, isPracticeTest ? quizFooterHeight : 0)
             }
         }
         .onAppear { if model.layout == "split" { model.layout = "edit" } }

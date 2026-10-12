@@ -343,6 +343,7 @@ final class NotebookAssistantController: ObservableObject {
             if configuration.provider == .openCode && !images.isEmpty { throw MediaError.invalid("This provider does not support image/PDF attachments. Select Codex, Claude or Antigravity.") }
             var message = NotebookMessage(role: "user", text: prompt.isEmpty ? (UserDefaults.standard.string(forKey: "notes.language") == "en" ? "Review the attached files." : "Revisa los archivos adjuntos.") : prompt)
             message.attachments = chat.attachments
+            message.usageTracked = true
             value.chats[i].messages.append(message)
             if value.chats[i].messages.count == 1 { value.chats[i].title = String(message.text.prefix(65)) }
             if let queuedInput { value.chats[i].queuedPrompts?.removeAll { $0.id == queuedInput.id } }
@@ -351,6 +352,9 @@ final class NotebookAssistantController: ObservableObject {
             let libraryFiles = try store.workspace.fileNames().filter { store.owner(of: $0)?.id == notebook.id }
             let language = UserDefaults.standard.string(forKey: "notes.language") ?? "es"
             var candidate = NotebookTextRequest(notebook: notebook, profile: value.profile, messages: value.chats[i].messages, currentDocument: document, texts: texts, language: language, libraryFiles: libraryFiles)
+            for attachment in allAttachments where attachment.isImage || attachment.isPDF {
+                candidate.sourceDigests["attachment:" + attachment.id] = NotebookSourceImage.digest(try store.workspace.readStorage(attachment.storagePrefix + "/original"))
+            }
             candidate.webEnabled = queuedInput?.webEnabled ?? webEnabled
             candidate.nativeWebSearch = configuration.provider.supportsNativeWebSearch
             _ = try candidate.prompt()
@@ -426,6 +430,7 @@ final class NotebookAssistantController: ObservableObject {
                                         do {
                                             let source = try NotebookLibraryContext.read(file, inside: inside, selection: selection, library: library, notebookID: notebook.id)
                                             request.documents[path] = source.text
+                                            request.sourceDigests[file] = source.sourceDigest
                                             if configuration.provider == .openCode && !source.images.isEmpty {
                                                 request.documents[path, default: ""] += "\n[This provider cannot read images. Choose an image-capable provider for scanned pages/images.]"
                                             } else if images.count + source.images.count <= NotebookAttachmentImport.maximumImages,
@@ -462,9 +467,22 @@ final class NotebookAssistantController: ObservableObject {
                         }
                         try Task.checkCancellation()
                         self.report("Validando y guardando \(changes.count) archivo(s)…", run: run, detail: changes.isEmpty ? "Sin cambios en los documentos." : changes.map(\.path).joined(separator: "\n"), kind: .tool)
-                        let outputs = try NotebookDocumentOutputWriter.prepare(response.outputs ?? [], documents: request.documents, changes: changes, store: self.store, notebook: notebook)
-                        let checkpoint = try apply(changes, request.documents, prompt)
-                        try NotebookDocumentOutputWriter.publish(outputs, workspace: self.store.workspace)
+                        let requestedOutputs = response.outputs ?? []
+                        guard requestedOutputs.count <= 10 else { throw MediaError.invalid("Too many document exports.") }
+                        let imageOutputs = try NotebookDocumentOutputWriter.prepare(requestedOutputs.filter { $0.format == "image" }, documents: request.documents, changes: changes, store: self.store, notebook: notebook, sourceDigests: request.sourceDigests, attachments: allAttachments)
+                        try NotebookDocumentOutputWriter.publish(imageOutputs, workspace: self.store.workspace)
+                        var outputs = imageOutputs
+                        let checkpoint: NotebookCheckpoint?
+                        do {
+                            let remaining = try NotebookDocumentOutputWriter.prepare(requestedOutputs.filter { $0.format != "image" }, documents: request.documents, changes: changes, store: self.store, notebook: notebook)
+                            try NotebookDocumentOutputWriter.publish(remaining, workspace: self.store.workspace)
+                            outputs += remaining
+                            try Task.checkCancellation()
+                            checkpoint = try apply(changes, request.documents, prompt)
+                        } catch {
+                            try? NotebookDocumentOutputWriter.rollback(outputs, workspace: self.store.workspace)
+                            throw error
+                        }
                         let outputPaths = outputs.map { $0.0 }
                         if !outputPaths.isEmpty { self.onLibraryChange?(outputPaths) }
                         let reply = response.reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? (changes.isEmpty ? "Sin cambios." : "Cambios guardados · \(changes.count) archivo(s).") : response.reply
