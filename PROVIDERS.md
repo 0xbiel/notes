@@ -35,7 +35,7 @@ Claude Code and the per-provider options were reviewed against commit `8c777fbfa
 
 ## Transport boundaries
 
-OpenCode accepts the specifically verified CLI versions 1.3.13 and 1.18.35 and checks its effective model, permissions, MCP, plugins, auxiliary agents, and privacy/price policy before sending. Real-note requests require no training, ZDR, and zero prices; only the exact invented demo permits retention. No policy is relaxed to make a request pass.
+OpenCode accepts the specifically verified CLI versions 1.3.13, 1.18.35 and 1.19.0 and checks its effective model, permissions, MCP, plugins, auxiliary agents, and privacy/price policy before sending. Real-note requests require no training, ZDR, and zero prices; only the exact invented demo permits retention. No policy is relaxed to make a request pass.
 
 Claude Code runs `claude -p --safe-mode` in a private empty directory with stream-JSON output and the request's JSON schema. Customizations, hooks, skills, slash commands, MCP servers and session persistence are disabled, and no file or command tools are offered; notebook requests with web access add only Claude's web search. The session's first event must list no other tool and no MCP server, or nothing is accepted. Any other tool call, an error result, or a missing structured result rejects the response. The account is whatever Claude Code is signed in to, in the configured `CLAUDE_CONFIG_DIR` when one is set. Image attachments are sent as stream-JSON input.
 

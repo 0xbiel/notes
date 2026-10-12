@@ -25,8 +25,12 @@ struct MarkdownTableLayout {
             let style = NSMutableParagraphStyle(); style.lineSpacing = 2
             style.alignment = table.alignments[cell.column] == .center ? .center : table.alignments[cell.column] == .right ? .right : .left
             result.addAttribute(.paragraphStyle, value: style, range: all)
+            // Text drawn outside a text view paints .link in the system colour, so the target moves to
+            // a private attribute and the link takes the notebook accent like those in the note body.
             result.enumerateAttribute(.link, in: all) { link, range, _ in
-                if link != nil { result.addAttribute(.foregroundColor, value: accent, range: range) }
+                guard let url = link as? URL ?? (link as? String).flatMap(URL.init(string:)) else { return }
+                result.removeAttribute(.link, range: range)
+                result.addAttributes([Self.linkKey: url, .foregroundColor: accent, .underlineStyle: NSUnderlineStyle.single.rawValue], range: range)
             }
             return result
         }
@@ -45,6 +49,18 @@ struct MarkdownTableLayout {
     func rect(_ cell: MarkdownTableCell) -> NSRect {
         NSRect(x: CGFloat(cell.column) * width / CGFloat(table.columns), y: rowHeights.prefix(cell.row).reduce(0, +),
                width: CGFloat(cell.columnSpan) * width / CGFloat(table.columns), height: rowHeights[cell.row..<(cell.row + cell.rowSpan)].reduce(0, +))
+    }
+    static let linkKey = NSAttributedString.Key("palladium.tableLink")
+    /// The link under a point given in the table's own coordinates.
+    @MainActor func link(at point: NSPoint) -> URL? {
+        guard let index = table.cells.indices.first(where: { rect(table.cells[$0]).contains(point) }), texts[index].length > 0 else { return nil }
+        let box = rect(table.cells[index]).insetBy(dx: 10, dy: 8)
+        let storage = NSTextStorage(attributedString: texts[index]), manager = NSLayoutManager()
+        let container = NSTextContainer(size: NSSize(width: box.width, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0; manager.addTextContainer(container); storage.addLayoutManager(manager)
+        let local = NSPoint(x: point.x - box.minX, y: point.y - box.minY), glyph = manager.glyphIndex(for: local, in: container)
+        guard manager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container).contains(local) else { return nil }
+        return storage.attribute(Self.linkKey, at: manager.characterIndexForGlyph(at: glyph), effectiveRange: nil) as? URL
     }
     func draw(at origin: NSPoint) {
         let bounds = NSRect(origin: origin, size: NSSize(width: width, height: height))

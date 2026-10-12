@@ -253,6 +253,79 @@ final class NotebookAssistantTests: XCTestCase {
         XCTAssertThrowsError(try NotebookAssistantProtocol.changes(.init(reply: "", edits: [.init(path: "Guía 1.txt", find: "guide", replacement: "changed")]), documents: ["Guía 1.txt": "guide"]))
     }
 
+    @MainActor func testPlainMarkdownLinksOpenNotesAndFilesOfTheNotebook() throws {
+        let (model, _, _) = try fixture()
+        let workspace = try XCTUnwrap(model.workspace)
+        try workspace.createNote("lab guide/02_estructura.md", text: "# Estructura\n\nVer [mini](03_mini_compilador.md#pasos-para-ti).\n")
+        try workspace.createNote("lab guide/03_mini_compilador.md", text: "# Mini\n\n## Pasos para ti\n\nTexto.\n")
+        try workspace.createAsset("lab/enunciado.txt", data: Data("enunciado".utf8))
+        model.notes = try workspace.noteNames(); model.libraryFiles = try workspace.fileNames()
+        model.openNote("lab guide/02_estructura.md")
+        _ = model.openWikilink(try XCTUnwrap(URL(string: "03_mini_compilador.md#pasos-para-ti")))
+        XCTAssertNil(model.errorText)
+        XCTAssertEqual(model.selectedNote, "lab guide/03_mini_compilador.md"); XCTAssertEqual(model.previewHeading, "Pasos para ti")
+        _ = model.openWikilink(try XCTUnwrap(URL(string: "../Inicio.md")))
+        XCTAssertEqual(model.selectedNote, "Inicio.md")
+        _ = model.openWikilink(try XCTUnwrap(URL(string: "lab%20guide/02_estructura")))
+        XCTAssertEqual(model.selectedNote, "lab guide/02_estructura.md")
+        _ = model.openWikilink(try XCTUnwrap(URL(string: "../lab/enunciado.txt")))
+        XCTAssertEqual(model.selectedFile, "lab/enunciado.txt"); XCTAssertNil(model.errorText)
+        _ = model.openWikilink(try XCTUnwrap(URL(string: "03_mini_compilador.md")))
+        XCTAssertEqual(model.selectedNote, "lab guide/03_mini_compilador.md")
+        _ = model.openWikilink(try XCTUnwrap(URL(string: "no_existe.md")))
+        XCTAssertNotNil(model.errorText); XCTAssertEqual(model.selectedNote, "lab guide/03_mini_compilador.md")
+    }
+    @MainActor func testZipArchiveIsReadThroughItsFiles() throws {
+        let (model, _, _) = try fixture()
+        let stage = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: stage) }
+        try FileManager.default.createDirectory(at: stage.appendingPathComponent("src/analizador"), withIntermediateDirectories: true)
+        let lexer = "public class Lexer { /* analizador léxico */ }\n" + String(repeating: "// relleno de código\n", count: 400)
+        try Data(lexer.utf8).write(to: stage.appendingPathComponent("src/analizador/Lexer.java"))
+        try Data("primos\n".utf8).write(to: stage.appendingPathComponent("notas.txt"))
+        try Data().write(to: stage.appendingPathComponent("vacio.txt"))
+        try Data([0, 1, 2, 0, 255]).write(to: stage.appendingPathComponent("Lexer.class"))
+        let tiff = try XCTUnwrap(NSImage(size: NSSize(width: 8, height: 8), flipped: false) { NSColor.red.setFill(); $0.fill(); return true }.tiffRepresentation)
+        let png = try XCTUnwrap(NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]))
+        try png.write(to: stage.appendingPathComponent("src/diagrama.png"))
+        func pack(_ name: String, _ files: [String]) throws {
+            let zip = Process()
+            zip.executableURL = URL(fileURLWithPath: "/usr/bin/zip"); zip.currentDirectoryURL = stage
+            zip.arguments = ["-q", "-r", name] + files
+            try zip.run(); zip.waitUntilExit()
+            XCTAssertEqual(zip.terminationStatus, 0)
+        }
+        try pack("dentro.zip", ["notas.txt"])
+        try pack("test.zip", ["src", "notas.txt", "vacio.txt", "Lexer.class"])
+        try pack("anidado.zip", ["dentro.zip", "src/diagrama.png"])
+        let data = try Data(contentsOf: stage.appendingPathComponent("test.zip"))
+        let archive = try ZipArchiveReader(data: data)
+        XCTAssertEqual(archive.entries.map(\.name), ["Lexer.class", "notas.txt", "src/analizador/Lexer.java", "src/diagrama.png", "vacio.txt"])
+        XCTAssertEqual(try archive.contents(of: archive.entries[2]), Data(lexer.utf8))
+        try model.workspace!.createAsset("test.zip", data: data)
+        let library = NotebookFileLibrary(projects: model.projects!), id = model.currentNotebook.id
+        let whole = try NotebookLibraryContext.read("test.zip", library: library, notebookID: id)
+        XCTAssertTrue(whole.text.contains("- src/analizador/Lexer.java (\(lexer.utf8.count) bytes)"))
+        XCTAssertTrue(whole.text.contains("[File: notas.txt]\nprimos"))
+        XCTAssertTrue(whole.text.contains("analizador léxico"))
+        XCTAssertTrue(whole.text.contains("[File: Lexer.class]\n[Not text"))
+        XCTAssertTrue(try NotebookLibraryContext.read("test.zip", selection: .find("class lexer"), library: library, notebookID: id).text.contains("analizador léxico"))
+        XCTAssertTrue(whole.text.contains("request \"test.zip#entry=src/diagrama.png\" in readFiles"))
+        // Any file is reachable on its own: by path or bare name, images included, through nested archives.
+        let alone = NotebookLibraryContext.parse("test.zip#entry=src/analizador/Lexer.java#find=class lexer")
+        XCTAssertEqual(alone.path, "test.zip"); XCTAssertEqual(alone.inside, ["src/analizador/Lexer.java"]); XCTAssertEqual(alone.selection, .find("class lexer"))
+        XCTAssertEqual(try NotebookLibraryContext.read("test.zip", inside: ["lexer.java"], library: library, notebookID: id).text, lexer)
+        XCTAssertEqual(try NotebookLibraryContext.read("test.zip", inside: ["src/diagrama.png"], library: library, notebookID: id).images.count, 1)
+        try model.workspace!.createAsset("anidado.zip", data: try Data(contentsOf: stage.appendingPathComponent("anidado.zip")))
+        XCTAssertTrue(try NotebookLibraryContext.read("anidado.zip", library: library, notebookID: id).text.contains("request \"anidado.zip#entry=dentro.zip\""))
+        let nested = NotebookLibraryContext.parse("anidado.zip#entry=dentro.zip#entry=notas.txt")
+        XCTAssertEqual(try NotebookLibraryContext.read(nested.path, inside: nested.inside, library: library, notebookID: id).text, "primos\n")
+        XCTAssertThrowsError(try NotebookLibraryContext.read("test.zip", inside: ["falta.txt"], library: library, notebookID: id))
+        try model.workspace!.createAsset("roto.zip", data: Data("not a zip archive at all".utf8))
+        XCTAssertThrowsError(try NotebookLibraryContext.read("roto.zip", library: library, notebookID: id))
+        XCTAssertThrowsError(try ZipArchiveReader(data: data.prefix(data.count / 2)))
+    }
+
     @MainActor func testLongSourceIsReadInPartsByPagesOrSearch() throws {
         let (model, _, _) = try fixture()
         func page(_ text: String) throws -> PDFPage {

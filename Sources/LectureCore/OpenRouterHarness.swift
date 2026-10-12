@@ -81,7 +81,7 @@ public struct OpenRouterHarness: Sendable {
     public let executablePath: String
     public let notebookEditing: Bool
     public let allowRetention: Bool
-    public static let supportedVersions = ["1.3.13", "1.18.35"]
+    public static let supportedVersions = ["1.3.13", "1.18.35", "1.19.0"]
     /// The provider instance whose environment variables reach the CLI.
     var instance: AIProviderConfiguration? = nil
     init(store: LocalMediaStore, configuration: AIProviderConfiguration, notebookEditing: Bool = false) {

@@ -4,7 +4,7 @@ struct CodexNotebookStreamingTransport {
     let store: LocalMediaStore
     let configuration: AIProviderConfiguration
 
-    func generate(_ prompt: String, language: String, images: [NotebookInputImage], webEnabled: Bool = true, progress: @escaping @Sendable (NotebookProviderProgress) async -> Void) async throws -> String {
+    func generate(_ prompt: String, language: String, images: [NotebookInputImage], webEnabled: Bool = true, usage: @escaping @Sendable (ProviderTokenUsage) -> Void = { _ in }, progress: @escaping @Sendable (NotebookProviderProgress) async -> Void) async throws -> String {
         let directory = try NotesProviderTransport(store: store).temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let home = directory.appendingPathComponent("codex-home")
@@ -35,7 +35,8 @@ struct CodexNotebookStreamingTransport {
                 if configuration.model != "default" { threadParams["model"] = configuration.model }
                 let result = try connection.request("thread/start", params: threadParams)
                 guard let thread = result["thread"] as? [String: Any], let id = thread["id"] as? String else { throw MediaError.invalid("Codex no inició el hilo.") }
-                var decoder = CodexNotebookProgressDecoder(threadID: id, webEnabled: webEnabled)
+                var decoder = CodexNotebookProgressDecoder(threadID: id, webEnabled: webEnabled, model: result["model"] as? String ?? configuration.model)
+                defer { if let total = decoder.usage { usage(total) } }
                 connection.notificationHandler = { method, params in
                     if let update = try decoder.accept(method, params) { events.continuation.yield(update) }
                 }
@@ -65,6 +66,9 @@ struct CodexNotebookStreamingTransport {
 struct CodexNotebookProgressDecoder {
     let threadID: String
     var webEnabled = false
+    var model = "default"
+    /// Thread total so far; Codex counts cached tokens inside the input.
+    private(set) var usage: ProviderTokenUsage?
     private var turnID: String?
     private var parts: [String: [Int: String]] = [:]
     private(set) var output = ""
@@ -84,6 +88,11 @@ struct CodexNotebookProgressDecoder {
             parts[key, default: [:]][index] = String(((parts[key]?[index] ?? "") + delta).prefix(12_000))
             let detail = parts[key]!.keys.sorted().compactMap { parts[key]?[$0] }.joined(separator: "\n\n")
             return .init(id: "thought-" + key, title: "Pensando…", detail: detail, kind: .reasoning)
+        }
+        if method == "thread/tokenUsage/updated", let total = (params["tokenUsage"] as? [String: Any])?["total"] as? [String: Any] {
+            let count = ProviderTokenUsage.count, cached = count(total["cachedInputTokens"])
+            usage = .init(model: model, input: count(total["inputTokens"]) - cached, cachedInput: cached, output: count(total["outputTokens"]))
+            return nil
         }
         if method == "item/agentMessage/delta" { return .init(id: "provider-response", title: "Redactando respuesta…") }
         if ["item/started", "item/completed"].contains(method), let item = params["item"] as? [String: Any], let kind = item["type"] as? String {

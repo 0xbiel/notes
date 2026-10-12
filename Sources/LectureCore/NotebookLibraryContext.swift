@@ -13,26 +13,75 @@ public enum NotebookLibraryContext {
         case pages(ClosedRange<Int>)
         case find(String)
     }
-    /// `readFiles` entries may end in `#pages=12-18` or `#find=words`.
-    public static func parse(_ entry: String) -> (path: String, selection: Selection?) {
+    /// `readFiles` entries may end in `#pages=12-18` or `#find=words`, and reach a file inside
+    /// a ZIP archive with `#entry=path/in/archive` (repeated for an archive inside an archive).
+    public static func parse(_ entry: String) -> (path: String, inside: [String], selection: Selection?) {
+        var whole = entry, selection: Selection?
         if let marker = entry.range(of: "#pages=", options: .backwards) {
             let bounds = entry[marker.upperBound...].split(separator: "-", omittingEmptySubsequences: false).map { Int($0.trimmingCharacters(in: .whitespaces)) }
-            if let first = bounds.first ?? nil, first > 0, bounds.count <= 2, let last = bounds.count == 2 ? bounds[1] : first, last >= first { return (String(entry[..<marker.lowerBound]), .pages(first...last)) }
+            if let first = bounds.first ?? nil, first > 0, bounds.count <= 2, let last = bounds.count == 2 ? bounds[1] : first, last >= first { whole = String(entry[..<marker.lowerBound]); selection = .pages(first...last) }
         }
-        if let marker = entry.range(of: "#find=", options: .backwards) {
+        if selection == nil, let marker = entry.range(of: "#find=", options: .backwards) {
             let words = entry[marker.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
-            if !words.isEmpty { return (String(entry[..<marker.lowerBound]), .find(words)) }
+            if !words.isEmpty { whole = String(entry[..<marker.lowerBound]); selection = .find(words) }
         }
-        return (entry, nil)
+        let pieces = whole.components(separatedBy: "#entry=")
+        guard pieces.count > 1, !pieces.contains(where: \.isEmpty) else { return (whole, [], selection) }
+        return (pieces[0], Array(pieces.dropFirst()), selection)
     }
     /// A whole source up to this size is supplied at once; a longer one is read in parts.
     static let wholeLimit = 180_000, partLimit = 80_000
 
-    public static func read(_ path: String, selection: Selection? = nil, library: NotebookFileLibrary, notebookID: String) throws -> Content {
+    /// Text of a document that is not read page by page; nil when the format has no text to extract.
+    private static func plainText(_ data: Data, ext: String) throws -> String? {
+        if ext == "rtf" || ext == "docx" {
+            return try NSAttributedString(data: data, options: [.documentType: ext == "rtf" ? NSAttributedString.DocumentType.rtf : .officeOpenXML], documentAttributes: nil).string
+        }
+        if let decoded = String(data: data, encoding: .utf8), !decoded.contains("\0") { return decoded }
+        return nil
+    }
+    /// An archive reads as one text: the list of its files, then the content of each one that has text.
+    /// A long archive is cut into parts like any other long source, and every file can be requested on its own.
+    private static func archiveText(_ data: Data, path: String) throws -> String {
+        let archive = try ZipArchiveReader(data: data)
+        var listing = "[ZIP archive with \(archive.entries.count) files. Text files follow, each under a \"[File: name]\" line. Any file can be read on its own, in full, by requesting \"\(path)#entry=name\" in readFiles; add #pages=A-B or #find=words for a long one.]\n", body = ""
+        for entry in archive.entries {
+            listing += "- \(entry.name) (\(entry.size) bytes)\n"
+            let ext = (entry.name as NSString).pathExtension.lowercased(), alone = "request \"\(path)#entry=\(entry.name)\" in readFiles"
+            var content: String
+            if let type = UTType(filenameExtension: ext), type.conforms(to: .image) { content = "[Image: \(alone) to see it.]" }
+            else if ext == "zip" { content = "[ZIP archive: \(alone) to list and read its files.]" }
+            else {
+                do {
+                    let file = try archive.contents(of: entry)
+                    if ext == "pdf" {
+                        guard let pdf = PDFDocument(data: file), !pdf.isLocked else { throw MediaError.invalid("locked or unreadable PDF") }
+                        let pages = (0..<pdf.pageCount).map { pdf.page(at: $0)?.string ?? "" }
+                        content = pages.enumerated().map { "[Page \($0.offset + 1)]\n" + $0.element }.joined(separator: "\n")
+                        if pages.contains(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) { content += "\n[Scanned pages: \(alone) to see them as images.]" }
+                    } else { content = try plainText(file, ext: ext) ?? "[Not text: this file's content cannot be extracted.]" }
+                } catch { content = "[Could not be read: \(error.localizedDescription)]" }
+            }
+            body += "\n[File: \(entry.name)]\n" + content + "\n"
+        }
+        return listing + body
+    }
+
+    public static func read(_ path: String, inside: [String] = [], selection: Selection? = nil, library: NotebookFileLibrary, notebookID: String) throws -> Content {
         try library.validate(path, notebookID: notebookID)
-        let url = try library.workspace.fileURL(path)
-        let data = try library.workspace.readFile(path)
-        let ext = url.pathExtension.lowercased()
+        _ = try library.workspace.fileURL(path)
+        var data = try library.workspace.readFile(path), label = path
+        // Each step opens the archive reached so far and takes one file out of it.
+        for name in inside {
+            guard (label as NSString).pathExtension.lowercased() == "zip" else { throw MediaError.invalid("\(label) is not a ZIP archive.") }
+            let archive = try ZipArchiveReader(data: data)
+            guard let entry = archive.entry(named: name) else { throw MediaError.invalid("No file \"\(name)\" inside \(label). Request \"\(label)\" in readFiles to list its files.") }
+            data = try archive.contents(of: entry); label += "#entry=" + entry.name
+        }
+        return try content(data, path: label, selection: selection)
+    }
+    private static func content(_ data: Data, path: String, selection: Selection?) throws -> Content {
+        let ext = (path as NSString).pathExtension.lowercased()
         // Pages of a PDF; other text is cut into parts of similar size so a long file can be read the same way.
         var pages: [String] = []
         var document: PDFDocument?
@@ -44,9 +93,8 @@ public enum NotebookLibraryContext {
             return Content(text: "[Imported image supplied for visual reading.]", images: [.init(name: path, data: try NotebookAttachmentImport.imagePNG(data))])
         } else {
             let text: String
-            if ext == "rtf" || ext == "docx" {
-                text = try NSAttributedString(data: data, options: [.documentType: ext == "rtf" ? NSAttributedString.DocumentType.rtf : .officeOpenXML], documentAttributes: nil).string
-            } else if let decoded = String(data: data, encoding: .utf8), !decoded.contains("\0") { text = decoded }
+            if ext == "zip" { text = try archiveText(data, path: path) }
+            else if let plain = try plainText(data, ext: ext) { text = plain }
             else { throw MediaError.invalid("This imported format cannot be extracted. Export it as PDF or text.") }
             if selection == nil, text.utf8.count <= wholeLimit { return Content(text: text, images: []) }
             var rest = Substring(text)

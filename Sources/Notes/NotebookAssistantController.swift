@@ -414,9 +414,9 @@ final class NotebookAssistantController: ObservableObject {
                             guard response.edits.isEmpty else { throw MediaError.invalid("El asistente pidió contexto y cambios a la vez.") }
                             var advanced = false
                             for entry in response.readFiles {
-                                // A long source is read in parts: "file.pdf#pages=12-18" or "file.pdf#find=words".
-                                let (file, selection) = request.catalog[entry] != nil ? (entry, nil) : NotebookLibraryContext.parse(entry)
-                                let path = selection == nil ? file : entry
+                                // A long source is read in parts: "file.pdf#pages=12-18" or "file.pdf#find=words"; "file.zip#entry=name" is a file inside an archive.
+                                let (file, inside, selection) = request.catalog[entry] != nil ? (entry, [], nil) : NotebookLibraryContext.parse(entry)
+                                let path = selection == nil && inside.isEmpty ? file : entry
                                 try library.validate(file, notebookID: notebook.id)
                                 guard request.catalog[file] != nil else { throw MediaError.invalid("Documento solicitado inexistente: \(file)") }
                                 if request.documents[path] == nil {
@@ -424,7 +424,7 @@ final class NotebookAssistantController: ObservableObject {
                                     if selection == nil, let text = texts[path] { request.documents[path] = text }
                                     else {
                                         do {
-                                            let source = try NotebookLibraryContext.read(file, selection: selection, library: library, notebookID: notebook.id)
+                                            let source = try NotebookLibraryContext.read(file, inside: inside, selection: selection, library: library, notebookID: notebook.id)
                                             request.documents[path] = source.text
                                             if configuration.provider == .openCode && !source.images.isEmpty {
                                                 request.documents[path, default: ""] += "\n[This provider cannot read images. Choose an image-capable provider for scanned pages/images.]"

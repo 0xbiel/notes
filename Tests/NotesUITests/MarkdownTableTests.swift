@@ -144,5 +144,11 @@ final class MarkdownTableTests: XCTestCase {
         var table = MarkdownTable(rows: 2, columns: 1); table.cells[1].text = "[Article](https://example.com)"
         let layout = MarkdownTableLayout(table: table, width: 500, accent: .systemPurple)
         XCTAssertEqual(layout.texts[1].attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor, .systemPurple)
+        // Drawn outside a text view, .link would repaint the text in the system link colour.
+        XCTAssertNil(layout.texts[1].attribute(.link, at: 0, effectiveRange: nil))
+        let cell = layout.rect(table.cells[1])
+        XCTAssertEqual(layout.link(at: NSPoint(x: cell.minX + 14, y: cell.minY + 16))?.absoluteString, "https://example.com")
+        XCTAssertNil(layout.link(at: NSPoint(x: cell.maxX - 14, y: cell.minY + 16)))
+        XCTAssertNil(layout.link(at: NSPoint(x: 14, y: 16)))
     }
 }

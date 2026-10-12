@@ -114,7 +114,7 @@ public struct AntigravityTextTransport: Sendable {
         return result
     }
 
-    func generate(_ prompt: String, images: [NotebookInputImage] = [], checked: @escaping @Sendable () async -> Void = {}, progress: @escaping @Sendable (NotebookProviderProgress) async -> Void = { _ in }) async throws -> String {
+    func generate(_ prompt: String, images: [NotebookInputImage] = [], checked: @escaping @Sendable () async -> Void = {}, usage: @escaping @Sendable (ProviderTokenUsage) -> Void = { _ in }, progress: @escaping @Sendable (NotebookProviderProgress) async -> Void = { _ in }) async throws -> String {
         try configuration.validateSending()
         try prepareAuth()
         let method = configuration.antigravityAuth.rawValue
@@ -137,7 +137,8 @@ public struct AntigravityTextTransport: Sendable {
                     if configuration.model != "default" {
                         _ = try connection.request("session/set_model", params: ["sessionId": sessionID, "modelId": configuration.model])
                     }
-                    return sessionID
+                    let current = (session["models"] as? [String: Any])?["currentModelId"] as? String
+                    return (sessionID, configuration.model == "default" ? current ?? "default" : configuration.model)
                 } catch { connection.close(); throw error }
             }.value
             await checked()
@@ -148,13 +149,25 @@ public struct AntigravityTextTransport: Sendable {
                 defer { connection.close(); events.continuation.finish() }
                 var content: [[String: Any]] = [["type": "text", "text": prompt]]
                 content += images.map { ["type": "image", "mimeType": "image/png", "data": $0.data.base64EncodedString()] }
-                let finish = try connection.request("session/prompt", params: ["sessionId": prepared, "prompt": content])
+                let finish = try connection.request("session/prompt", params: ["sessionId": prepared.0, "prompt": content])
+                usage(Self.usage(finish, model: prepared.1, prompt: prompt, output: connection.output))
                 guard finish["stopReason"] as? String == "end_turn" else { throw MediaError.invalid("Antigravity no completó el lote; no se aplica nada.") }
                 return connection.output
             }
             for await event in events.stream { await progress(event) }
             return try await worker.value
         } onCancel: { connection.cancel() }
+    }
+
+    /// ACP reports token counts in the prompt result when the agent supports
+    /// it; otherwise they are approximated from the text exchanged.
+    static func usage(_ finish: [String: Any], model: String, prompt: String, output: String) -> ProviderTokenUsage {
+        let count = ProviderTokenUsage.count
+        guard let reported = finish["usage"] as? [String: Any], count(reported["inputTokens"]) + count(reported["outputTokens"]) > 0 else {
+            return .approximate(model: model, prompt: prompt, output: output)
+        }
+        let cached = count(reported["cachedReadTokens"]), written = count(reported["cachedWriteTokens"])
+        return .init(model: model, input: count(reported["inputTokens"]) - cached - written, cachedInput: cached, cacheWrite: written, output: count(reported["outputTokens"]) + count(reported["thoughtTokens"]))
     }
 
     public func models() async throws -> [AIProviderModel] {
