@@ -68,7 +68,17 @@ struct WorkbenchView: View {
                 .offset(x: chrome.sidebarVisible ? 0 : -sidebarWidth)
                 .allowsHitTesting(chrome.sidebarVisible)
                 .accessibilityHidden(!chrome.sidebarVisible)
-
+            if model.showOnboarding {
+                OnboardingView(model: model).frame(maxWidth: .infinity, maxHeight: .infinity).transition(.opacity)
+            }
+            // The real window buttons sit where the sidebar header leaves room, above the introduction.
+            let sidebarControls = chrome.compact && !model.showOnboarding
+            NativeWindowControls(chrome: chrome).frame(width: 76, height: 34)
+                .padding(.leading, 18 + (sidebarControls ? CompactLayout.horizontalInset : 0))
+                .padding(.top, sidebarControls ? CompactLayout.verticalInset + 8 : 12)
+                .opacity(chrome.sidebarVisible || model.showOnboarding ? 1 : 0)
+                .offset(x: chrome.sidebarVisible || model.showOnboarding ? 0 : -sidebarWidth)
+                .allowsHitTesting(chrome.sidebarVisible || model.showOnboarding)
         }
         .tint(.gray).accentColor(.gray)
         .background(NotebookAccentCaret())
@@ -83,6 +93,7 @@ struct WorkbenchView: View {
         .ignoresSafeArea(.container, edges: .top)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: chrome.compact)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: chrome.sidebarVisible)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.45), value: model.showOnboarding)
         .onChange(of: model.showPreferences) { _, presented in
             if presented { preferencesSection = model.requestedPreferencesSection; model.requestedPreferencesSection = .general }
         }
@@ -104,7 +115,7 @@ struct WorkbenchView: View {
     private var library: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                NativeWindowControls(chrome: chrome).frame(width: 76, height: 34)
+                Color.clear.frame(width: 76, height: 34)
                 Spacer()
                 Button { chrome.toggleCompact() } label: {
                     Image(systemName: "sidebar.left")
@@ -485,11 +496,7 @@ struct NoteWorkspace: View {
     var body: some View {
         Group {
             if model.activeNotebooks.isEmpty {
-                ContentUnavailableView {
-                    Label("Sin cuadernos", systemImage: "book.closed")
-                } actions: {
-                    Button("Nuevo cuaderno") { model.creationInitialName = ""; model.creationKind = "cuaderno" }
-                }
+                NotebookEmptyLibrary(model: model)
             } else if let file = model.selectedFile, let workspace = model.workspace {
                 if LaTeXDocument.isSource(file), let controller = try? model.latexController(file) {
                     LaTeXEditor(controller: controller, bottomInset: showsComposer ? composerHeight : 0).id(file)

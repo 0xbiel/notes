@@ -22,6 +22,7 @@ try:
     for bundle in (root/'.build-native/debug').glob('*.bundle'):
         shutil.copytree(bundle, app/'Contents/Resources'/bundle.name, dirs_exist_ok=True)
     shutil.copyfile(root/'Resources/Branding/Palladium.icns', app/'Contents/Resources/Palladium.icns')
+    shutil.copyfile(root/'Resources/Branding/PalladiumMark.png', app/'Contents/Resources/PalladiumMark.png')
     info={"CFBundleExecutable":"Notes","CFBundleIdentifier":"local.biel.DerechoReplayPrototype","CFBundleName":"Palladium","CFBundleDisplayName":"Palladium","CFBundleIconFile":"Palladium.icns","CFBundlePackageType":"APPL","CFBundleShortVersionString":"0.3.0","CFBundleVersion":"3","LSMinimumSystemVersion":"14.0","NSHighResolutionCapable":True,"NSMicrophoneUsageDescription":"Dictar en el cuadro de mensaje únicamente cuando pulses el micrófono. El modelo local funciona en este Mac; la opción API envía audio a OpenAI.","PrototypeWorkspace":str(workspace)}
     (app/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
     # SwiftPM resources can arrive read-only; make staged copies writable for signing cleanup.

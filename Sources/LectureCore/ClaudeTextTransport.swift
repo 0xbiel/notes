@@ -87,7 +87,7 @@ public struct ClaudeTextTransport: Sendable {
     }
 
     /// Returns the model's structured output as JSON text.
-    func generate(_ prompt: String, schema: [String: Any], instructions: String, images: [NotebookInputImage] = [], webSearch: Bool = false, checked: @escaping @Sendable () async -> Void = {}, progress: @escaping @Sendable (NotebookProviderProgress) async -> Void = { _ in }) async throws -> String {
+    func generate(_ prompt: String, schema: [String: Any], instructions: String, images: [NotebookInputImage] = [], webSearch: Bool = false, checked: @escaping @Sendable () async -> Void = {}, usage: @escaping @Sendable (ProviderTokenUsage) -> Void = { _ in }, progress: @escaping @Sendable (NotebookProviderProgress) async -> Void = { _ in }) async throws -> String {
         try configuration.validateSending()
         guard FileManager.default.isExecutableFile(atPath: configuration.executablePath) else { throw MediaError.invalid("No se encuentra el ejecutable. Selecciona una instalación existente; Palladium no instala proveedores.") }
         let directory = try NotesProviderTransport(store: store).temporaryDirectory()
@@ -105,7 +105,7 @@ public struct ClaudeTextTransport: Sendable {
         let events = AsyncStream<NotebookProviderProgress>.makeStream()
         let state = ClaudeStreamState(webSearch: webSearch)
         let worker = Task.detached {
-            defer { events.continuation.finish() }
+            defer { state.decoder.usage.forEach(usage); events.continuation.finish() }
             do {
                 _ = try command.run { line in
                     // The first rejected event stops the helper; later lines are ignored.
@@ -148,6 +148,9 @@ private final class ClaudeStreamState: @unchecked Sendable {
 struct ClaudeStreamDecoder {
     var webSearch = false
     private(set) var output: String?
+    /// Tokens per model, read from the final result even when it failed.
+    private(set) var usage: [ProviderTokenUsage] = []
+    private var model = ""
     private var thoughts = 0
 
     private var allowedTools: Set<String> { webSearch ? ["StructuredOutput", "WebSearch"] : ["StructuredOutput"] }
@@ -159,6 +162,7 @@ struct ClaudeStreamDecoder {
             guard event["subtype"] as? String == "init" else { return nil }
             let tools = event["tools"] as? [String] ?? []
             let servers = event["mcp_servers"] as? [Any] ?? []
+            model = event["model"] as? String ?? ""
             guard Set(tools).isSubset(of: allowedTools), servers.isEmpty else { throw MediaError.invalid("La sesión de Claude conserva herramientas o servidores MCP; no se ha enviado contenido.") }
             return .init(id: "provider-start", title: "Pensando…", kind: .reasoning)
         case "assistant":
@@ -183,6 +187,7 @@ struct ClaudeStreamDecoder {
             }
             return update
         case "result":
+            usage = Self.usage(event, model: model)
             let detail = String((event["result"] as? String ?? "").prefix(500))
             guard event["is_error"] as? Bool != true, event["subtype"] as? String == "success" else {
                 throw MediaError.invalid(detail.isEmpty ? "Claude no completó la petición; revisa la cuenta/configuración y reintenta explícitamente." : "Claude: " + detail)
@@ -193,5 +198,19 @@ struct ClaudeStreamDecoder {
             return .init(id: "provider-finished", title: "Comprobando respuesta…")
         default: return nil
         }
+    }
+
+    /// `modelUsage` names every model the request used; `usage` is the total.
+    static func usage(_ event: [String: Any], model: String) -> [ProviderTokenUsage] {
+        let count = ProviderTokenUsage.count
+        if let models = event["modelUsage"] as? [String: [String: Any]], !models.isEmpty {
+            return models.keys.sorted().map { name in
+                let item = models[name]!
+                return .init(model: name, input: count(item["inputTokens"]), cachedInput: count(item["cacheReadInputTokens"]), cacheWrite: count(item["cacheCreationInputTokens"]), output: count(item["outputTokens"]), reportedCost: (item["costUSD"] as? NSNumber)?.doubleValue)
+            }.filter { $0.tokens > 0 }
+        }
+        guard let total = event["usage"] as? [String: Any] else { return [] }
+        let value = ProviderTokenUsage(model: model.isEmpty ? "claude" : model, input: count(total["input_tokens"]), cachedInput: count(total["cache_read_input_tokens"]), cacheWrite: count(total["cache_creation_input_tokens"]), output: count(total["output_tokens"]), reportedCost: (event["total_cost_usd"] as? NSNumber)?.doubleValue)
+        return value.tokens > 0 ? [value] : []
     }
 }

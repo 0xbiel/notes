@@ -69,6 +69,7 @@ final class Workbench: ObservableObject {
     @Published var busy = false
     @Published var showQuickOpen = false
     @Published var showPreferences = false
+    @Published var showOnboarding = false
     var requestedPreferencesSection: NotebookPreferencesSection = .general
     @Published var creationKind: String?
     @Published var renamingItem: NotebookSidebarSelection?
@@ -101,6 +102,28 @@ final class Workbench: ObservableObject {
     @Published var notebookCheckpointSelection: String?
     var engine: ReplayEngine?
 
+    /// Installed builds carry no embedded workspace path: they keep their data in
+    /// Application Support and create an empty workspace on first launch.
+    private static func installedWorkspace() throws -> URL {
+        try prepareLibrary(FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+            .appendingPathComponent("Palladium", isDirectory: true))
+    }
+    static func prepareLibrary(_ root: URL) throws -> URL {
+        let fm = FileManager.default
+        let manifest = root.appendingPathComponent("original-hashes.json")
+        if fm.fileExists(atPath: manifest.path) { return root }
+        for folder in ["copied-course", "session-storage", "protected-original"] {
+            try fm.createDirectory(at: root.appendingPathComponent(folder, isDirectory: true), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        }
+        let contents: [String: Any] = ["originalRoot": root.appendingPathComponent("protected-original").path,
+                                       "copyRoot": root.appendingPathComponent("copied-course").path,
+                                       "originalHashes": [String: String](), "copyHashes": [String: String]()]
+        try JSONSerialization.data(withJSONObject: contents, options: [.prettyPrinted, .sortedKeys]).write(to: manifest, options: .atomic)
+        // A new library starts without notebooks; the introduction offers the first one.
+        try Data("[]".utf8).write(to: root.appendingPathComponent("session-storage/notebooks.json"), options: .atomic)
+        return root
+    }
+
     init(workspaceRoot: URL? = nil) {
         do {
             let arguments = CommandLine.arguments
@@ -109,7 +132,7 @@ final class Workbench: ObservableObject {
             if let workspaceRoot { path = workspaceRoot.path }
             else if let argumentIndex, argumentIndex + 1 < arguments.count { path = arguments[argumentIndex + 1] }
             else if let bundlePath = Bundle.main.object(forInfoDictionaryKey: "PrototypeWorkspace") as? String { path = bundlePath }
-            else { throw ReplayError.missingWorkspace }
+            else { path = try Self.installedWorkspace().path }
             let root = URL(fileURLWithPath: path, isDirectory: true)
             let manifest = try JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("original-hashes.json"))) as? [String: Any]
             guard let original = manifest?["originalRoot"] as? String else { throw ReplayError.missingWorkspace }
@@ -167,6 +190,13 @@ final class Workbench: ObservableObject {
             if let session = sessions.first(where: { visibleNotes.contains($0.targetNote) }) { select(session.id) }
             if let first = visibleNotes.first(where: { $0.hasPrefix("Tema 1") }) ?? visibleNotes.first { openNote(first) }
             else { selectedNote = nil; selectedNotebookID = activeNotebooks.first?.id ?? "" }
+            // Only someone opening their own, still empty library is new; a workspace handed in is not.
+            if workspaceRoot == nil, argumentIndex == nil, activeNotebooks.isEmpty, notes.isEmpty, !UserDefaults.standard.bool(forKey: "notes.onboarded") {
+                if UserDefaults.standard.object(forKey: "notes.language") == nil {
+                    UserDefaults.standard.set(Locale.preferredLanguages.first?.hasPrefix("es") == true ? "es" : "en", forKey: "notes.language")
+                }
+                showOnboarding = true
+            }
         } catch {
             errorText = error.localizedDescription
             if projects == nil {
@@ -209,6 +239,11 @@ final class Workbench: ObservableObject {
             }
             dictationTarget = job.stage == .transcribed ? nil : target
         } catch { dictationTarget = nil; media?.error = error.localizedDescription; media?.stopMicrophone() }
+    }
+
+    func finishOnboarding() {
+        UserDefaults.standard.set(true, forKey: "notes.onboarded")
+        showOnboarding = false
     }
 
     func select(_ id: String) {

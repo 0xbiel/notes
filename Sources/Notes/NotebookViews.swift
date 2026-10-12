@@ -174,8 +174,49 @@ extension Workbench {
         folders = try workspace.folderNames()
         statusText = "Creado"
     }
+    /// A plain Markdown link such as `[texto](../tema/nota.md#apartado)` leads to a note or file of this notebook:
+    /// first relative to the open note's folder, then from the notebook root, then by a filename only one item has.
+    private func openRelativeLink(_ url: URL) {
+        let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")), fragment = url.fragment?.removingPercentEncoding
+        guard !path.isEmpty else {
+            if let selectedNote, let fragment { previewHeading = headingTitle(fragment, in: selectedNote) }
+            return
+        }
+        let notebook = notebooks.first { $0.id == selectedNotebookID } ?? .copiedCourse
+        let notes = noteNames(in: notebook), available = notes + fileNames(in: notebook).filter { !notes.contains($0) }
+        func resolved(from folder: String) -> String? {
+            var parts = folder.isEmpty ? [] : folder.components(separatedBy: "/")
+            for part in path.components(separatedBy: "/") where part != "." && !part.isEmpty {
+                if part == ".." { guard !parts.isEmpty else { return nil }; parts.removeLast() } else { parts.append(part) }
+            }
+            let candidate = parts.joined(separator: "/")
+            return available.first { $0 == candidate } ?? available.first { $0 == candidate + ".md" }
+        }
+        let folder = (selectedNote ?? selectedFile).map { $0.components(separatedBy: "/").dropLast().joined(separator: "/") }
+        var file = folder.flatMap(resolved) ?? resolved(from: notebook.rootPrefix)
+        if file == nil {
+            let name = (path as NSString).lastPathComponent
+            let matches = available.filter { [name, name + ".md"].contains(($0 as NSString).lastPathComponent) }
+            if matches.count == 1 { file = matches[0] }
+        }
+        guard let file else {
+            errorText = UserDefaults.standard.string(forKey: "notes.language") == "en" ? "This link does not lead to a note or file in this notebook: " + path : "Este enlace no lleva a ninguna nota o archivo de este cuaderno: " + path
+            return
+        }
+        if file.hasSuffix(".md") { openNote(file, heading: fragment.flatMap { headingTitle($0, in: file) }) } else { openLibraryFile(file) }
+    }
+    /// Markdown anchors name a heading by its slug (`#pasos-para-ti`); the editor scrolls to the heading's own text.
+    private func headingTitle(_ fragment: String, in note: String) -> String? {
+        guard let text = drafts[note] ?? (try? workspace?.readNote(note)) else { return nil }
+        func slug(_ title: String) -> String {
+            String(title.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) || $0 == " " || $0 == "-" || $0 == "_" }).replacingOccurrences(of: " ", with: "-")
+        }
+        let titles = text.split(separator: "\n").filter { $0.hasPrefix("#") }.map { $0.drop { $0 == "#" }.trimmingCharacters(in: .whitespaces) }
+        return titles.first { $0 == fragment } ?? titles.first { slug($0) == slug(fragment) }
+    }
     func openWikilink(_ url: URL) -> OpenURLAction.Result {
         guard let target = NotebookMarkdown.target(url) else {
+            if url.scheme == nil { openRelativeLink(url); return .handled }
             // Web and mail links open in the user's default app; nothing else leaves the notebook.
             if let scheme = url.scheme?.lowercased(), ["https", "http", "mailto"].contains(scheme) { NSWorkspace.shared.open(url) }
             else { errorText = UserDefaults.standard.string(forKey: "notes.language") == "en" ? "This kind of link cannot be opened: " + url.absoluteString : "No se puede abrir este tipo de enlace: " + url.absoluteString }

@@ -441,6 +441,9 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         selectedImageLocation = nil; updateImageSelection()
         finishInlineTableCell()
         let point = convert(event.locationInWindow, from: nil)
+        // A click on a link inside a table follows it; while editing, a plain click selects the cell and Command-click follows.
+        if !isEditable || event.modifierFlags.contains(.command), let hit = tableCell(at: point), let rect = tableRect(hit.table),
+           let url = hit.table.layout.link(at: NSPoint(x: point.x - rect.minX, y: point.y - rect.minY)) { openLink?(url); return }
         if isEditable, let hit = tableCell(at: point) {
             selectTableCell(hit.table, cellIndex: hit.index, extending: event.modifierFlags.contains(.shift))
             window?.makeFirstResponder(self)

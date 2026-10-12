@@ -99,12 +99,12 @@ struct ControlHoverBackground: ViewModifier {
 }
 
 enum NotebookPreferencesSection: String, CaseIterable {
-    case general, theme, providers, transcription
+    case general, theme, providers, usage, transcription
     var title: LocalizedStringKey {
-        switch self { case .general: "General"; case .theme: "Tema"; case .providers: "Proveedores IA"; case .transcription: "Dictado" }
+        switch self { case .general: "General"; case .theme: "Tema"; case .providers: "Proveedores IA"; case .usage: "Uso"; case .transcription: "Dictado" }
     }
     var symbol: String {
-        switch self { case .general: "slider.horizontal.3"; case .theme: "paintpalette"; case .providers: "sparkles"; case .transcription: "waveform" }
+        switch self { case .general: "slider.horizontal.3"; case .theme: "paintpalette"; case .providers: "sparkles"; case .usage: "chart.bar"; case .transcription: "waveform" }
     }
 }
 
@@ -132,6 +132,12 @@ struct NotebookPreferences: View {
                         NotebookThemePreferences().frame(maxWidth: 500)
                     } else if section == .transcription {
                         if let media = model.media { TranscriptionPreferences(media: media) }
+                    } else if section == .usage {
+                        if let ai = model.ai {
+                            UsagePreferences(workspace: ai.outbox.workspace).id(ai.outbox.workspace.root.path)
+                        } else {
+                            Text("Abre un espacio local para ver el uso.").foregroundStyle(.secondary)
+                        }
                     } else if section == .providers {
                         if let ai = model.ai {
                             ProviderPreferences(ai: ai, contentWidth: max(0, min(680, geometry.size.width - inset * 2)))
@@ -174,6 +180,14 @@ struct NotebookPreferences: View {
                             AIOptionSelector(title: "Idioma / Language", symbol: "globe", options: [
                                 .init(id: "es", title: "Español"), .init(id: "en", title: "English")
                             ], selection: $language)
+                        }
+                        Divider()
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(language == "en" ? "Introduction" : "Introducción").font(.headline)
+                            Button { model.showPreferences = false; model.showOnboarding = true } label: {
+                                Label(language == "en" ? "Show the introduction" : "Ver la introducción", systemImage: "play.circle")
+                                    .font(.callout).padding(.horizontal, 10).frame(height: 34).modifier(NotebookInputSurface(radius: 7))
+                            }.buttonStyle(.plain).accessibilityIdentifier("preferences.showOnboarding")
                         }
                     }
                 }.frame(width: max(0, min(680, geometry.size.width - inset * 2)), alignment: .leading)
