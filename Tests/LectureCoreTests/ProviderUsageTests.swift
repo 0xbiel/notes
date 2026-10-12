@@ -25,6 +25,89 @@ final class ProviderUsageTests: XCTestCase {
         XCTAssertEqual(failed.usage, [.init(model: "claude-opus-5-5", input: 7, output: 3)])
     }
 
+    func testLogDeduplicatesIdentityButKeepsDistinctIdenticalRequests() throws {
+        let workspace = try workspace(), log = ProviderUsageLog(workspace: workspace)
+        let first = ProviderUsageRecord(date: Date(timeIntervalSince1970: 1_800_000_000), provider: .codexCLI, notebookID: "n", usage: .init(model: "gpt-6-sol", input: 100))
+        var second = first
+        second.id = UUID().uuidString
+        try log.append([first, first, second])
+        try log.append([first, second])
+        XCTAssertEqual(log.records(), [first, second])
+        let data = try workspace.readStorage(ProviderUsageLog.path)
+        try workspace.writeStorage(ProviderUsageLog.path, data: data + data)
+        XCTAssertEqual(log.records(), [first, second])
+    }
+
+    func testHistoricalUsageSurvivesChatAndNotebookDeletionWithoutRecounting() throws {
+        let workspace = try workspace(), log = ProviderUsageLog(workspace: workspace)
+        var chat = NotebookChat()
+        chat.messages = [.init(role: "user", text: "Question"), .init(role: "assistant", text: "Answer")]
+        var state = NotebookProjectState()
+        state.chats = [chat]
+        let store = try NotebookProjectStore(workspace: workspace, notebooks: [.copiedCourse])
+        try store.saveState(state, notebookID: Notebook.copiedCourse.id)
+        let records = log.records()
+        XCTAssertEqual(records.count, 1)
+        XCTAssertNil(records.first?.provider)
+        XCTAssertEqual(records.first?.usage.estimated, true)
+        XCTAssertNil(ProviderUsagePricing.cost(try XCTUnwrap(records.first?.usage)))
+        _ = try store.loadState(.copiedCourse)
+        try store.saveState(state, notebookID: Notebook.copiedCourse.id)
+        try log.cacheHistory(state, notebookID: "copied-notebook")
+        XCTAssertEqual(log.records(), records)
+        state.chats = []
+        try store.saveState(state, notebookID: Notebook.copiedCourse.id)
+        try store.forgetNotebook(Notebook.copiedCourse.id)
+        XCTAssertEqual(ProviderUsageLog(workspace: workspace).records(), records)
+    }
+
+    func testHistoryDoesNotRecountLoggedOrTrackedTurnsOrUnsentMessages() throws {
+        let workspace = try workspace(), log = ProviderUsageLog(workspace: workspace)
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        var prompt = NotebookMessage(role: "user", text: "Question")
+        prompt.date = date.addingTimeInterval(-10)
+        var reply = NotebookMessage(role: "assistant", text: "Answer")
+        reply.date = date.addingTimeInterval(10)
+        var chat = NotebookChat()
+        chat.messages = [prompt, reply]
+        var state = NotebookProjectState()
+        state.chats = [chat]
+        var record = ProviderUsageRecord(date: date, provider: .claudeCode, notebookID: "n", usage: .init(model: "claude", input: 50))
+        record.id = nil
+        try log.append([record])
+        try log.cacheHistory(state, notebookID: "n")
+        prompt.usageTracked = true
+        state.chats[0].messages = [prompt, reply, .init(role: "error", text: "Failed"), .init(role: "user", text: "Unsent")]
+        try log.cacheHistory(state, notebookID: "other")
+        XCTAssertEqual(log.records(), [record])
+    }
+
+    func testAppendingAfterDamagedUnterminatedLinePreservesNewRecord() throws {
+        let workspace = try workspace(), log = ProviderUsageLog(workspace: workspace)
+        try workspace.writeStorage(ProviderUsageLog.path, data: Data("{broken".utf8))
+        let record = ProviderUsageRecord(date: Date(timeIntervalSince1970: 1_800_000_000), provider: .codexCLI, notebookID: "n", usage: .init(model: "default", output: 10))
+        try log.append([record])
+        XCTAssertEqual(log.records(), [record])
+    }
+
+    func testDistinctHistoricalChatsWithOverlappingDatesAreNotDeduplicated() throws {
+        let workspace = try workspace(), log = ProviderUsageLog(workspace: workspace)
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        var state = NotebookProjectState()
+        for _ in 0..<2 {
+            var chat = NotebookChat()
+            var prompt = NotebookMessage(role: "user", text: "Same question")
+            prompt.date = date
+            var reply = NotebookMessage(role: "assistant", text: "Same answer")
+            reply.date = date.addingTimeInterval(10)
+            chat.messages = [prompt, reply]
+            state.chats.append(chat)
+            try log.cacheHistory(state, notebookID: "n")
+        }
+        try log.cacheHistory(state, notebookID: "n")
+        XCTAssertEqual(log.records().count, 2)
+    }
+
     func testCodexThreadTotalSeparatesCachedInput() throws {
         var decoder = CodexNotebookProgressDecoder(threadID: "thread", model: "gpt-6-luna")
         XCTAssertNil(try decoder.accept("thread/tokenUsage/updated", ["threadId": "other", "tokenUsage": ["total": ["inputTokens": 9, "outputTokens": 9]]]))

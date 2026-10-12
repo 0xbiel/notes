@@ -5,6 +5,7 @@ import LectureCore
 /// A small native block renderer: inline Markdown remains selectable, code remains literal.
 struct NotebookChatMarkdown: View {
     let text: String
+    var bodyFontSize: CGFloat? = nil
     @AppStorage("notes.accent") private var accent = ""
     struct Block: Equatable {
         var kind: String
@@ -63,9 +64,11 @@ struct NotebookChatMarkdown: View {
         if fence != nil { result.append(.init(kind: "code:" + language, text: code.joined(separator: "\n"))) }
         return result
     }
-    @ViewBuilder private func inline(_ text: String, fontSize: CGFloat = 14, weight: NSFont.Weight = .regular) -> some View {
-        if MarkdownMath.spans(in: text).isEmpty { Text(Self.inlineAttributed(text, accent: NotebookAccent.color(accent))) }
-        else { MarkdownMathText(text: text, fontSize: fontSize, weight: weight, accent: NSColor(NotebookAccent.color(accent))) }
+    @ViewBuilder private func inline(_ text: String, fontSize: CGFloat? = nil, weight: NSFont.Weight = .regular) -> some View {
+        if MarkdownMath.spans(in: text).isEmpty {
+            if let size = fontSize ?? bodyFontSize { Text(Self.inlineAttributed(text, accent: NotebookAccent.color(accent))).font(.system(size: size)) }
+            else { Text(Self.inlineAttributed(text, accent: NotebookAccent.color(accent))) }
+        } else { MarkdownMathText(text: text, fontSize: fontSize ?? bodyFontSize ?? 14, weight: weight, accent: NSColor(NotebookAccent.color(accent))) }
     }
     static func inlineAttributed(_ text: String, accent: Color) -> AttributedString {
         var result = InlineUnderline.attributed(text)

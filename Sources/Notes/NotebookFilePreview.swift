@@ -6,11 +6,16 @@ import LectureCore
 struct NotebookFilePreview: View {
     let workspace: SafeWorkspace
     let path: String
+    var bottomInset: CGFloat = 0
+    var imageRoot: URL? = nil
+    var onFooterHeight: ((CGFloat) -> Void)? = nil
     @AppStorage("notes.language") private var language = "es"
     var body: some View {
         if let url = try? workspace.fileURL(path) {
             Group {
-                if url.pathExtension.lowercased() == "pdf" {
+                if NotebookPracticeTest.isPracticeTest(path) {
+                    NotebookPracticeTestView(workspace: workspace, path: path, imageRoot: imageRoot, bottomInset: bottomInset, onFooterHeight: onFooterHeight)
+                } else if url.pathExtension.lowercased() == "pdf" {
                     LibraryPDFView(url: url).accessibilityIdentifier("notebook.pdfPreview")
                 } else {
                     LibraryQuickLookView(url: url).accessibilityIdentifier("notebook.filePreview")
@@ -29,7 +34,8 @@ struct LibraryQuickLookView: NSViewRepresentable {
 }
 enum LibraryFileIcon {
     static func symbol(_ path: String) -> String {
-        switch URL(fileURLWithPath: path).pathExtension.lowercased() {
+        if NotebookPracticeTest.isPracticeTest(path) { return "checklist" }
+        return switch URL(fileURLWithPath: path).pathExtension.lowercased() {
         case "pdf": "doc.richtext"
         case "png", "jpg", "jpeg", "heic", "gif", "webp", "tiff", "svg": "photo"
         case "mp3", "wav", "m4a", "aac", "flac": "waveform"

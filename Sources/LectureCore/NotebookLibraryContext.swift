@@ -7,6 +7,7 @@ public enum NotebookLibraryContext {
     public struct Content {
         public var text: String
         public var images: [NotebookInputImage]
+        public var sourceDigest: String? = nil
     }
     /// Part of a long source: a page range, or the pages that mention some words.
     public enum Selection: Equatable, Sendable {
@@ -71,6 +72,7 @@ public enum NotebookLibraryContext {
         try library.validate(path, notebookID: notebookID)
         _ = try library.workspace.fileURL(path)
         var data = try library.workspace.readFile(path), label = path
+        let digest = NotebookSourceImage.digest(data)
         // Each step opens the archive reached so far and takes one file out of it.
         for name in inside {
             guard (label as NSString).pathExtension.lowercased() == "zip" else { throw MediaError.invalid("\(label) is not a ZIP archive.") }
@@ -78,7 +80,9 @@ public enum NotebookLibraryContext {
             guard let entry = archive.entry(named: name) else { throw MediaError.invalid("No file \"\(name)\" inside \(label). Request \"\(label)\" in readFiles to list its files.") }
             data = try archive.contents(of: entry); label += "#entry=" + entry.name
         }
-        return try content(data, path: label, selection: selection)
+        var result = try content(data, path: label, selection: selection)
+        result.sourceDigest = digest
+        return result
     }
     private static func content(_ data: Data, path: String, selection: Selection?) throws -> Content {
         let ext = (path as NSString).pathExtension.lowercased()
@@ -125,10 +129,10 @@ public enum NotebookLibraryContext {
             let page = pages[index]
             guard omitted.isEmpty, text.utf8.count + page.utf8.count <= limit || text.utf8.count == note.utf8.count else { omitted.append(index + 1); continue }
             text += "\n[\(unit) \(index + 1)]\n" + page
-            if let document, page.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if let document {
                 if images.count < NotebookAttachmentImport.maximumImages, let tiff = document.page(at: index)?.thumbnail(of: NSSize(width: 1200, height: 1600), for: .mediaBox).tiffRepresentation {
                     images.append(.init(name: path + " · page \(index + 1)", data: try NotebookAttachmentImport.imagePNG(tiff)))
-                    text += "\n[Scanned page supplied as an image.]"
+                    text += "\n[Page supplied as an image, including its diagrams and figures. Image crop coordinates use a normalized top-left origin.]"
                 } else { text += "\n[Scanned page omitted: 24-image limit. Request fewer pages.]" }
             }
         }

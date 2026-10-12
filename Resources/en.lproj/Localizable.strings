@@ -97,6 +97,8 @@
 
 "General y tema" = "General and theme";
 "Proveedores IA" = "AI providers";
+"Uso" = "Usage";
+"Abre un espacio local para ver el uso." = "Open a local workspace to see usage.";
 "Abre un espacio local para configurar los proveedores." = "Open a local workspace to configure providers.";
 
 "Gestionar cuaderno" = "Manage notebook";

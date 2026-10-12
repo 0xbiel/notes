@@ -108,6 +108,7 @@ struct UsagePreferences: View {
             notes(summary)
         }
         .tint(tint)
+        .environment(\.locale, Locale(identifier: language))
         .onAppear(perform: load)
     }
 
@@ -178,15 +179,16 @@ struct UsagePreferences: View {
         let share = showsCost ? (summary.cost > 0 ? row.cost / summary.cost : 0) : Double(row.tokens) / Double(max(1, summary.tokens))
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
-                ProviderLogo(provider: row.provider, size: 24)
+                if let provider = row.provider { ProviderLogo(provider: provider, size: 24) }
+                else { Image(systemName: "clock.arrow.circlepath").frame(width: 24, height: 24).foregroundStyle(.secondary) }
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(row.model).font(.callout.weight(.semibold)).lineLimit(1).truncationMode(.middle)
-                    Text(row.provider.shortName + " · " + text("\(row.requests) peticiones", "\(row.requests) requests") + " · " + UsageFormat.tokens(row.tokens) + " tokens" + (row.estimated ? text(" · aproximado", " · approximate") : ""))
+                    Text(row.provider == nil ? text("Chat histórico (modelo desconocido)", "Historical chat (model unknown)") : row.model).font(.callout.weight(.semibold)).lineLimit(1).truncationMode(.middle)
+                    Text((row.provider?.shortName ?? text("Proveedor desconocido", "Unknown provider")) + " · " + text("\(row.requests) peticiones", "\(row.requests) requests") + " · " + UsageFormat.tokens(row.tokens) + " tokens" + (row.estimated ? text(" · aproximado", " · approximate") : ""))
                         .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 8)
                 VStack(alignment: .trailing, spacing: 3) {
-                    if row.unpriced && row.cost == 0 {
+                    if showsCost && row.unpriced && row.cost == 0 {
                         Text(text("Sin precio", "Unpriced")).font(.callout).foregroundStyle(.secondary)
                     } else {
                         Text(showsCost ? UsageFormat.cost(row.cost) : UsageFormat.tokens(row.tokens)).font(.callout.weight(.medium)).monospacedDigit()
@@ -210,7 +212,7 @@ struct UsagePreferences: View {
                     .font(.caption).foregroundStyle(.orange)
             }
             if summary.estimatedTokens > 0 {
-                Label(text("Antigravity no informó de sus tokens en algunas peticiones; se aproximan por la longitud del texto, sin contar imágenes.", "Antigravity did not report tokens for some requests; they are approximated from the text length, without images."), systemImage: "info.circle")
+                Label(text("Los tokens sin datos del proveedor se aproximan por la longitud del texto. Los chats antiguos solo incluyen el texto guardado, no el contexto, las herramientas ni las imágenes; se desconoce su modelo y no se estima su coste.", "Tokens without provider data are approximated from text length. Older chats include only saved text, not context, tools or images; their model is unknown and their cost is not estimated."), systemImage: "info.circle")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Text(text("Solo cuenta los chats de Palladium: no se lee el resto de tu uso de Claude Code, Codex o Antigravity. Es lo que costarían esos tokens a precio público de API; con una suscripción no se te cobra este importe.", "Counts only Palladium's chats: the rest of your Claude Code, Codex or Antigravity usage is never read. It is what these tokens would cost at public API prices; a subscription is not billed this amount."))
@@ -225,7 +227,7 @@ struct UsagePreferences: View {
                     .help(text("Descarga la lista pública de precios de LiteLLM, la misma que usa T3 Code.", "Downloads LiteLLM's public price list, the one T3 Code uses."))
                     .accessibilityIdentifier("usage.prices.refresh")
                 if refreshingPrices { ProgressView().controlSize(.small) }
-                Text(pricesFetched.map { text("Precios del ", "Prices from ") + $0.formatted(date: .abbreviated, time: .omitted) } ?? text("Precios incluidos en la app", "Prices built into the app"))
+                Text(pricesFetched.map { text("Precios del ", "Prices from ") + $0.formatted(.dateTime.year().month(.abbreviated).day().locale(Locale(identifier: language))) } ?? text("Precios incluidos en la app", "Prices built into the app"))
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
             }

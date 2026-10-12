@@ -26,12 +26,13 @@ public struct ProviderTokenUsage: Codable, Sendable, Equatable {
 }
 
 public struct ProviderUsageRecord: Codable, Sendable, Equatable {
+    public var id: String?
     public var date: Date
-    public var provider: NotesAIProvider
+    public var provider: NotesAIProvider?
     public var notebookID: String
     public var usage: ProviderTokenUsage
-    public init(date: Date, provider: NotesAIProvider, notebookID: String, usage: ProviderTokenUsage) {
-        self.date = date; self.provider = provider; self.notebookID = notebookID; self.usage = usage
+    public init(id: String? = UUID().uuidString, date: Date, provider: NotesAIProvider?, notebookID: String, usage: ProviderTokenUsage) {
+        self.id = id; self.date = date; self.provider = provider; self.notebookID = notebookID; self.usage = usage
     }
 }
 
@@ -59,16 +60,59 @@ public struct ProviderUsageLog {
     public func append(_ records: [ProviderUsageRecord]) throws {
         guard !records.isEmpty else { return }
         Self.lock.lock(); defer { Self.lock.unlock() }
-        var data = (try? workspace.readStorage(Self.path)) ?? Data()
-        for record in records { data.append(try Self.encoder.encode(record)); data.append(10) }
+        var data = try existingData()
+        if !data.isEmpty, data.last != 10 { data.append(10) }
+        var identifiers = Set(decode(data).compactMap(\.id))
+        for record in records {
+            if let id = record.id, !identifiers.insert(id).inserted { continue }
+            data.append(try Self.encoder.encode(record)); data.append(10)
+        }
         try workspace.writeStorage(Self.path, data: data)
+    }
+
+    private func existingData() throws -> Data {
+        guard FileManager.default.fileExists(atPath: workspace.storageRoot.appendingPathComponent(Self.path).path) else { return Data() }
+        return try workspace.readStorage(Self.path)
+    }
+
+    private func decode(_ data: Data) -> [ProviderUsageRecord] {
+        var identifiers: Set<String> = []
+        return data.split(separator: 10).compactMap {
+            guard let record = try? Self.decoder.decode(ProviderUsageRecord.self, from: Data($0)) else { return nil }
+            if let id = record.id, !identifiers.insert(id).inserted { return nil }
+            return record
+        }
+    }
+
+    public func cacheHistory(_ state: NotebookProjectState, notebookID: String) throws {
+        Self.lock.lock(); defer { Self.lock.unlock() }
+        var data = try existingData()
+        let original = data
+        if !data.isEmpty, data.last != 10 { data.append(10) }
+        let recorded = decode(data)
+        var identifiers = Set(recorded.compactMap(\.id))
+        for chat in state.chats {
+            var user: NotebookMessage?
+            for message in chat.messages {
+                if message.role == "user" { user = message; continue }
+                guard message.role == "assistant", let prompt = user else { continue }
+                user = nil
+                let id = "history:" + prompt.id
+                guard prompt.usageTracked != true, identifiers.insert(id).inserted else { continue }
+                guard !recorded.contains(where: { $0.provider != nil && $0.notebookID == notebookID && $0.date >= prompt.date && $0.date <= message.date }) else { continue }
+                let record = ProviderUsageRecord(id: id, date: message.date, provider: nil, notebookID: notebookID,
+                    usage: .approximate(model: "Historical chat (model unknown)", prompt: prompt.text, output: message.text))
+                data.append(try Self.encoder.encode(record)); data.append(10)
+            }
+        }
+        if data != original { try workspace.writeStorage(Self.path, data: data) }
     }
 
     /// Unreadable lines are skipped rather than hiding the rest.
     public func records() -> [ProviderUsageRecord] {
         Self.lock.lock(); defer { Self.lock.unlock() }
         guard let data = try? workspace.readStorage(Self.path) else { return [] }
-        return data.split(separator: 10).compactMap { try? Self.decoder.decode(ProviderUsageRecord.self, from: Data($0)) }
+        return decode(data)
     }
 }
 
@@ -199,7 +243,7 @@ public enum ProviderUsagePricing {
 /// Totals for one period, as the Usage preferences show them.
 public struct ProviderUsageSummary: Sendable, Equatable {
     public struct Row: Sendable, Equatable, Identifiable {
-        public var provider: NotesAIProvider
+        public var provider: NotesAIProvider?
         public var model: String
         public var requests = 0
         public var input = 0
@@ -210,7 +254,7 @@ public struct ProviderUsageSummary: Sendable, Equatable {
         /// No list price is known for this model; its cost is not in the total.
         public var unpriced = false
         public var estimated = false
-        public var id: String { provider.rawValue + "\u{0}" + model }
+        public var id: String { (provider?.rawValue ?? "unknown") + "\u{0}" + model }
         public var tokens: Int { input + cachedInput + cacheWrite + output }
     }
     public struct Bucket: Sendable, Equatable, Identifiable {
@@ -246,7 +290,7 @@ public struct ProviderUsageSummary: Sendable, Equatable {
         var grouped: [String: Row] = [:], bucketed: [Date: Bucket] = [:]
         for record in records where record.date >= first && record.date <= now {
             let usage = record.usage, price = ProviderUsagePricing.cost(usage, rates: rates)
-            var row = grouped[record.provider.rawValue + "\u{0}" + usage.model] ?? Row(provider: record.provider, model: usage.model)
+            var row = grouped[(record.provider?.rawValue ?? "unknown") + "\u{0}" + usage.model] ?? Row(provider: record.provider, model: usage.model)
             row.requests += 1; row.input += usage.input; row.cachedInput += usage.cachedInput; row.cacheWrite += usage.cacheWrite; row.output += usage.output
             row.cost += price ?? 0
             if price == nil { row.unpriced = true; unpricedTokens += usage.tokens }
