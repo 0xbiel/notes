@@ -113,6 +113,7 @@ struct NotebookPreferences: View {
     @Binding var section: NotebookPreferencesSection
     @AppStorage("notes.language") private var language = "es"
     @AppStorage("notes.confirmChatDeletion") private var confirmChatDeletion = true
+    @AppStorage("notes.alwaysSteer") private var alwaysSteer = false
     @AppStorage("notes.documentWidth") private var documentWidth = "wide"
     @AppStorage("notes.latexDownloads") private var allowLaTeXDownloads = true
 
@@ -168,6 +169,11 @@ struct NotebookPreferences: View {
                         }
                         VStack(alignment: .leading, spacing: 10) {
                             Text(language == "en" ? "Chats" : "Chats").font(.headline)
+                            Toggle(language == "en" ? "Always steer instead of queueing" : "Dirigir siempre en lugar de añadir a la cola", isOn: $alwaysSteer)
+                                .modifier(NotebookToggleAccent(switchStyle: true))
+                                .accessibilityIdentifier("preferences.alwaysSteer")
+                            Text(language == "en" ? "While the assistant is working, new messages queue by default. Turn this on to interrupt the current response and continue with your new instructions." : "Mientras el asistente trabaja, los mensajes nuevos se añaden a la cola. Actívalo para interrumpir la respuesta actual y continuar con tus nuevas instrucciones.")
+                                .font(.caption).foregroundStyle(.secondary)
                             Toggle(language == "en" ? "Confirm before deleting chats" : "Confirmar antes de eliminar chats", isOn: $confirmChatDeletion)
                                 .modifier(NotebookToggleAccent(switchStyle: true))
                                 .accessibilityIdentifier("preferences.confirmChatDeletion")

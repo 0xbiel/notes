@@ -70,12 +70,20 @@ struct NotebookAttachmentPasteTarget: NSViewRepresentable {
             }
         }
         func stop() { if let monitor { NSEvent.removeMonitor(monitor) }; monitor = nil }
-        private func handle(_ event: NSEvent) -> Bool {
-            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
-                  event.charactersIgnoringModifiers?.lowercased() == "v",
+        func handle(_ event: NSEvent) -> Bool {
+            guard event.type == .keyDown,
                   let window, window.isKeyWindow, window.attachedSheet == nil,
+                  event.windowNumber == window.windowNumber,
                   let editor = window.firstResponder as? NSTextView,
                   editor.convert(editor.bounds, to: nil).intersects(convert(bounds, to: nil)) else { return false }
+            let modifiers = event.modifierFlags.intersection([.shift, .command, .control, .option])
+            if modifiers == .shift, event.keyCode == 36 || event.keyCode == 76 {
+                guard editor.isEditable, !editor.hasMarkedText() else { return false }
+                editor.insertText("\n", replacementRange: editor.selectedRange())
+                return true
+            }
+            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+                  event.charactersIgnoringModifiers?.lowercased() == "v" else { return false }
             let clipboard = NSPasteboard.general
             if clipboard.types?.contains(.fileURL) == true,
                let urls = clipboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {

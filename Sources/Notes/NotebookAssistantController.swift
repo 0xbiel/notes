@@ -375,6 +375,7 @@ final class NotebookAssistantController: ObservableObject {
                 }
                 do {
                     var redundantRounds = 0
+                    var automaticContinuationSent = false
                     var repairRounds = 0
                     // Loads one source into the request; false when it was already there.
                     @MainActor func load(_ entry: String) throws -> Bool {
@@ -445,7 +446,19 @@ final class NotebookAssistantController: ObservableObject {
                             request.contextUpdate = (request.language == "en" ? "Requested retrieval completed. Sources available (observe any extraction limits): " : "Lectura completada. Fuentes disponibles (respeta los límites de extracción): ") + request.documents.keys.sorted().joined(separator: ", ") + (request.language == "en" ? ". Use these contents now; do not request them again. Return edits, or ask the user if the task is unclear." : ". Usa estos contenidos ahora, sin volver a pedirlos. Devuelve los cambios o pregunta si la petición es ambigua.")
                             if !advanced {
                                 redundantRounds += 1
-                                guard redundantRounds < 2 else { throw MediaError.invalid("El asistente repitió una petición de contexto. Acota la petición y vuelve a enviar.") }
+                                if redundantRounds >= 2 {
+                                    guard !automaticContinuationSent else { throw MediaError.invalid("El asistente repitió una petición de contexto. Acota la petición y vuelve a enviar.") }
+                                    automaticContinuationSent = true
+                                    redundantRounds = 0
+                                    request.messages.append(.init(role: "assistant", text: request.contextUpdate, appGenerated: true))
+                                    let continuation = request.language == "en"
+                                        ? "Automatic follow-up from Palladium: continue the user's previous request now, within its original scope. The requested sources are already in documents. Use them to complete the task. Only request additional sources or excerpts if their contents are actually missing. Do not repeat reads of the same loaded contents."
+                                        : "Seguimiento automático de Palladium: continúa ahora la petición anterior del usuario, dentro de su alcance original. Las fuentes solicitadas ya están en documents. Úsalas para completar la tarea. Solo solicita otras fuentes o fragmentos si su contenido realmente falta. No repitas lecturas del mismo contenido ya cargado."
+                                    request.messages.append(.init(role: "user", text: continuation, appGenerated: true))
+                                    self.report("Reintentando automáticamente…", run: run)
+                                }
+                            } else {
+                                redundantRounds = 0
                             }
                             continue
                         }
@@ -552,7 +565,7 @@ extension Workbench {
             self?.dispatchNotebookPrompt(notebook: notebook, chatID: chatID, item: item)
         }
         if assistant.isRunning(notebook) {
-            assistant.enqueue(notebook, configuration: ai.providerSettings.selected, document: selectedLibraryPath, webEnabled: notebookWebEnabled)
+            assistant.enqueue(notebook, configuration: ai.providerSettings.selected, document: selectedLibraryPath, webEnabled: notebookWebEnabled, steer: UserDefaults.standard.bool(forKey: "notes.alwaysSteer"))
             return
         }
         dispatchNotebookPrompt(notebook: notebook, chatID: nil, item: nil)
