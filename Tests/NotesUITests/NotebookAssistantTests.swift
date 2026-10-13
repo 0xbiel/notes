@@ -735,6 +735,9 @@ final class NotebookAssistantTests: XCTestCase {
         XCTAssertEqual(try model.workspace?.readNote("Inicio.md"), "# Inicio\n\nTexto inicial.\n")
     }
     @MainActor func testQueuePersistsEditsReordersAndResumesAfterStop() async throws {
+        let previous = UserDefaults.standard.object(forKey: "notes.alwaysSteer")
+        defer { UserDefaults.standard.set(previous, forKey: "notes.alwaysSteer") }
+        UserDefaults.standard.removeObject(forKey: "notes.alwaysSteer")
         let (model, assistant, _) = try fixture()
         let notebook = model.currentNotebook
         let gate = NotebookReplyGate()
@@ -764,6 +767,9 @@ final class NotebookAssistantTests: XCTestCase {
         XCTAssertEqual(assistant.chat(notebook)?.messages.filter { $0.role == "assistant" }.map(\.text), ["Reply to edited", "Reply to second"])
     }
     @MainActor func testSteeringRestartsWithOriginalRequestAndDoesNotSaveCancelledOutput() async throws {
+        let previous = UserDefaults.standard.object(forKey: "notes.alwaysSteer")
+        defer { UserDefaults.standard.set(previous, forKey: "notes.alwaysSteer") }
+        UserDefaults.standard.set(true, forKey: "notes.alwaysSteer")
         let (model, assistant, _) = try fixture()
         let notebook = model.currentNotebook
         let gate = NotebookReplyGate()
@@ -774,7 +780,7 @@ final class NotebookAssistantTests: XCTestCase {
         }
         assistant.setDraft("original", notebook: notebook); model.submitNotebookPrompt()
         try await gate.waitForStarted(1)
-        assistant.setDraft("use a shorter format", notebook: notebook); model.steerNotebookPrompt()
+        assistant.setDraft("use a shorter format", notebook: notebook); model.submitNotebookPrompt()
         try await gate.waitForStarted(2)
         XCTAssertEqual(messages, ["original", "use a shorter format"])
         await gate.release("use a shorter format")
@@ -782,6 +788,38 @@ final class NotebookAssistantTests: XCTestCase {
         XCTAssertEqual(assistant.chat(notebook)?.messages.filter { $0.role == "assistant" }.count, 1)
         XCTAssertFalse(assistant.chat(notebook)!.messages.contains { $0.role == "error" })
         XCTAssertTrue(assistant.queued(notebook).isEmpty)
+    }
+
+    @MainActor func testRunningComposerRendersStopQueueAndSteerInSamePosition() async throws {
+        let (model, assistant, root) = try fixture()
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "composer-actions-" + UUID().uuidString))
+        defaults.set("en", forKey: "notes.language")
+        let gate = NotebookReplyGate()
+        assistant.generate = { request, _ in .init(reply: try await gate.reply(request.messages.last!.text)) }
+        assistant.setDraft("active", notebook: model.currentNotebook)
+        model.submitNotebookPrompt()
+        try await gate.waitForStarted(1)
+        defer { assistant.stop() }
+        let output = root.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("qa/composer-actions")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        for scenario in ["stop", "queue", "steer"] {
+            defaults.set(scenario == "steer", forKey: "notes.alwaysSteer")
+            assistant.setDraft(scenario == "stop" ? "" : "Add a short summary", notebook: model.currentNotebook)
+            let host = NSHostingView(rootView: NotebookComposer(model: model, assistant: assistant, large: true).defaultAppStorage(defaults).padding(20).environment(\.colorScheme, .dark))
+            let size = NSSize(width: 700, height: 210)
+            let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.appearance = NSAppearance(named: .darkAqua)
+            window.contentView = host
+            host.frame = NSRect(origin: .zero, size: size)
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(150))
+            host.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: output.appendingPathComponent(scenario + ".png"))
+            window.close()
+        }
     }
 
     @MainActor func testNotebookPickerStartsBlankChatAndPreservesSavedChatsAndDrafts() throws {
@@ -1055,6 +1093,88 @@ final class NotebookAssistantTests: XCTestCase {
         XCTAssertNil(assistant.error)
         XCTAssertEqual(round, 2)
         XCTAssertTrue(model.draftText.contains("Updated."))
+    }
+
+    @MainActor func testRepeatedRetrievalAutomaticallyContinuesWithoutDuplicatingChat() async throws {
+        let (model, assistant, _) = try fixture()
+        assistant.setDraft("Revise introduction", notebook: model.currentNotebook)
+        var rounds = 0
+        assistant.generate = { request, _ in
+            rounds += 1
+            if rounds <= 2 {
+                XCTAssertEqual(request.messages.filter { $0.role == "user" }.count, 1)
+                return .init(reply: "", readFiles: ["Inicio.md"])
+            }
+            XCTAssertEqual(request.messages.suffix(2).map(\.role), ["assistant", "user"])
+            XCTAssertTrue(request.messages.suffix(2).allSatisfy { $0.appGenerated == true })
+            XCTAssertEqual(request.messages.filter { $0.role == "user" && $0.appGenerated != true }.last?.text, "Revise introduction")
+            XCTAssertEqual(request.documents["Inicio.md"], "# Inicio\n\nTexto inicial.\n")
+            XCTAssertNil(assistant.error)
+            return .init(reply: "Done", edits: [.init(path: "Inicio.md", find: "Texto inicial.", replacement: "Updated.")])
+        }
+        model.submitNotebookPrompt(); await assistant.waitUntilFinished()
+        XCTAssertNil(assistant.error)
+        XCTAssertEqual(rounds, 3)
+        XCTAssertTrue(model.draftText.contains("Updated."))
+        let messages = try XCTUnwrap(assistant.chat(model.currentNotebook)?.messages)
+        XCTAssertEqual(messages.map(\.role), ["user", "assistant"])
+        XCTAssertTrue(messages.last?.activities?.contains { $0.title == "Reintentando automáticamente…" } == true)
+    }
+
+    @MainActor func testAutomaticContinuationCanRetrieveMissingSources() async throws {
+        let (model, assistant, _) = try fixture()
+        try assistant.store.workspace.createAsset("Context.txt", data: Data("Additional context.".utf8))
+        assistant.setDraft("Revise introduction using Context.txt", notebook: model.currentNotebook)
+        var rounds = 0
+        assistant.generate = { request, _ in
+            rounds += 1
+            if rounds <= 2 { return .init(reply: "", readFiles: ["Inicio.md"]) }
+            XCTAssertTrue(request.messages.last?.appGenerated == true)
+            if rounds == 3 { return .init(reply: "", readFiles: ["Context.txt"]) }
+            XCTAssertTrue(request.documents["Context.txt"]?.contains("Additional context.") == true)
+            XCTAssertNotNil(request.documents["Inicio.md"])
+            return .init(reply: "Done", edits: [.init(path: "Inicio.md", find: "Texto inicial.", replacement: "Updated.")])
+        }
+        model.submitNotebookPrompt(); await assistant.waitUntilFinished()
+        XCTAssertNil(assistant.error)
+        XCTAssertEqual(rounds, 4)
+        XCTAssertTrue(model.draftText.contains("Updated."))
+        XCTAssertEqual(assistant.chat(model.currentNotebook)?.messages.map(\.role), ["user", "assistant"])
+    }
+
+    @MainActor func testNewRetrievalResetsConsecutiveRepeatCount() async throws {
+        let (model, assistant, _) = try fixture()
+        try assistant.store.workspace.createAsset("Context.txt", data: Data("Additional context.".utf8))
+        assistant.setDraft("Revise introduction using Context.txt", notebook: model.currentNotebook)
+        var rounds = 0
+        assistant.generate = { request, _ in
+            rounds += 1
+            XCTAssertEqual(request.messages.filter { $0.role == "user" }.count, 1)
+            if rounds == 1 { return .init(reply: "", readFiles: ["Inicio.md"]) }
+            if rounds <= 3 { return .init(reply: "", readFiles: ["Context.txt"]) }
+            XCTAssertTrue(request.documents["Context.txt"]?.contains("Additional context.") == true)
+            return .init(reply: "Done", edits: [.init(path: "Inicio.md", find: "Texto inicial.", replacement: "Updated.")])
+        }
+        model.submitNotebookPrompt(); await assistant.waitUntilFinished()
+        XCTAssertNil(assistant.error)
+        XCTAssertEqual(rounds, 4)
+        XCTAssertTrue(model.draftText.contains("Updated."))
+    }
+
+    @MainActor func testRepeatedRetrievalStillStopsWithoutChangingFiles() async throws {
+        let (model, assistant, _) = try fixture()
+        let original = try assistant.store.workspace.readNote("Inicio.md")
+        assistant.setDraft("Revise introduction", notebook: model.currentNotebook)
+        var rounds = 0
+        assistant.generate = { _, _ in
+            rounds += 1
+            return .init(reply: "", readFiles: ["Inicio.md"])
+        }
+        model.submitNotebookPrompt(); await assistant.waitUntilFinished()
+        XCTAssertNotNil(assistant.error)
+        XCTAssertEqual(rounds, 4)
+        XCTAssertEqual(try assistant.store.workspace.readNote("Inicio.md"), original)
+        XCTAssertEqual(assistant.chat(model.currentNotebook)?.messages.map(\.role), ["user", "error"])
     }
 
     @MainActor func testDeleteDraftAndRestoreFromTrashAfterRestart() throws {

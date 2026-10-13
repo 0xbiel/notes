@@ -5,7 +5,7 @@ Palladium is a native macOS notebook app for Markdown notes, AI-assisted editing
 ![Palladium showing a study-guide table, notebook navigation, and an assistant chat with its activity log](docs/images/palladium.png)
 
 - **Notebooks and Markdown.** Organize notes into notebooks and folders. Write and read formatted Markdown with tables, checklists, math, and images. Paste or drag pictures into notes and resize or crop them visually, with autosave and undo.
-- **Notebook chats.** Work with an assistant that can use your notebook’s context, search the web, and help edit documents. Web access starts enabled; switch it off in each notebook’s Profile settings. Attach images, PDFs, or text files when a conversation needs them.
+- **Notebook chats.** Work with an assistant that can use your notebook’s context, search the web, and help edit documents. Press Enter to send, or Shift+Enter to insert a new line. While a reply is running, entering a message replaces Stop with Queue. Enable “Always steer instead of queueing” in Preferences → General → Chats to interrupt with new instructions instead; both the button and Enter follow this setting. Web access starts enabled; switch it off in each notebook’s Profile settings. Attach images, PDFs, or text files when a conversation needs them.
 - **Local or API dictation.** Speak into the chat composer using a local Whisper model or the OpenAI API. Review and edit the resulting text before sending. Manage models and your API key in Preferences.
 - **Your own appearance.** Choose light, dark, or system appearance, adjust the theme and accent colors, and use compact mode when you want more room for your notes.
 

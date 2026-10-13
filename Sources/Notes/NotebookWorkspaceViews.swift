@@ -395,12 +395,20 @@ struct NotebookComposer: View {
     @State private var showConversation = false
     @State private var choosingAttachments = false
     @State private var dropTargeted = false
+    @AppStorage("notes.alwaysSteer") private var alwaysSteer = false
     @AppStorage("notes.accent") private var accent = ""
     @AppStorage("notes.language") private var language = "es"
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var notebook: Notebook { model.currentNotebook }
     private var draft: Binding<String> { Binding(get: { assistant.chat(notebook)?.draft ?? "" }, set: { assistant.setDraft($0, notebook: notebook) }) }
     private var running: Bool { assistant.isRunning(notebook) }
+    private var hasInput: Bool { !draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !(assistant.chat(notebook)?.attachments ?? []).isEmpty }
+    private var showsStop: Bool { running && !hasInput }
+    private var sendLabel: String {
+        if showsStop { return language == "en" ? "Stop" : "Detener" }
+        if running { return alwaysSteer ? (language == "en" ? "Steer now" : "Cambiar instrucciones ahora") : (language == "en" ? "Queue message" : "Añadir a la cola") }
+        return language == "en" ? "Send" : "Enviar"
+    }
     var body: some View {
         VStack(spacing: 8) {
             if !assistant.queued(notebook).isEmpty {
@@ -450,22 +458,16 @@ struct NotebookComposer: View {
                             .accessibilityAddTraits(showConversation ? .isSelected : [])
                             .accessibilityIdentifier("notebook.showChat")
                     }
-                    if running && (!draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !(assistant.chat(notebook)?.attachments ?? []).isEmpty) {
-                        Menu {
-                            Button(language == "en" ? "Queue after current request" : "Añadir a la cola") { model.submitNotebookPrompt() }
-                            Button(language == "en" ? "Steer now" : "Cambiar instrucciones ahora") { model.steerNotebookPrompt() }
-                        } label: { Image(systemName: "arrow.up").foregroundStyle(NotebookAccent.color(accent)).frame(width: 28, height: 28) }
-                        .menuStyle(.borderlessButton).fixedSize().disabled(model.dictationActive).help(language == "en" ? "Queue or steer" : "Añadir a la cola o dirigir")
-                    }
                     Button {
-                        if running { assistant.stop(notebook: notebook) } else { model.submitNotebookPrompt() }
+                        if showsStop { assistant.stop(notebook: notebook) } else { model.submitNotebookPrompt() }
                     } label: {
-                        Image(systemName: running ? "stop.fill" : "arrow.up")
+                        Image(systemName: showsStop ? "stop.fill" : (running && alwaysSteer ? "arrow.turn.up.right" : "arrow.up"))
                             .font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
                             .frame(width: 30, height: 30).background(NotebookAccent.color(accent), in: Circle())
                     }.buttonStyle(.plain)
-                        .disabled(!running && (model.dictationActive || (draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (assistant.chat(notebook)?.attachments ?? []).isEmpty) || assistant.importingAttachments))
-                        .accessibilityLabel(running ? (language == "en" ? "Stop" : "Detener") : (language == "en" ? "Send" : "Enviar"))
+                        .disabled(!showsStop && (model.dictationActive || !hasInput || assistant.importingAttachments))
+                        .help(sendLabel)
+                        .accessibilityLabel(sendLabel)
                         .accessibilityIdentifier("notebook.send")
                 }
             }.padding(large ? 18 : 12)

@@ -5,6 +5,40 @@ import LectureCore
 @testable import Notes
 
 final class ChatRenderingTests: XCTestCase {
+    @MainActor func testComposerShiftReturnInsertsNewlineWithoutSubmitting() throws {
+        _ = NSApplication.shared
+        final class KeyWindow: NSWindow {
+            override var isKeyWindow: Bool { true }
+        }
+        let window = KeyWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let editor = NSTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
+        editor.allowsUndo = true
+        let target = NotebookAttachmentPasteTarget.PasteTarget(frame: editor.bounds)
+        window.contentView?.addSubview(editor)
+        window.contentView?.addSubview(target)
+        XCTAssertTrue(window.makeFirstResponder(editor))
+        editor.string = "First second"
+        editor.setSelectedRange(NSRange(location: 5, length: 1))
+        func event(_ modifiers: NSEvent.ModifierFlags, keyCode: UInt16 = 36) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: keyCode))
+        }
+        XCTAssertTrue(target.handle(try event(.shift)))
+        XCTAssertEqual(editor.string, "First\nsecond")
+        XCTAssertEqual(editor.selectedRange(), NSRange(location: 6, length: 0))
+        editor.undoManager?.undo()
+        XCTAssertEqual(editor.string, "First second")
+        XCTAssertFalse(target.handle(try event([])))
+        XCTAssertFalse(target.handle(try event([.command, .shift])))
+        XCTAssertEqual(editor.string, "First second")
+        editor.setSelectedRange(NSRange(location: editor.string.utf16.count, length: 0))
+        XCTAssertTrue(target.handle(try event(.shift, keyCode: 76)))
+        XCTAssertEqual(editor.string, "First second\n")
+        target.frame.origin.y = 300
+        XCTAssertFalse(target.handle(try event(.shift)))
+    }
+
     func testMarkdownBlocksKeepCodeLiteralAndRecognizeLists() {
         let blocks = NotebookChatMarkdown.blocks("# Heading\n\n**Hello**\n\n- [ ] Draft\n- [x] Done\n1. Ordered\n> Quote\n```swift\n- [ ] literal\n```")
         XCTAssertEqual(blocks.map(\.kind), ["heading", "paragraph", "task", "checked", "list:1.", "quote", "code:swift"])
