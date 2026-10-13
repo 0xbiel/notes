@@ -24,8 +24,8 @@ public enum NotebookPracticeTestError: LocalizedError, Equatable, Sendable {
         switch self {
         case .empty(let field): return en ? "The practice test has an empty \(field)." : "El test de práctica tiene \(field) vacío."
         case .tooLong(let field, let limit): return en ? "\(field) is longer than \(limit) characters." : "\(field) supera los \(limit) caracteres."
-        case .questionCount(let count): return en ? "A practice test needs 1 to \(NotebookPracticeTest.questionLimit) questions, not \(count)." : "Un test de práctica necesita de 1 a \(NotebookPracticeTest.questionLimit) preguntas, no \(count)."
-        case .optionCount(let question, let count): return en ? "Question \(question) needs 2 to \(NotebookPracticeTest.optionLimit) options, not \(count)." : "La pregunta \(question) necesita de 2 a \(NotebookPracticeTest.optionLimit) opciones, no \(count)."
+        case .questionCount(let count): return en ? "A practice test needs at least one question, not \(count)." : "Un test de práctica necesita al menos una pregunta, no \(count)."
+        case .optionCount(let question, let count): return en ? "Question \(question) needs at least 2 options, not \(count)." : "La pregunta \(question) necesita al menos 2 opciones, no \(count)."
         case .duplicateQuestionID(let id): return en ? "Question ID \(id) is repeated." : "El identificador de pregunta \(id) está repetido."
         case .duplicateOptionID(let question, let option): return en ? "Option ID \(option) is repeated in question \(question)." : "El identificador de opción \(option) está repetido en la pregunta \(question)."
         case .invalidCorrectOption(let question): return en ? "Question \(question) must name exactly one of its options as correct." : "La pregunta \(question) debe indicar exactamente una de sus opciones como correcta."
@@ -74,10 +74,6 @@ public struct NotebookPracticeTest: Codable, Sendable, Equatable {
     }
 
     public static let fileSuffix = ".quiz.json"
-    public static let questionLimit = 100
-    public static let optionLimit = 8
-    public static let maximumBytes = 2 * 1024 * 1024
-    static let idLimit = 64, titleLimit = 200, instructionsLimit = 2_000, textLimit = 4_000, optionTextLimit = 1_000
 
     public var title: String
     public var instructions: String
@@ -90,17 +86,14 @@ public struct NotebookPracticeTest: Codable, Sendable, Equatable {
     public static func isPracticeTest(_ path: String) -> Bool { path.hasSuffix(fileSuffix) }
 
     public func validate() throws {
-        try Self.check(title, "title", limit: Self.titleLimit)
-        try Self.check(instructions, "instructions", limit: Self.instructionsLimit)
-        guard (1...Self.questionLimit).contains(questions.count) else { throw NotebookPracticeTestError.questionCount(questions.count) }
+        try Self.check(title, "title")
+        try Self.check(instructions, "instructions")
+        guard !questions.isEmpty else { throw NotebookPracticeTestError.questionCount(questions.count) }
         var questionIDs = Set<String>()
-        guard questions.reduce(0, { $0 + ($1.images?.count ?? 0) }) <= 24 else { throw NotebookPracticeTestError.tooLong("reference images", limit: 24) }
         for question in questions {
-            guard (question.images?.count ?? 0) <= 4 else { throw NotebookPracticeTestError.tooLong("question images", limit: 4) }
             for image in question.images ?? [] {
-                try Self.check(image.path, "image path", limit: 1_000)
-                try Self.check(image.alt, "image description", limit: 1_000)
-                guard image.caption.count <= 2_000 else { throw NotebookPracticeTestError.tooLong("image caption", limit: 2_000) }
+                try Self.check(image.path, "image path")
+                try Self.check(image.alt, "image description")
                 guard !image.path.hasPrefix("/"), !image.path.contains(":"), !image.path.contains("\\"),
                       !image.path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
                     throw NotebookPracticeTestError.unreadable("Images must use relative notebook paths.")
@@ -108,17 +101,17 @@ public struct NotebookPracticeTest: Codable, Sendable, Equatable {
             }
             try Self.checkID(question.id, "question id")
             guard questionIDs.insert(question.id).inserted else { throw NotebookPracticeTestError.duplicateQuestionID(question.id) }
-            try Self.check(question.prompt, "question \(question.id) prompt", limit: Self.textLimit)
-            try Self.check(question.explanation, "question \(question.id) explanation", limit: Self.textLimit)
-            guard (2...Self.optionLimit).contains(question.options.count) else {
+            try Self.check(question.prompt, "question \(question.id) prompt")
+            try Self.check(question.explanation, "question \(question.id) explanation")
+            guard question.options.count >= 2 else {
                 throw NotebookPracticeTestError.optionCount(question: question.id, count: question.options.count)
             }
             var optionIDs = Set<String>()
             for option in question.options {
                 try Self.checkID(option.id, "option id")
                 guard optionIDs.insert(option.id).inserted else { throw NotebookPracticeTestError.duplicateOptionID(question: question.id, option: option.id) }
-                try Self.check(option.text, "option \(option.id) text of question \(question.id)", limit: Self.optionTextLimit)
-                try Self.check(option.explanation, "option \(option.id) explanation of question \(question.id)", limit: Self.textLimit)
+                try Self.check(option.text, "option \(option.id) text of question \(question.id)")
+                try Self.check(option.explanation, "option \(option.id) explanation of question \(question.id)")
             }
             guard question.options.filter({ $0.id == question.correctOptionID }).count == 1 else {
                 throw NotebookPracticeTestError.invalidCorrectOption(question: question.id)
@@ -139,19 +132,16 @@ public struct NotebookPracticeTest: Codable, Sendable, Equatable {
         return url
     }
 
-    private static func check(_ value: String, _ field: String, limit: Int) throws {
+    private static func check(_ value: String, _ field: String) throws {
         guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw NotebookPracticeTestError.empty(field) }
-        guard value.count <= limit else { throw NotebookPracticeTestError.tooLong(field, limit: limit) }
     }
 
     private static func checkID(_ value: String, _ field: String) throws {
         guard value == value.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty,
               !value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw NotebookPracticeTestError.empty(field) }
-        guard value.count <= idLimit else { throw NotebookPracticeTestError.tooLong(field, limit: idLimit) }
     }
 
     public static func decode(_ data: Data) throws -> NotebookPracticeTest {
-        guard data.count <= maximumBytes else { throw NotebookPracticeTestError.tooLarge(limit: maximumBytes) }
         let test: NotebookPracticeTest
         do { test = try JSONDecoder().decode(NotebookPracticeTest.self, from: data) }
         catch { throw NotebookPracticeTestError.unreadable(error.localizedDescription) }
@@ -165,7 +155,6 @@ public struct NotebookPracticeTest: Codable, Sendable, Equatable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         let data = try encoder.encode(self)
-        guard data.count <= Self.maximumBytes else { throw NotebookPracticeTestError.tooLarge(limit: Self.maximumBytes) }
         return data
     }
 
@@ -180,10 +169,6 @@ public struct NotebookPracticeTest: Codable, Sendable, Equatable {
 
     public static func load(workspace: SafeWorkspace, path: String) throws -> Loaded {
         guard isPracticeTest(path) else { throw NotebookPracticeTestError.unreadable(path) }
-        let url = try workspace.fileURL(path)
-        if let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > maximumBytes {
-            throw NotebookPracticeTestError.tooLarge(limit: maximumBytes)
-        }
         let data = try workspace.readFile(path)
         return Loaded(test: try decode(data), digest: digest(of: data))
     }

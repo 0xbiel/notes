@@ -10,6 +10,12 @@ struct RenderedMarkdownMath {
     let descent: CGFloat
     var size: NSSize { image.size }
     var foldedRange: NSRange { NSRange(location: span.range.location + 1, length: span.range.length - 1) }
+    func fitting(width: CGFloat) -> RenderedMarkdownMath {
+        guard width > 0, size.width > width, let fittedImage = image.copy() as? NSImage else { return self }
+        let scale = width / size.width
+        fittedImage.size = NSSize(width: width, height: size.height * scale)
+        return .init(span: span, image: fittedImage, ascent: ascent * scale, descent: descent * scale)
+    }
 }
 
 @MainActor enum MarkdownMathRenderer {
@@ -116,16 +122,18 @@ struct MarkdownMathText: NSViewRepresentable {
     }
     func sizeThatFits(_ proposal: ProposedViewSize, nsView view: NSTextView, context: Context) -> CGSize? {
         let width = proposal.width ?? 600
+        view.textStorage?.setAttributedString(Self.attributed(text, fontSize: fontSize, weight: weight, accent: accent, mathWidth: max(1, width)))
         view.textContainer?.containerSize = NSSize(width: max(1, width), height: .greatestFiniteMagnitude)
         view.layoutManager?.ensureLayout(for: view.textContainer!)
         return CGSize(width: width, height: ceil(view.layoutManager?.usedRect(for: view.textContainer!).height ?? 20))
     }
-    static func attributed(_ source: String, fontSize: CGFloat = 14, weight: NSFont.Weight = .regular, accent: NSColor = .controlAccentColor) -> NSAttributedString {
+    static func attributed(_ source: String, fontSize: CGFloat = 14, weight: NSFont.Weight = .regular, accent: NSColor = .controlAccentColor, mathWidth: CGFloat? = nil) -> NSAttributedString {
         let spans = MarkdownMath.spans(in: source)
         var protected = source as NSString
         var renders: [(String, RenderedMarkdownMath)] = []
         for (index, span) in spans.enumerated().reversed() {
-            guard let render = MarkdownMathRenderer.render(span, source: source, fontSize: span.display ? fontSize + 3 : fontSize) else { continue }
+            guard let original = MarkdownMathRenderer.render(span, source: source, fontSize: span.display ? fontSize + 3 : fontSize) else { continue }
+            let render = mathWidth.map { original.fitting(width: $0) } ?? original
             let token = "PALLADIUMMATH\(index)TOKEN"
             renders.append((token, render)); protected = protected.replacingCharacters(in: span.range, with: token) as NSString
         }

@@ -10,6 +10,18 @@ final class DocumentOutputTests: XCTestCase {
         try FileManager.default.createDirectory(at: root.appendingPathComponent("copied-course"), withIntermediateDirectories: true)
         return (try SafeWorkspace(root: root, originalRoot: root.appendingPathComponent("original")), root)
     }
+    @MainActor func testManyLaTeXOutputsAreNotCapped() throws {
+        let (workspace, root) = try environment()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let notebook = Notebook.copiedCourse
+        let store = try NotebookProjectStore(workspace: workspace, notebooks: [notebook])
+        let source = LaTeXDocument.template + String(repeating: " ", count: 1_000_001)
+        let outputs = (1...11).map { NotebookDocumentOutput(path: "output/draft-\($0).tex", format: "latex", source: source) }
+        let prepared = try NotebookDocumentOutputWriter.prepare(outputs, documents: [:], changes: [], store: store, notebook: notebook)
+        XCTAssertEqual(prepared.count, 11)
+        try NotebookDocumentOutputWriter.publish(prepared, workspace: workspace)
+        for output in outputs { XCTAssertEqual(try workspace.readFile(output.path), Data(source.utf8)) }
+    }
     @MainActor func testMarkdownExportUsesNativeRenderingAndPagination() throws {
         _ = NSApplication.shared
         let (workspace, root) = try environment()

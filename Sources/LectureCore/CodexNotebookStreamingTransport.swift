@@ -101,7 +101,7 @@ struct CodexNotebookProgressDecoder {
                 return .init(id: "web-" + (item["id"] as? String ?? "current"), title: "Buscando en la web…", detail: action?["query"] as? String, kind: .tool)
             }
             guard ["reasoning", "agentMessage", "userMessage"].contains(kind) else { throw MediaError.invalid("Codex devolvió un evento no permitido; respuesta rechazada.") }
-            if method == "item/completed", kind == "agentMessage", let text = item["text"] as? String { output = String(text.prefix(60_000)) }
+            if method == "item/completed", kind == "agentMessage", let text = item["text"] as? String { output = text }
         }
         if method == "turn/completed", let turn = params["turn"] as? [String: Any] {
             guard turn["status"] as? String == "completed" else { throw MediaError.invalid("Codex no completó el lote; revisa la cuenta/configuración y reintenta explícitamente.") }

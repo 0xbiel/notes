@@ -46,16 +46,16 @@ public struct NotebookWebClient: Sendable {
         let workspace = try SafeWorkspace(root: workspaceRoot, originalRoot: originalRoot)
         switch action.kind {
         case "search":
-            guard !action.query.isEmpty, action.query.count <= 500 else { throw MediaError.invalid("Invalid web search query.") }
+            guard !action.query.isEmpty else { throw MediaError.invalid("Invalid web search query.") }
             var url = URLComponents(string: "https://www.bing.com/search")!
             url.queryItems = [.init(name: "q", value: action.query), .init(name: "format", value: "rss")]
-            let (data, _) = try await fetch(url.url!.absoluteString, limit: 2_000_000)
+            let (data, _) = try await fetch(url.url!.absoluteString, limit: .max)
             let parser = WebSearchFeed(); let xml = XMLParser(data: data); xml.delegate = parser
             guard xml.parse(), !parser.results.isEmpty else { throw MediaError.invalid("Web search returned no readable results. Try a more specific query.") }
-            let text = parser.results.prefix(8).joined(separator: "\n\n")
+            let text = parser.results.joined(separator: "\n\n")
             return .init(action: action, source: url.url!.absoluteString, text: text)
         case "read":
-            let (data, response) = try await fetch(action.url, limit: 2_000_000)
+            let (data, response) = try await fetch(action.url, limit: .max)
             guard response.mimeType?.contains("text") == true || response.mimeType?.contains("html") == true,
                   let html = String(data: data, encoding: .utf8) else { throw MediaError.invalid("This page is not readable text. Use downloadImage for an image URL.") }
             return .init(action: action, source: response.url?.absoluteString ?? action.url,
@@ -154,7 +154,7 @@ public struct NotebookWebClient: Sendable {
     static func pageText(_ html: String) -> String {
         var text = html.replacingOccurrences(of: "(?is)<(script|style|noscript)[^>]*>.*?</\\1>", with: "", options: .regularExpression)
         text = text.replacingOccurrences(of: "(?is)<[^>]+>", with: " ", options: .regularExpression)
-        return String(unescape(text).replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).prefix(16_000))
+        return unescape(text).replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
     }
     static func imageURLs(_ html: String, base: URL) -> [String] {
         let pattern = #"(?is)(?:content|src)\s*=\s*["']([^"']+\.(?:gif|png|jpe?g|webp)(?:\?[^"']*)?)["']|https?:\\?/\\?/[^\s"'<>]+?\.(?:gif|png|jpe?g|webp)(?:\?[^\s"'<>]*)?"#

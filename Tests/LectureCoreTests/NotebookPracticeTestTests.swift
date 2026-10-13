@@ -25,7 +25,7 @@ final class NotebookPracticeTestTests: XCTestCase {
         try test(1).validate()
         try test(100).validate()
         XCTAssertThrowsError(try test(0).validate())
-        XCTAssertThrowsError(try test(101).validate())
+        XCTAssertNoThrow(try test(101).validate())
         var bad = test(); bad.title = "  "; XCTAssertThrowsError(try bad.validate())
         bad = test(); bad.instructions = ""; XCTAssertThrowsError(try bad.validate())
         bad = test(); bad.questions[1].id = "q0"
@@ -35,13 +35,13 @@ final class NotebookPracticeTestTests: XCTestCase {
         bad = test(); bad.questions[0].options = [bad.questions[0].options[1]]
         XCTAssertThrowsError(try bad.validate()) { XCTAssertEqual($0 as? NotebookPracticeTestError, .optionCount(question: "q0", count: 1)) }
         bad = test(); bad.questions[0] = question("q0", options: 9)
-        XCTAssertThrowsError(try bad.validate())
+        XCTAssertNoThrow(try bad.validate())
         try NotebookPracticeTest(title: "T", instructions: "I", questions: [question("a", options: 8)]).validate()
         bad = test(); bad.questions[0].correctOptionID = "missing"
         XCTAssertThrowsError(try bad.validate()) { XCTAssertEqual($0 as? NotebookPracticeTestError, .invalidCorrectOption(question: "q0")) }
         bad = test(); bad.questions[0].options[0].explanation = " "; XCTAssertThrowsError(try bad.validate())
         bad = test(); bad.questions[0].explanation = ""; XCTAssertThrowsError(try bad.validate())
-        bad = test(); bad.questions[0].prompt = String(repeating: "x", count: 4_001); XCTAssertThrowsError(try bad.validate())
+        bad = test(); bad.questions[0].prompt = String(repeating: "x", count: 4_001); XCTAssertNoThrow(try bad.validate())
         bad = test(); bad.questions[0].id = " q0"; XCTAssertThrowsError(try bad.validate())
     }
 
@@ -53,13 +53,15 @@ final class NotebookPracticeTestTests: XCTestCase {
         XCTAssertThrowsError(try NotebookPracticeTest.decode(Data("{}".utf8))) {
             guard case .unreadable = $0 as? NotebookPracticeTestError else { return XCTFail("\($0)") }
         }
-        XCTAssertThrowsError(try NotebookPracticeTest.decode(Data(count: NotebookPracticeTest.maximumBytes + 1)))
+        var large = test(101)
+        large.questions[0].explanation = String(repeating: "x", count: 2_100_000)
+        XCTAssertEqual(try NotebookPracticeTest.decode(large.encoded()), large)
         var invalid = original; invalid.questions = []
         XCTAssertThrowsError(try invalid.encoded())
         XCTAssertTrue(NotebookPracticeTest.isPracticeTest("Course/Unit.quiz.json"))
         XCTAssertFalse(NotebookPracticeTest.isPracticeTest("Course/Unit.json"))
-        XCTAssertEqual(NotebookPracticeTestError.questionCount(0).message(language: "en").contains("1 to 100"), true)
-        XCTAssertTrue(NotebookPracticeTestError.questionCount(0).message(language: "es").contains("de 1 a 100"))
+        XCTAssertTrue(NotebookPracticeTestError.questionCount(0).message(language: "en").contains("at least one"))
+        XCTAssertTrue(NotebookPracticeTestError.questionCount(0).message(language: "es").contains("al menos una"))
     }
 
     func testOptionalReferenceImagesRoundTripAndRejectUnsafeOrExcessiveMetadata() throws {
@@ -77,10 +79,10 @@ final class NotebookPracticeTestTests: XCTestCase {
         invalid.questions[0].images = [.init(path: "figure.png", alt: "")]
         XCTAssertThrowsError(try invalid.encoded())
         invalid.questions[0].images = Array(repeating: image, count: 5)
-        XCTAssertThrowsError(try invalid.encoded())
+        XCTAssertNoThrow(try invalid.encoded())
         invalid = test(7)
         for index in invalid.questions.indices { invalid.questions[index].images = Array(repeating: image, count: 4) }
-        XCTAssertThrowsError(try invalid.encoded())
+        XCTAssertNoThrow(try invalid.encoded())
     }
 
     func testReferenceImageResolutionStaysInsideNotebookIncludingSymlinks() throws {

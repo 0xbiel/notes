@@ -55,6 +55,7 @@ struct ChatWorkingIndicator: View {
 struct NotebookHomePicker: View {
     @ObservedObject var model: Workbench
     @ObservedObject var assistant: NotebookAssistantController
+    var compact = false
     @AppStorage("notes.accent") private var accent = ""
     @State private var titleHovered = false
     @AppStorage("notes.language") private var language = "es"
@@ -68,7 +69,7 @@ struct NotebookHomePicker: View {
         Button { search = ""; presented = true } label: {
             HStack(spacing: 10) {
                 Text(model.currentNotebook.name)
-                    .font(.system(size: 29, weight: .semibold, design: .rounded))
+                    .font(.system(size: compact ? 21 : 29, weight: .semibold, design: .rounded))
                     .multilineTextAlignment(.center)
                     .padding(.bottom, 9)
                     .overlay(alignment: .bottom) {
@@ -140,6 +141,7 @@ struct NotebookHomePicker: View {
 struct NotebookChatPicker: View {
     let notebook: Notebook
     @ObservedObject var assistant: NotebookAssistantController
+    var maximumTitleWidth: CGFloat = 240
     @AppStorage("notes.language") private var language = "es"
     @State private var presented = false
     @State private var hovered: String?
@@ -148,7 +150,7 @@ struct NotebookChatPicker: View {
     @AppStorage("notes.confirmChatDeletion") private var confirmChatDeletion = true
     private var chats: [NotebookChat] { assistant.matchingChats(notebook, query: search) }
     private var title: String { assistant.chat(notebook)?.title ?? "Chats" }
-    private var titleWidth: CGFloat { min(240, max(28, (title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13)]).width.rounded(.up))) }
+    private var titleWidth: CGFloat { min(maximumTitleWidth, max(28, (title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13)]).width.rounded(.up))) }
     var body: some View {
         HStack(spacing: 12) {
             Button { presented.toggle() } label: {
@@ -342,6 +344,49 @@ private struct NotebookChatEdgeFade: ViewModifier {
     }
 }
 
+struct NotebookFloatingChat: View {
+    @ObservedObject var model: Workbench
+    @ObservedObject var assistant: NotebookAssistantController
+    let onClose: () -> Void
+    @AppStorage("notes.language") private var language = "es"
+    private var empty: Bool { assistant.isEmptyChat(model.currentNotebook) && !assistant.isRunning(model.currentNotebook) }
+    var body: some View {
+        VStack(spacing: 12) {
+            GeometryReader { geometry in
+                ZStack {
+                    NotebookChatPicker(notebook: model.currentNotebook, assistant: assistant, maximumTitleWidth: min(240, max(28, geometry.size.width - 210)))
+                        .labelStyle(.iconOnly)
+                        .padding(.horizontal, 34)
+                    HStack {
+                        Button { model.expandNotebookChat() } label: { Image(systemName: "arrow.up.left.and.arrow.down.right").frame(width: 26, height: 26) }
+                            .buttonStyle(.plain)
+                            .help(language == "en" ? "Open full-page chat" : "Abrir chat a pantalla completa")
+                            .accessibilityLabel(language == "en" ? "Open full-page chat" : "Abrir chat a pantalla completa")
+                            .accessibilityIdentifier("notebook.expandChat")
+                        Spacer(minLength: 0)
+                        Button(action: onClose) { Image(systemName: "xmark").frame(width: 26, height: 26) }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(language == "en" ? "Close chat" : "Cerrar chat")
+                            .accessibilityIdentifier("notebook.closeChat")
+                    }
+                }
+            }.frame(height: 38)
+            if empty {
+                VStack(spacing: 10) {
+                    NotebookHomePicker(model: model, assistant: assistant, compact: true)
+                    Text(language == "en" ? "What would you like to work on?" : "¿En qué quieres trabajar?")
+                        .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .accessibilityIdentifier("notebook.floatingChatWelcome")
+            } else {
+                NotebookConversation(model: model, assistant: assistant)
+            }
+        }.padding(14).frame(height: empty ? 180 : 280)
+            .modifier(NotebookInputSurface(radius: 18, floating: true, opaque: true, borderOpacity: 0.6))
+            .accessibilityIdentifier("notebook.floatingChat")
+    }
+}
+
 struct NotebookComposer: View {
     @ObservedObject var model: Workbench
     @ObservedObject var assistant: NotebookAssistantController
@@ -361,17 +406,7 @@ struct NotebookComposer: View {
                 NotebookPromptQueue(model: model, assistant: assistant, notebook: notebook)
             }
             if !large && showConversation {
-                VStack(spacing: 12) {
-                    HStack(spacing: 8) {
-                        NotebookChatPicker(notebook: notebook, assistant: assistant).labelStyle(.iconOnly)
-                        Button { showConversation = false } label: { Image(systemName: "xmark").frame(width: 26, height: 26) }
-                            .buttonStyle(.plain).accessibilityLabel(language == "en" ? "Close chat" : "Cerrar chat")
-                            .accessibilityIdentifier("notebook.closeChat")
-                    }
-                    NotebookConversation(model: model, assistant: assistant)
-                }.padding(14).frame(height: 280)
-                    .modifier(NotebookInputSurface(radius: 18, floating: true, opaque: true, borderOpacity: 0.6))
-                    .accessibilityIdentifier("notebook.floatingChat")
+                NotebookFloatingChat(model: model, assistant: assistant, onClose: { showConversation = false })
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
             if !running, !model.chatHistoryVisible, let error = assistant.composerError(notebook) {

@@ -376,8 +376,7 @@ final class NotebookAssistantController: ObservableObject {
                     var redundantRounds = 0
                     var repairRounds = 0
                     // Web rounds are not rationed: research runs until the assistant answers or the user stops it.
-                    var rounds = 0
-                    while rounds < 12 {
+                    while true {
                         try Task.checkCancellation()
                         self.report("Conectando con el proveedor…", run: run)
                         let round = UUID().uuidString
@@ -413,7 +412,6 @@ final class NotebookAssistantController: ObservableObject {
                             request.contextUpdate = "New web results are in webResults. Continue the user's task; cite sources and use successful localImagePath values for image edits."
                             continue
                         }
-                        rounds += 1
                         if !response.readFiles.isEmpty {
                             guard response.edits.isEmpty else { throw MediaError.invalid("El asistente pidió contexto y cambios a la vez.") }
                             var advanced = false
@@ -468,7 +466,6 @@ final class NotebookAssistantController: ObservableObject {
                         try Task.checkCancellation()
                         self.report("Validando y guardando \(changes.count) archivo(s)…", run: run, detail: changes.isEmpty ? "Sin cambios en los documentos." : changes.map(\.path).joined(separator: "\n"), kind: .tool)
                         let requestedOutputs = response.outputs ?? []
-                        guard requestedOutputs.count <= 10 else { throw MediaError.invalid("Too many document exports.") }
                         let imageOutputs = try NotebookDocumentOutputWriter.prepare(requestedOutputs.filter { $0.format == "image" }, documents: request.documents, changes: changes, store: self.store, notebook: notebook, sourceDigests: request.sourceDigests, attachments: allAttachments)
                         try NotebookDocumentOutputWriter.publish(imageOutputs, workspace: self.store.workspace)
                         var outputs = imageOutputs
@@ -490,7 +487,6 @@ final class NotebookAssistantController: ObservableObject {
                         try self.append(.init(role: "assistant", text: receipt, files: changes.map(\.path) + outputPaths, checkpointID: checkpoint?.id, activities: self.runs[run]?.activities ?? [], appGenerated: response.reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), notebook: notebook, chatID: chat.id)
                         return
                     }
-                    throw MediaError.invalid("La petición necesita demasiado contexto. Acótala para continuar.")
                 } catch {
                     if Task.isCancelled, self.steering.remove(run) != nil { return }
                     self.heldQueues.insert(run)
@@ -515,6 +511,10 @@ extension Workbench {
         guard activeNotebooks.contains(where: { $0.id == id }) else { return }
         if let selectedNote { saveDraft(named: selectedNote) }
         persistDrafts(); librarySelections = [.notebook(id)]; selectedNotebookID = id; selectedNote = nil; selectedFile = nil; selectedFolder = nil; previewHeading = nil; showPreferences = false
+    }
+    func expandNotebookChat() {
+        openNotebook(currentNotebook.id)
+        documentChatVisible = false
     }
     @discardableResult func openNotebookForNewChat(_ id: String) -> Bool {
         guard let notebook = activeNotebooks.first(where: { $0.id == id }), let assistant else { return false }

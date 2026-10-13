@@ -5,6 +5,113 @@ import LectureCore
 @testable import Notes
 
 final class MarkdownMathTests: XCTestCase {
+    @MainActor func testScreenshotFormattingVisuals() async throws {
+        let source = #"""
+        **a) ¿Problema según qué ocurre con la instrucción siguiente al salto (`add r5,r0,c`)?**
+
+        La instrucción siguiente conserva su formato de código.
+
+        ---
+
+        $$\text{Ciclos}=15+4=\boxed{19}$$
+
+        ---
+
+        $$\frac{n}{600+(n-1)150}=\frac{0{,}9}{150}\;\Rightarrow\;150n=0{,}9\,(450+150n)=405+135n\;\Rightarrow\;15n=405\;\Rightarrow\;\boxed{n=27}$$
+
+        **Resultado final**, sin modificar el Markdown original.
+        """#
+        let output = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("qa/math")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        for dark in [false, true] {
+            for chat in [false, true] {
+                let content: AnyView = chat
+                    ? AnyView(NotebookChatMarkdown(text: source).padding(24))
+                    : AnyView(LiveMarkdownEditor(documentID: "formatting-qa", text: source, editing: false, onChange: { _ in }, onLink: { _ in }))
+                let host = NSHostingView(rootView: content.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).background(Color(nsColor: .textBackgroundColor)).environment(\.colorScheme, dark ? .dark : .light))
+                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 560), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false
+                window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+                window.contentView = host
+                host.frame = NSRect(x: 0, y: 0, width: 800, height: 560)
+                host.layoutSubtreeIfNeeded()
+                try await Task.sleep(for: .milliseconds(200))
+                host.layoutSubtreeIfNeeded()
+                let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+                host.cacheDisplay(in: host.bounds, to: bitmap)
+                let filename = "formatting-\(chat ? "chat" : "note")-\(dark ? "dark" : "light").png"
+                try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: output.appendingPathComponent(filename))
+                window.close()
+            }
+        }
+    }
+    @MainActor func testBoxedScreenshotFormulasRenderWithoutChangingSource() throws {
+        let formulas = [#"\text{Ciclos}=15+4=\boxed{19}"#,
+                        #"\frac{n}{600+(n-1)150}=\frac{0{,}9}{150}\;\Rightarrow\;150n=0{,}9\,(450+150n)=405+135n\;\Rightarrow\;15n=405\;\Rightarrow\;\boxed{n=27}"#,
+                        #"\boxed{\frac{1}{2}}"#, #"\boxed{x}^{2}_{i}"#, #"\boxed{\boxed{19}}"#]
+        let source = formulas.map { "$$" + $0 + "$$" }.joined(separator: "\n\n")
+        let spans = MarkdownMath.spans(in: source)
+        XCTAssertEqual(spans.count, formulas.count)
+        for span in spans { XCTAssertNotNil(MarkdownMathRenderer.render(span, source: source)) }
+        XCTAssertEqual(MarkdownMathText.attributed(source).string.filter { $0 == "\u{fffc}" }.count, formulas.count)
+        let view = MarkdownTextView(frame: NSRect(x: 0, y: 0, width: 1400, height: 700))
+        view.string = source; view.liveEditing = false; view.renderMarkdown()
+        XCTAssertEqual(view.string, source)
+        XCTAssertEqual(view.renderedMath.count, formulas.count)
+        let longSpan = spans[1]
+        let original = try XCTUnwrap(MarkdownMathRenderer.render(longSpan, source: source))
+        for width: CGFloat in [320, 680, 1200] {
+            let fitted = original.fitting(width: width)
+            XCTAssertLessThanOrEqual(fitted.size.width, width)
+            XCTAssertEqual(fitted.size.height / fitted.size.width, original.size.height / original.size.width, accuracy: 0.001)
+            let rich = MarkdownMathText.attributed("$$" + formulas[1] + "$$", mathWidth: width)
+            let attachment = try XCTUnwrap(rich.attribute(.attachment, at: 0, effectiveRange: nil) as? NSTextAttachment)
+            XCTAssertLessThanOrEqual(attachment.bounds.width, width)
+        }
+        view.setFrameSize(NSSize(width: 400, height: 700))
+        for render in view.renderedMath {
+            XCTAssertLessThanOrEqual(try XCTUnwrap(view.mathRect(render)).maxX, view.bounds.maxX)
+        }
+        XCTAssertEqual(view.string, source)
+    }
+
+    func testChatThematicBreaksAreBlocksAndCodeStaysLiteral() {
+        let source = "Before\n\n---\n\nAfter\n\n***\n\n_ _ _\n\n```text\n---\n```\n\n| A |\n| --- |\n| B |"
+        let blocks = NotebookChatMarkdown.blocks(source)
+        XCTAssertEqual(blocks.filter { $0.kind == "rule" }.count, 3)
+        XCTAssertEqual(blocks.first(where: { $0.kind == "code:text" })?.text, "---")
+        XCTAssertEqual(blocks.filter { $0.kind == "table" }.count, 1)
+    }
+
+    @MainActor func testBoldContainingInlineCodeAndThematicBreaksInNotes() throws {
+        let heading = "**a) ¿Problema según qué ocurre con la instrucción siguiente al salto (`add r5,r0,c`)?**"
+        let source = heading + "\n\n---\n\n***\n\n_ _ _\n\n```text\n**literal**\n---\n```\n\n`**literal**`"
+        let view = MarkdownTextView(frame: NSRect(x: 0, y: 0, width: 1400, height: 500))
+        view.string = source; view.liveEditing = false; view.renderMarkdown()
+        XCTAssertEqual(view.string, source)
+        XCTAssertEqual(view.renderedRules.count, 3)
+        let storage = try XCTUnwrap(view.textStorage)
+        for term in ["a)", "add r5,r0,c"] {
+            let position = (source as NSString).range(of: term).location
+            let font = try XCTUnwrap(storage.attribute(.font, at: position, effectiveRange: nil) as? NSFont)
+            XCTAssertTrue(NSFontManager.shared.traits(of: font).contains(.boldFontMask))
+            if term.hasPrefix("add") { XCTAssertTrue(font.isFixedPitch) }
+        }
+        XCTAssertEqual(storage.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor, .clear)
+        let literal = (source as NSString).range(of: "**literal**").location
+        XCTAssertNotEqual(storage.attribute(.foregroundColor, at: literal, effectiveRange: nil) as? NSColor, .clear)
+        let chat = NotebookChatMarkdown.inlineAttributed(heading, accent: .purple)
+        XCTAssertFalse(String(chat.characters).contains("**"))
+        XCTAssertTrue(chat.runs.contains { ($0.inlinePresentationIntent ?? []).contains(.stronglyEmphasized) })
+        for range in view.renderedRules { XCTAssertGreaterThan(try XCTUnwrap(view.thematicRuleRect(range)).width, 600) }
+        let rule = try XCTUnwrap(view.renderedRules.first)
+        view.liveEditing = true
+        view.setSelectedRange(NSRange(location: rule.location, length: 0))
+        view.renderMarkdown()
+        XCTAssertEqual(view.renderedRules.count, 2)
+        XCTAssertNotEqual(storage.attribute(.foregroundColor, at: rule.location, effectiveRange: nil) as? NSColor, .clear)
+        XCTAssertEqual(view.string, source)
+    }
     @MainActor func testScreenshotFormulasRenderInNotesTablesAndChatWithoutSourceChanges() throws {
         let formulas = [#"T_{orig}(n)=n\cdot T"#, #"t=\max{t_1,\dots,t_k}+d"#,
                         #"TLI=k\cdot t"#, #"T_{seg}(n)=TLI+(n-1)t=kt+(n-1)t"#,

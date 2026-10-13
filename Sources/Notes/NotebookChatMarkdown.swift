@@ -47,6 +47,10 @@ struct NotebookChatMarkdown: View {
                 flush(); fence = String(trimmed.prefix(3)); language = String(trimmed.dropFirst(3)); continue
             }
             if trimmed.isEmpty { flush(); continue }
+            let rule = trimmed.filter { !$0.isWhitespace }
+            if rule.count >= 3, let marker = rule.first, "-*_".contains(marker), rule.allSatisfy({ $0 == marker }) {
+                flush(); result.append(.init(kind: "rule", text: line)); continue
+            }
             let headings = trimmed.prefix { $0 == "#" }.count
             if (1...6).contains(headings), trimmed.dropFirst(headings).first == " " {
                 flush(); result.append(.init(kind: "heading", text: String(trimmed.dropFirst(headings + 1)), level: headings)); continue
@@ -78,7 +82,9 @@ struct NotebookChatMarkdown: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(Array(Self.blocks(text).enumerated()), id: \.offset) { _, block in
-                if block.kind == "math" {
+                if block.kind == "rule" {
+                    Divider().padding(.vertical, 4)
+                } else if block.kind == "math" {
                     HStack { Spacer(minLength: 0); MarkdownMathText(text: block.text, fontSize: 17, accent: NSColor(NotebookAccent.color(accent))); Spacer(minLength: 0) }
                 } else if block.kind == "table", let table = MarkdownTables.blocks(in: block.text).first?.table {
                     MarkdownTablePreview(table: table).frame(maxWidth: .infinity)

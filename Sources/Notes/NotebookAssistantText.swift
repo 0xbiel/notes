@@ -6,6 +6,7 @@ import LectureCore
 enum NotebookAssistantText {
     private static let translations: [String: String] = [
         "Corrigiendo cambios…": "Correcting edits…",
+        "Corrigiendo respuesta…": "Correcting response…",
         "Solo se pueden editar notas Markdown. Los archivos importados son fuentes de solo lectura.": "Only Markdown notes can be edited. Imported files are read-only sources.",
         "Elige un archivo, no una carpeta ni un enlace.": "Choose a regular file, not a folder or link.",
         "Los archivos adjuntos no pueden superar 20 MB.": "Attachments must be 20 MB or smaller.",

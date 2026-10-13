@@ -97,7 +97,7 @@ public struct ClaudeTextTransport: Sendable {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: input.path)
         let command = try command(try Self.arguments(configuration, schema: schema, instructions: instructions, webSearch: webSearch, imageInput: !images.isEmpty), directory: directory, timeout: ProviderRequestLimits.generation)
         // The stream repeats the reply in its tool call, tool result and result.
-        command.outputLimit = 8_000_000
+        command.outputLimit = nil
         let reader = try FileHandle(forReadingFrom: input)
         command.process.standardInput = reader
         defer { try? reader.close() }
