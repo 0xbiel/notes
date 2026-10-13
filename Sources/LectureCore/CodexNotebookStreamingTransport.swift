@@ -4,13 +4,11 @@ struct CodexNotebookStreamingTransport {
     let store: LocalMediaStore
     let configuration: AIProviderConfiguration
 
-    func generate(_ prompt: String, language: String, images: [NotebookInputImage], webEnabled: Bool = true, usage: @escaping @Sendable (ProviderTokenUsage) -> Void = { _ in }, progress: @escaping @Sendable (NotebookProviderProgress) async -> Void) async throws -> String {
-        let directory = try NotesProviderTransport(store: store).temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
+    /// Retains the configured account, but excludes its config, rules, plugins,
+    /// hooks and skills from an ephemeral helper.
+    static func accountHome(_ configuration: AIProviderConfiguration, in directory: URL) throws -> URL {
         let home = directory.appendingPathComponent("codex-home")
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-        // Retain the configured account, but exclude its config, rules, plugins,
-        // hooks and skills from this ephemeral text-only helper.
         let accountHome = configuration.accountHomePath.isEmpty ? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex") : URL(fileURLWithPath: configuration.accountHomePath)
         let auth = accountHome.appendingPathComponent("auth.json")
         if FileManager.default.fileExists(atPath: auth.path) {
@@ -18,6 +16,13 @@ struct CodexNotebookStreamingTransport {
             try FileManager.default.copyItem(at: auth, to: target)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
         }
+        return home
+    }
+
+    func generate(_ prompt: String, language: String, images: [NotebookInputImage], webEnabled: Bool = true, usage: @escaping @Sendable (ProviderTokenUsage) -> Void = { _ in }, progress: @escaping @Sendable (NotebookProviderProgress) async -> Void) async throws -> String {
+        let directory = try NotesProviderTransport(store: store).temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let home = try Self.accountHome(configuration, in: directory)
         let environment = try NotesProviderTransport.codexEnvironment(configuration, home: home.path)
         let instructions = NotebookAssistantProtocol.instructions(language: language) + "\n" + NotebookAssistantProtocol.webInstructions(enabled: webEnabled, native: true)
         let exec = try NotesProviderTransport.codexArguments(configuration, schema: directory.appendingPathComponent("unused-schema"), instructions: instructions, allowWebSearch: webEnabled)
@@ -73,6 +78,8 @@ struct CodexNotebookProgressDecoder {
     private var parts: [String: [Int: String]] = [:]
     private(set) var output = ""
     private(set) var finished = false
+    private var response = NotebookResponseStream()
+    private var writing = false
     mutating func accept(_ method: String, _ params: [String: Any]) throws -> NotebookProviderProgress? {
         guard params["threadId"] as? String == threadID else { return nil }
         if let id = params["turnId"] as? String, let turnID, id != turnID { return nil }
@@ -85,16 +92,21 @@ struct CodexNotebookProgressDecoder {
             let summary = method.contains("summaryText")
             let key = id + (summary ? "-summary" : "-content")
             let index = params[summary ? "summaryIndex" : "contentIndex"] as? Int ?? 0
-            parts[key, default: [:]][index] = String(((parts[key]?[index] ?? "") + delta).prefix(12_000))
-            let detail = parts[key]!.keys.sorted().compactMap { parts[key]?[$0] }.joined(separator: "\n\n")
-            return .init(id: "thought-" + key, title: "Pensando…", detail: detail, kind: .reasoning)
+            let detail = String(((parts[key]?[index] ?? "") + delta).prefix(12_000))
+            parts[key, default: [:]][index] = detail
+            // Each summary section is a titled thought of its own.
+            return .init(id: "thought-" + key + (index == 0 ? "" : "-\(index)"), title: "Pensando…", detail: detail, kind: .reasoning)
         }
         if method == "thread/tokenUsage/updated", let total = (params["tokenUsage"] as? [String: Any])?["total"] as? [String: Any] {
             let count = ProviderTokenUsage.count, cached = count(total["cachedInputTokens"])
             usage = .init(model: model, input: count(total["inputTokens"]) - cached, cachedInput: cached, output: count(total["outputTokens"]))
             return nil
         }
-        if method == "item/agentMessage/delta" { return .init(id: "provider-response", title: "Redactando respuesta…") }
+        if method == "item/agentMessage/delta" {
+            let update = (params["delta"] as? String).flatMap { response.accept($0) }
+            defer { writing = true }
+            return update ?? (writing ? nil : .init(id: "provider-response", title: "Redactando respuesta…"))
+        }
         if ["item/started", "item/completed"].contains(method), let item = params["item"] as? [String: Any], let kind = item["type"] as? String {
             if kind == "webSearch", webEnabled {
                 let action = item["action"] as? [String: Any]

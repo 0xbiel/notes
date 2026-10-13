@@ -69,6 +69,7 @@ enum NotebookAssistantText {
         "Preparando cambios…": "Preparing changes…",
         "Consultando BOE": "Looking up BOE",
         "Leyendo ·": "Reading ·",
+        "Redactando ·": "Writing ·",
         "Validando y guardando": "Validating and saving",
         "Cambios guardados": "Changes saved",
         "archivo(s)": "file(s)",
@@ -154,12 +155,20 @@ enum NotebookAssistantText {
         "Edición demasiado grande.": "Edit too large.",
         "Detén la petición antes de eliminar este chat.": "Stop the request before deleting this chat.",
         "No quedan cambios para deshacer.": "There are no changes left to undo.",
+        "Este proveedor no publica límites para esta cuenta.": "This provider reports no limits for this account.",
+        "Esta versión de Claude Code no informa de los límites de la cuenta.": "This Claude Code version does not report the account's limits.",
+        "Los límites solo están disponibles con una cuenta de Google.": "Limits are only available with a Google account.",
+        "Inicia sesión en Antigravity con Google para ver sus límites.": "Sign in to Antigravity with Google to see its limits.",
+        "Antigravity no renovó la sesión; vuelve a iniciar sesión en su cliente.": "Antigravity did not renew the session; sign in again in its client.",
+        "Antigravity no devolvió sus límites.": "Antigravity did not return its limits.",
         "No se encontró el workspace independiente del prototipo.": "The independent prototype workspace could not be found."
     ]
 
+    private static let toEnglish = translations.map { ($0.key, $0.value) }.sorted { ($0.0.count, $0.0) > ($1.0.count, $1.0) }
+    private static let toSpanish = translations.map { ($0.value, $0.key) }.sorted { ($0.0.count, $0.0) > ($1.0.count, $1.0) }
+
     static func display(_ text: String, language: String) -> String {
-        let pairs = translations.map { language == "en" ? ($0.key, $0.value) : ($0.value, $0.key) }
-            .sorted { $0.0.count > $1.0.count }
+        let pairs = language == "en" ? toEnglish : toSpanish
         let source = language == "en" ? text.replacingOccurrences(of: "Respuesta simulada inválida: ", with: "") : text
         return pairs.reduce(source) { $0.replacingOccurrences(of: $1.0, with: $1.1) }
     }

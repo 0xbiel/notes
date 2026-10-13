@@ -25,6 +25,133 @@ final class ProviderUsageTests: XCTestCase {
         XCTAssertEqual(failed.usage, [.init(model: "claude-opus-5-5", input: 7, output: 3)])
     }
 
+    func testClaudeStreamsThinkingSummariesIntoOneThought() throws {
+        func line(_ value: [String: Any]) throws -> Data { try JSONSerialization.data(withJSONObject: value) }
+        func stream(_ event: [String: Any]) throws -> Data { try line(["type": "stream_event", "event": event]) }
+        let configuration = AIProviderConfiguration(provider: .claudeCode, executablePath: "/usr/bin/true")
+        let arguments = try ClaudeTextTransport.arguments(configuration, schema: [:], instructions: "x")
+        XCTAssertTrue(arguments.contains("--include-partial-messages"))
+        XCTAssertEqual(arguments.firstIndex(of: "--thinking-display").map { arguments[$0 + 1] }, "summarized")
+        XCTAssertTrue(arguments[arguments.firstIndex(of: "--settings")! + 1].contains("showThinkingSummaries"))
+        var custom = configuration
+        custom.launchArguments = "--thinking disabled"
+        XCTAssertFalse(try ClaudeTextTransport.arguments(custom, schema: [:], instructions: "x").contains("--thinking-display"))
+
+        var decoder = ClaudeStreamDecoder()
+        _ = try decoder.accept(line(["type": "system", "subtype": "init", "tools": ["StructuredOutput"], "mcp_servers": [], "model": "claude-sonnet-5-5"]))
+        XCTAssertNil(try decoder.accept(line(["type": "system", "subtype": "status"])))
+        let started = try decoder.accept(stream(["type": "content_block_start", "index": 0, "content_block": ["type": "thinking", "thinking": ""]]))
+        XCTAssertEqual(started?.kind, .reasoning)
+        XCTAssertNil(started?.detail)
+        XCTAssertNil(try decoder.accept(stream(["type": "content_block_delta", "index": 0, "delta": ["type": "thinking_delta", "thinking": "Check "]])))
+        // Short deltas are held back and shown together.
+        XCTAssertNil(try decoder.accept(stream(["type": "content_block_delta", "index": 0, "delta": ["type": "thinking_delta", "thinking": "the dates."]])))
+        XCTAssertNil(try decoder.accept(stream(["type": "content_block_delta", "index": 0, "delta": ["type": "signature_delta", "signature": "s"]])))
+        let delta = try decoder.accept(stream(["type": "content_block_stop", "index": 0]))
+        XCTAssertEqual(delta?.detail, "Check the dates.")
+        XCTAssertEqual(delta?.id, started?.id)
+        XCTAssertNil(try decoder.accept(stream(["type": "content_block_stop", "index": 0])))
+        XCTAssertNil(try decoder.accept(stream(["type": "content_block_delta", "index": 1, "delta": ["type": "text_delta", "text": "Answer"]])))
+        // The complete message repeats the block; it settles the same thought.
+        let final = try decoder.accept(line(["type": "assistant", "message": ["content": [["type": "thinking", "thinking": "Check the dates. Done."]]]]))
+        XCTAssertEqual(final?.id, started?.id)
+        XCTAssertEqual(final?.detail, "Check the dates. Done.")
+        let later = try decoder.accept(line(["type": "assistant", "message": ["content": [["type": "thinking", "thinking": "Second"]]]]))
+        XCTAssertNotEqual(later?.id, started?.id)
+    }
+
+    func testResponseStreamNamesTheDocumentBeingWritten() throws {
+        let body = String(repeating: "Línea \\\"citada\\\" del tema.\\n", count: 40)
+        let json = #"{"reply":"Listo, he creado la nota.","readFiles":[],"webActions":[{"kind":"search","query":"q","url":"","path":"ignored.png"}],"edits":[{"path":"UD2/Resumen.md","find":"","replacement":""# + body + #"","create":true},{"path":"UD2/Otra.md","find":"","replacement":"x"}],"outputs":[]}"#
+        var stream = NotebookResponseStream(), updates: [NotebookProviderProgress] = []
+        var index = json.startIndex
+        // Deltas split the text anywhere, including inside escapes.
+        while index < json.endIndex {
+            let end = json.index(index, offsetBy: 7, limitedBy: json.endIndex) ?? json.endIndex
+            if let update = stream.accept(String(json[index..<end])) { updates.append(update) }
+            index = end
+        }
+        XCTAssertFalse(updates.contains { $0.title.contains("ignored.png") })
+        let first = try XCTUnwrap(updates.first { $0.title == "Redactando · UD2/Resumen.md" })
+        let writing = updates.filter { $0.id == first.id }
+        XCTAssertGreaterThan(writing.count, 3)
+        XCTAssertTrue(writing.last?.detail?.contains("Línea \"citada\" del tema.\n") == true)
+        XCTAssertEqual(writing.map { $0.written ?? 0 }, writing.map { $0.written ?? 0 }.sorted())
+        let second = try XCTUnwrap(updates.last { $0.title == "Redactando · UD2/Otra.md" })
+        XCTAssertNotEqual(second.id, first.id)
+        XCTAssertNil(second.detail)
+
+        // Codex deltas and Claude's tool-call input feed the same reader.
+        var codex = CodexNotebookProgressDecoder(threadID: "t")
+        XCTAssertEqual(try codex.accept("item/agentMessage/delta", ["threadId": "t", "delta": #"{"reply":""#])?.title, "Redactando respuesta…")
+        XCTAssertNil(try codex.accept("item/agentMessage/delta", ["threadId": "t", "delta": "Hola"]))
+        XCTAssertEqual(try codex.accept("item/agentMessage/delta", ["threadId": "t", "delta": #"","edits":[{"path":"A.md","#])?.title, "Redactando · A.md")
+        func event(_ event: [String: Any]) throws -> Data { try JSONSerialization.data(withJSONObject: ["type": "stream_event", "event": event]) }
+        var claude = ClaudeStreamDecoder()
+        _ = try claude.accept(JSONSerialization.data(withJSONObject: ["type": "system", "subtype": "init", "tools": ["StructuredOutput"], "mcp_servers": [], "model": "m"]))
+        XCTAssertNil(try claude.accept(event(["type": "content_block_start", "index": 2, "content_block": ["type": "tool_use", "name": "StructuredOutput", "input": [String: Any]()]])))
+        XCTAssertEqual(try claude.accept(event(["type": "content_block_delta", "index": 2, "delta": ["type": "input_json_delta", "partial_json": #"{"reply":"","edits":[{"path":"B.md","replacement":"abc"#]]))?.title, "Redactando · B.md")
+        XCTAssertNil(try claude.accept(JSONSerialization.data(withJSONObject: ["type": "assistant", "message": ["content": [["type": "tool_use", "name": "StructuredOutput", "input": [String: Any]()]]]])))
+    }
+
+    func testProviderLimitsAreReadFromEachProvidersAnswer() throws {
+        let claude = ProviderLimitsProbe.claude(["subscription_type": "pro", "rate_limits_available": true, "rate_limits": [
+            "five_hour": ["utilization": 32, "resets_at": "2026-10-13T11:09:59.827216+00:00"], "seven_day": ["utilization": 123, "resets_at": NSNull()], "seven_day_opus": NSNull(),
+            "limits": [["kind": "session", "percent": 32], ["kind": "weekly_scoped", "percent": 40, "resets_at": "2026-10-16T14:59:59Z", "scope": ["model": ["display_name": "Fable"]]]]]])
+        XCTAssertEqual(claude.plan, "pro")
+        XCTAssertEqual(claude.windows.map(\.id), ["five_hour", "seven_day", "seven_day_fable"])
+        XCTAssertEqual(claude.windows[0].leftPercent, 68)
+        XCTAssertEqual(claude.windows[0].resetsAt, Date(timeIntervalSince1970: 1_791_889_799))
+        XCTAssertEqual(claude.windows[1].usedPercent, 100)
+        XCTAssertNil(claude.windows[1].resetsAt)
+        XCTAssertEqual(claude.windows[2].scope, "Fable")
+        XCTAssertTrue(ProviderLimitsProbe.claude(["rate_limits_available": false]).windows.isEmpty)
+
+        let window: [String: Any] = ["usedPercent": 2, "windowDurationMins": 10_080, "resetsAt": 1_792_474_666]
+        let codex = ProviderLimitsProbe.codex(["rateLimits": ["planType": "free", "primary": ["usedPercent": 90]], "rateLimitsByLimitId": ["codex": ["planType": "prolite", "primary": window, "secondary": NSNull()]]])
+        XCTAssertEqual(codex.plan, "prolite")
+        XCTAssertEqual(codex.windows, [.init(id: "primary", kind: .weekly, usedPercent: 2, resetsAt: Date(timeIntervalSince1970: 1_792_474_666))])
+        XCTAssertEqual(ProviderLimitsProbe.codex(["rateLimits": ["planType": "plus", "primary": ["usedPercent": 10], "secondary": ["usedPercent": 20]]]).windows.map(\.kind), [.session, .weekly])
+        XCTAssertEqual(ProviderLimitsProbe.codex(["rateLimits": ["planType": "free", "primary": ["usedPercent": 10]]]).windows.map(\.kind), [.monthly])
+
+        let summary = ProviderLimitsProbe.antigravity(summary: ["groups": [["displayName": "Models", "buckets": [
+            ["bucketId": "3p-weekly", "window": "weekly", "remainingFraction": 0.25, "resetTime": "2026-10-20T00:00:00Z"], ["bucketId": "gemini-5h", "window": "5h", "remainingFraction": 1],
+            ["bucketId": "off", "disabled": true, "remainingFraction": 1], ["bucketId": "unknown"]]]]])
+        XCTAssertEqual(summary.map(\.id), ["gemini-5h", "3p-weekly"])
+        XCTAssertEqual(summary.map(\.scope), ["Gemini", "Claude & GPT"])
+        XCTAssertEqual(summary.map(\.kind), [.session, .weekly])
+        XCTAssertEqual(summary.map(\.usedPercent), [0, 75])
+        let models = ProviderLimitsProbe.antigravity(models: ["models": ["gemini-3-pro": ["quotaInfo": ["remainingFraction": 0.5]], "gemini-3-flash": ["quotaInfo": ["remainingFraction": 0.9]], "claude-x": ["weeklyQuotaInfo": ["remainingFraction": 0.2]], "other": ["quotaInfo": ["remainingFraction": 0]]]])
+        XCTAssertEqual(models.map(\.id), ["claude-weekly", "gemini-quota"])
+        XCTAssertEqual(models.map(\.usedPercent), [80, 50])
+    }
+
+    func testSummarySplitsEachBucketByProvider() {
+        let calendar = Calendar(identifier: .gregorian), now = Date(timeIntervalSince1970: 1_800_000_000)
+        let records = [ProviderUsageRecord(date: now, provider: .codexCLI, notebookID: "n", usage: .init(model: "gpt-6-sol", input: 1_000_000, cachedInput: 1_000_000)),
+                       ProviderUsageRecord(date: now, provider: .claudeCode, notebookID: "n", usage: .init(model: "claude-sonnet-5-5", output: 100_000)),
+                       ProviderUsageRecord(date: now.addingTimeInterval(-86_400), provider: nil, notebookID: "n", usage: .init(model: "old", input: 10))]
+        let summary = ProviderUsageSummary(records: records, days: 90, now: now, calendar: calendar)
+        XCTAssertEqual(summary.buckets.count, 90)
+        XCTAssertEqual(summary.providers.map(\.id), ["codexCLI", "claudeCode", "unknown"])
+        let today = summary.buckets[89]
+        XCTAssertEqual(today.providers["codexCLI"], .init(cost: 2.2, tokens: 2_000_000))
+        XCTAssertEqual(today.providers["claudeCode"], .init(cost: 1, tokens: 100_000))
+        XCTAssertEqual(today.providers.values.map(\.tokens).reduce(0, +), today.tokens)
+        XCTAssertEqual(summary.buckets[88].providers, ["unknown": .init(cost: 0, tokens: 10)])
+        XCTAssertEqual(summary.cacheSavings, 1.8, accuracy: 0.0001)
+    }
+
+    func testLiveProviderLimits() async throws {
+        guard ProcessInfo.processInfo.environment["NOTES_LIMIT_PROBES"] == "1" else { throw XCTSkip("Set NOTES_LIMIT_PROBES=1 to read the installed accounts' limits.") }
+        let settings = AIProviderSettings(), store = LocalMediaStore(workspace: try workspace())
+        for provider in [NotesAIProvider.claudeCode, .codexCLI, .antigravity] {
+            let limits = await ProviderLimitsProbe.read(settings.configuration(for: provider), store: store)
+            print("LIMITS", provider.rawValue, limits.plan ?? "-", limits.windows.map { "\($0.id) \($0.kind.rawValue) \($0.scope ?? "") left=\(Int($0.leftPercent)) reset=\($0.resetsAt.map { Int($0.timeIntervalSinceNow / 60) } ?? -1)m" }, limits.message ?? "")
+            XCTAssertFalse(limits.windows.isEmpty, limits.message ?? "")
+        }
+    }
+
     func testLogDeduplicatesIdentityButKeepsDistinctIdenticalRequests() throws {
         let workspace = try workspace(), log = ProviderUsageLog(workspace: workspace)
         let first = ProviderUsageRecord(date: Date(timeIntervalSince1970: 1_800_000_000), provider: .codexCLI, notebookID: "n", usage: .init(model: "gpt-6-sol", input: 100))

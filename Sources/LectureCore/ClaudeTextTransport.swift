@@ -30,6 +30,12 @@ public struct ClaudeTextTransport: Sendable {
         func json(_ value: [String: Any]) throws -> String { String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), as: UTF8.self) }
         var arguments = ["-p"] + (try ProviderLaunchArguments.resolve(configuration))
         arguments += ["--safe-mode", "--output-format", "stream-json", "--verbose"]
+        // Thinking is omitted from the stream unless its summaries are requested,
+        // as T3 Code does; a launch argument that sets it is left alone.
+        if !arguments.contains(where: { $0.hasPrefix("--thinking") || $0 == "--max-thinking-tokens" }) {
+            settings["showThinkingSummaries"] = true
+            arguments += ["--thinking", "adaptive", "--thinking-display", "summarized", "--include-partial-messages"]
+        }
         if imageInput { arguments += ["--input-format", "stream-json"] }
         arguments += ["--json-schema", try json(schema), "--system-prompt", instructions, "--settings", try json(settings)]
         arguments += webSearch ? ["--tools", "WebSearch", "--allowedTools", "WebSearch"] : ["--tools", ""]
@@ -126,6 +132,32 @@ public struct ClaudeTextTransport: Sendable {
         } onCancel: { command.cancel() }
     }
 
+    /// The account's limits, from the `get_usage` control request. No user
+    /// message is written, so the helper answers without a model request.
+    func usage() async throws -> [String: Any] {
+        try configuration.validate()
+        guard FileManager.default.isExecutableFile(atPath: configuration.executablePath) else { throw MediaError.invalid("No se encuentra el ejecutable. Selecciona una instalación existente; Palladium no instala proveedores.") }
+        let directory = try NotesProviderTransport(store: store).temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let input = directory.appendingPathComponent("input.txt")
+        let requests = [["type": "control_request", "request_id": "initialize", "request": ["subtype": "initialize"]],
+                        ["type": "control_request", "request_id": "usage", "request": ["subtype": "get_usage", "skip_behaviors": true]]]
+        try Data(try requests.map { String(decoding: try JSONSerialization.data(withJSONObject: $0), as: UTF8.self) + "\n" }.joined().utf8).write(to: input, options: .withoutOverwriting)
+        let command = try command(["-p", "--safe-mode", "--output-format", "stream-json", "--verbose", "--input-format", "stream-json", "--settings", "{\"disableAllHooks\":true}", "--tools", "",
+                                   "--disable-slash-commands", "--strict-mcp-config", "--permission-mode", "dontAsk", "--no-session-persistence"], directory: directory, timeout: ProviderRequestLimits.diagnostic)
+        let reader = try FileHandle(forReadingFrom: input)
+        command.process.standardInput = reader
+        defer { try? reader.close() }
+        let output = try await withTaskCancellationHandler { try await Task.detached { try command.run() }.value } onCancel: { command.cancel() }
+        for line in output.split(separator: 10) {
+            guard let event = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any], event["type"] as? String == "control_response",
+                  let response = event["response"] as? [String: Any], response["request_id"] as? String == "usage" else { continue }
+            guard response["subtype"] as? String == "success", let usage = response["response"] as? [String: Any] else { break }
+            return usage
+        }
+        throw MediaError.invalid("Esta versión de Claude Code no informa de los límites de la cuenta.")
+    }
+
     static func input(_ prompt: String, images: [NotebookInputImage]) throws -> Data {
         guard !images.isEmpty else { return Data(prompt.utf8) }
         var content: [[String: Any]] = [["type": "text", "text": prompt]]
@@ -152,6 +184,14 @@ struct ClaudeStreamDecoder {
     private(set) var usage: [ProviderTokenUsage] = []
     private var model = ""
     private var thoughts = 0
+    /// Thinking blocks being streamed, by content index, and those whose
+    /// complete `assistant` copy has not arrived yet.
+    private var streaming: [Int: (id: String, text: String, shown: Int)] = [:]
+    private var streamed: [String] = []
+    /// The structured-output tool call, whose input is the response being written.
+    private var responseBlock: Int?
+    private var response = NotebookResponseStream()
+    private var streamedResponse = false
 
     private var allowedTools: Set<String> { webSearch ? ["StructuredOutput", "WebSearch"] : ["StructuredOutput"] }
 
@@ -171,9 +211,10 @@ struct ClaudeStreamDecoder {
             for block in blocks {
                 switch block["type"] as? String {
                 case "thinking":
-                    thoughts += 1
+                    let id: String
+                    if streamed.isEmpty { thoughts += 1; id = "thought-\(thoughts)" } else { id = streamed.removeFirst() }
                     let text = (block["thinking"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                    update = .init(id: "thought-\(thoughts)", title: "Pensando…", detail: text.isEmpty ? nil : text, kind: .reasoning)
+                    update = .init(id: id, title: "Pensando…", detail: text.isEmpty ? nil : text, kind: .reasoning)
                 case "text": update = .init(id: "provider-response", title: "Redactando respuesta…")
                 case "tool_use":
                     let name = block["name"] as? String ?? ""
@@ -181,11 +222,38 @@ struct ClaudeStreamDecoder {
                     if name == "WebSearch" {
                         let query = (block["input"] as? [String: Any])?["query"] as? String
                         update = .init(id: "web-" + (block["id"] as? String ?? "current"), title: "Buscando en la web…", detail: query, kind: .tool)
-                    } else { update = .init(id: "provider-response", title: "Redactando respuesta…") }
+                    } else if !streamedResponse { update = .init(id: "provider-response", title: "Redactando respuesta…") }
                 default: continue
                 }
             }
             return update
+        case "stream_event":
+            guard event["parent_tool_use_id"] as? String == nil, let inner = event["event"] as? [String: Any], let index = inner["index"] as? Int else { return nil }
+            switch inner["type"] as? String {
+            case "content_block_start":
+                guard let block = inner["content_block"] as? [String: Any] else { return nil }
+                if block["type"] as? String == "tool_use", block["name"] as? String == "StructuredOutput" { responseBlock = index; response = .init(); streamedResponse = true }
+                guard block["type"] as? String == "thinking" else { return nil }
+                thoughts += 1
+                streaming[index] = ("thought-\(thoughts)", block["thinking"] as? String ?? "", 0)
+                streamed.append("thought-\(thoughts)")
+            case "content_block_delta":
+                if index == responseBlock, let delta = inner["delta"] as? [String: Any], delta["type"] as? String == "input_json_delta", let json = delta["partial_json"] as? String {
+                    return response.accept(json)
+                }
+                guard let delta = inner["delta"] as? [String: Any], delta["type"] as? String == "thinking_delta", let text = delta["thinking"] as? String, streaming[index] != nil else { return nil }
+                streaming[index]!.text = String((streaming[index]!.text + text).prefix(12_000))
+                // Tokens arrive one by one; the log is redrawn every few words instead.
+                guard streaming[index]!.text.count - streaming[index]!.shown >= 60 else { return nil }
+                streaming[index]!.shown = streaming[index]!.text.count
+            case "content_block_stop":
+                if index == responseBlock { responseBlock = nil }
+                guard let thought = streaming.removeValue(forKey: index), thought.shown < thought.text.count else { return nil }
+                return .init(id: thought.id, title: "Pensando…", detail: thought.text, kind: .reasoning)
+            default: return nil
+            }
+            guard let thought = streaming[index] else { return nil }
+            return .init(id: thought.id, title: "Pensando…", detail: thought.text.isEmpty ? nil : thought.text, kind: .reasoning)
         case "result":
             usage = Self.usage(event, model: model)
             let detail = String((event["result"] as? String ?? "").prefix(500))

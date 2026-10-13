@@ -247,11 +247,8 @@ struct NotebookConversation: View {
     @ObservedObject var assistant: NotebookAssistantController
     var fullPage = false
     @State private var activeTurnID: String?
-    @State private var messageFrames: [String: CGRect] = [:]
+    @State private var visibleTurnIDs: Set<String> = []
     @State private var viewportHeight: CGFloat = 0
-    private var visibleTurnIDs: Set<String> {
-        NotebookChatTurn.visible(in: messageFrames, turns: turns, height: viewportHeight)
-    }
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var turns: [NotebookChatTurn] { NotebookChatTurn.collect(assistant.chat(model.currentNotebook)?.messages ?? []) }
     var body: some View {
@@ -300,8 +297,12 @@ struct NotebookConversation: View {
             .coordinateSpace(name: "notebook-conversation")
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { viewportHeight = $0 }
             .onPreferenceChange(NotebookChatMessageFrames.self) { frames in
-                messageFrames = frames
-                if let id = NotebookChatTurn.active(in: frames, turns: turns) { activeTurnID = id }
+                // Frames move on every scroll tick; the view only updates when the
+                // turn in view changes, not on each of them.
+                let turns = turns
+                let visible = NotebookChatTurn.visible(in: frames, turns: turns, height: viewportHeight)
+                if visible != visibleTurnIDs { visibleTurnIDs = visible }
+                if let id = NotebookChatTurn.active(in: frames, turns: turns), id != activeTurnID { activeTurnID = id }
             }
             .scrollBounceBehavior(.always, axes: .vertical)
             .modifier(NotebookChatEdgeFade(enabled: fullPage))
@@ -314,7 +315,7 @@ struct NotebookConversation: View {
                 }
             }
             .onChange(of: assistant.chat(model.currentNotebook)?.id) { _, _ in
-                activeTurnID = nil; messageFrames = [:]; followsLatest = true; proxy.scrollTo("end", anchor: .bottom)
+                activeTurnID = nil; visibleTurnIDs = []; followsLatest = true; proxy.scrollTo("end", anchor: .bottom)
             }
             .onChange(of: assistant.chat(model.currentNotebook)?.messages.count) { _, _ in if followsLatest { proxy.scrollTo("end", anchor: .bottom) } }
             .onChange(of: assistant.activities(for: model.currentNotebook).count) { _, _ in if followsLatest { proxy.scrollTo("end", anchor: .bottom) } }

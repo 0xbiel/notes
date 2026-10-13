@@ -51,6 +51,30 @@ final class NotebookAssistantTests: XCTestCase {
         XCTAssertEqual(controller.totalCount, 1); XCTAssertNil(controller.result)
     }
 
+    @MainActor func testFigureFromUnreadSourceIsLoadedAndRetriedInsteadOfFailing() async throws {
+        let (model, assistant, _) = try fixture()
+        let workspace = assistant.store.workspace
+        let pdf = try DocumentOutput.markdownPDF("# Pipeline", directory: workspace.courseRoot, root: workspace.courseRoot)
+        try workspace.createAsset("Pipeline.pdf", data: pdf)
+        var rounds = 0
+        assistant.generate = { request, _ in
+            rounds += 1
+            // The first answer skips reading the PDF and names the page inside the path.
+            if rounds == 1 { XCTAssertNil(request.documents["Pipeline.pdf#pages=1"]) }
+            else {
+                XCTAssertNotNil(request.documents["Pipeline.pdf#pages=1"])
+                XCTAssertTrue(request.contextUpdate.contains("Nothing was applied") || request.contextUpdate.contains("No se aplicó nada"))
+            }
+            return .init(reply: "Done.", edits: [.init(path: "Figure.md", replacement: "![Figure](.palladium-images/figure.png)\n", create: true)],
+                         outputs: [.init(path: ".palladium-images/figure.png", sourcePath: "Pipeline.pdf#pages=1", format: "image", page: 1)])
+        }
+        assistant.setDraft("Extract the figure from Pipeline.pdf into a note.", notebook: model.currentNotebook)
+        model.submitNotebookPrompt(); await assistant.waitUntilFinished()
+        XCTAssertNil(assistant.error); XCTAssertEqual(rounds, 2)
+        XCTAssertNotNil(NSBitmapImageRep(data: try workspace.readFile(".palladium-images/figure.png")))
+        XCTAssertTrue(try workspace.readNote("Figure.md").contains("figure.png"))
+    }
+
     @MainActor func testInvalidTestRollsBackExtractedImagesBeforeApplyingNotes() async throws {
         let (model, assistant, _) = try fixture()
         let workspace = assistant.store.workspace
@@ -97,6 +121,7 @@ final class NotebookAssistantTests: XCTestCase {
         let data = try Data(contentsOf: root.appendingPathComponent("Resources/en.lproj/Localizable.strings"))
         let translations = try XCTUnwrap(PropertyListSerialization.propertyList(from: data, format: nil) as? [String: String])
         XCTAssertEqual(translations["Uso"], "Usage")
+        XCTAssertEqual(translations["Notas"], "Notes")
         XCTAssertEqual(translations["Abre un espacio local para ver el uso."], "Open a local workspace to see usage.")
     }
 

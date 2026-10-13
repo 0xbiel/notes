@@ -5,12 +5,24 @@ import LectureCore
 @MainActor private final class FoldingLayoutManager: NSLayoutManager, @preconcurrency NSLayoutManagerDelegate {
     var math: [Int: RenderedMarkdownMath] = [:]
     var images: [Int: RenderedMarkdownImage] = [:]
+    private var foldedLength = 0
     var foldedRanges: [NSRange] = [] {
         didSet {
             guard foldedRanges != oldValue, let textStorage else { return }
+            // Only what was folded or unfolded is laid out again, not the whole note.
+            // A fold that an edit merely moved along with its text is unchanged.
             let full = NSRange(location: 0, length: textStorage.length)
-            invalidateGlyphs(forCharacterRange: full, changeInLength: 0, actualCharacterRange: nil)
-            invalidateLayout(forCharacterRange: full, actualCharacterRange: nil)
+            let shift = full.length - foldedLength
+            foldedLength = full.length
+            let old = Set(oldValue), new = Set(foldedRanges)
+            let removed = old.filter { !new.contains($0) && !new.contains(NSRange(location: $0.location + shift, length: $0.length)) }
+            let added = new.filter { !old.contains($0) && !old.contains(NSRange(location: $0.location - shift, length: $0.length)) }
+            for range in removed.union(added) {
+                let range = NSIntersectionRange(range, full)
+                guard range.length > 0 else { continue }
+                invalidateGlyphs(forCharacterRange: range, changeInLength: 0, actualCharacterRange: nil)
+                invalidateLayout(forCharacterRange: range, actualCharacterRange: nil)
+            }
         }
     }
 
@@ -52,7 +64,10 @@ import LectureCore
 @MainActor final class MarkdownScrollView: NSScrollView {
     let sectionState = MarkdownSectionState()
     private var sectionHost: MarkdownSectionHostingView?
-    private var sectionSource: String?
+    private var sectionGeneration = -1, sectionStyle = -1
+    private weak var sectionView: MarkdownTextView?
+    private var sectionPositions: [CGFloat] = []
+    private var sectionLayout = NSSize.zero
     private var sectionRefreshPending = false
 
     override init(frame frameRect: NSRect) {
@@ -85,18 +100,22 @@ import LectureCore
               let manager = view.layoutManager, let container = view.textContainer else {
             sectionHost?.isHidden = true; return
         }
-        if sectionSource != view.string {
-            sectionSource = view.string
-            sectionState.sections = MarkdownSection.parse(view.string)
-        }
+        // Scrolling reuses the measured headings; they move only with the text or its layout.
+        let stale = sectionGeneration != view.sourceGeneration || sectionView !== view
+        sectionView = view
+        if stale { sectionState.sections = MarkdownSection.parse(view.string) }
         sectionHost?.isHidden = sectionState.sections.isEmpty
         if sectionState.accent != view.taskAccent { sectionState.accent = view.taskAccent }
         manager.ensureLayout(for: container)
+        if stale || sectionStyle != view.styleGeneration || sectionLayout != view.frame.size || sectionPositions.count != sectionState.sections.count {
+            sectionGeneration = view.sourceGeneration; sectionStyle = view.styleGeneration; sectionLayout = view.frame.size
+            sectionPositions = sectionState.sections.map { sectionY($0, view: view) }
+        }
+        let positions = sectionPositions
         let top = contentView.bounds.minY + 32
         let atBottom = contentView.bounds.minY > 0 && contentView.bounds.maxY >= view.frame.height - 1
-        let current = atBottom ? sectionState.sections.last : (sectionState.sections.last { sectionY($0, view: view) <= top } ?? sectionState.sections.first)
+        let current = atBottom ? sectionState.sections.last : (positions.lastIndex { $0 <= top }.map { sectionState.sections[$0] } ?? sectionState.sections.first)
         if sectionState.currentID != current?.id { sectionState.currentID = current?.id }
-        let positions = sectionState.sections.map { sectionY($0, view: view) }
         let visible = MarkdownSectionNavigation.visibleIDs(sections: sectionState.sections, positions: positions,
                                                           documentHeight: view.frame.height, viewport: contentView.bounds)
         if sectionState.visibleIDs != visible { sectionState.visibleIDs = visible }
@@ -335,6 +354,10 @@ struct LiveMarkdownEditor: NSViewRepresentable {
     var openLink: ((URL) -> Void)?
     private var styling = false
     private var renderedSource: String?
+    /// Advances whenever the rendered text changes.
+    private(set) var sourceGeneration = 0
+    /// Advances whenever a render changes how any paragraph looks.
+    private(set) var styleGeneration = 0
     private var renderedSelection = NSRange(location: NSNotFound, length: 0)
     private var renderedEditing = false
     private var codeBlocks: [CodeBlock] = []
@@ -837,14 +860,19 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         }
     }
     func renderMarkdown() {
-        guard !styling, !hasMarkedText(), let storage = textStorage else { return }
+        guard !styling, !hasMarkedText(), let target = textStorage else { return }
         styling = true
         defer { styling = false; (enclosingScrollView as? MarkdownScrollView)?.scheduleSectionRefresh() }
         let source = string as NSString
         let full = NSRange(location: 0, length: source.length)
         let active = liveEditing ? selectedRange() : NSRange(location: NSNotFound, length: 0)
         guard renderedSource != string || renderedSelection != active || renderedEditing != liveEditing else { return }
+        if renderedSource != string { sourceGeneration += 1 }
         renderedSource = string; renderedSelection = active; renderedEditing = liveEditing
+        // Styled on a copy and then compared, so moving the caret or typing only
+        // touches the paragraphs whose appearance changed. Restyling the note
+        // itself would lay out every page again on each keystroke.
+        let storage = NSTextStorage(string: string)
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 4
         paragraph.paragraphSpacing = 0
@@ -1107,6 +1135,22 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         previousImageViews.filter { !retainedImageViews.contains(ObjectIdentifier($0)) }.forEach { $0.removeFromSuperview() }
         (layoutManager as? FoldingLayoutManager)?.math = Dictionary(uniqueKeysWithValues: renderedMath.map { ($0.span.range.location, $0) })
         storage.endEditing()
+        var changed: [NSRange] = []
+        target.beginEditing()
+        storage.enumerateAttributes(in: full) { attributes, range, _ in
+            var location = range.location
+            while location < NSMaxRange(range) {
+                var effective = NSRange()
+                let current = target.attributes(at: location, longestEffectiveRange: &effective, in: NSRange(location: location, length: NSMaxRange(range) - location))
+                if !(current as NSDictionary).isEqual(to: attributes) {
+                    target.setAttributes(attributes, range: effective)
+                    changed.append(source.paragraphRange(for: effective))
+                }
+                location = NSMaxRange(effective)
+            }
+        }
+        target.endEditing()
+        if !changed.isEmpty { styleGeneration += 1 }
         documentUndo.enableUndoRegistration()
         (layoutManager as? FoldingLayoutManager)?.foldedRanges = blocks.compactMap {
             collapsedBlocks.contains($0.id) ? foldedRange(for: $0) : nil
@@ -1114,8 +1158,10 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         // Selection callbacks can restyle text during an AppKit character edit.
         // In that path, font changes outside the edited paragraph can retain
         // glyph IDs from the previous font. Regenerate them after styling.
-        layoutManager?.invalidateGlyphs(forCharacterRange: full, changeInLength: 0, actualCharacterRange: nil)
-        layoutManager?.invalidateLayout(forCharacterRange: full, actualCharacterRange: nil)
+        for range in changed {
+            layoutManager?.invalidateGlyphs(forCharacterRange: range, changeInLength: 0, actualCharacterRange: nil)
+            layoutManager?.invalidateLayout(forCharacterRange: range, actualCharacterRange: nil)
+        }
         needsDisplay = true
         window?.invalidateCursorRects(for: self)
         typingAttributes = [.font: NSFont.systemFont(ofSize: 16), .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph]

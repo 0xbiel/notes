@@ -134,6 +134,9 @@ final class MarkdownMathTests: XCTestCase {
         XCTAssertEqual(layout.texts.reduce(0) { $0 + $1.string.filter { $0 == "\u{fffc}" }.count }, formulas.count)
         XCTAssertEqual(MarkdownMathRenderer.renderingSource(#"\dfrac{\dfrac{1}{2}}{\dots}"#), #"{\displaystyle\frac{{\displaystyle\frac{1}{2}}}{\ldots}}"#)
         XCTAssertEqual(MarkdownMathRenderer.renderingSource(#"\dfracUnknown{1}{2} \unknown \{dots\}"#), #"\dfracUnknown{1}{2} \unknown \{dots\}"#)
+        XCTAssertEqual(MarkdownMathRenderer.renderingSource(#"1\/t"#), "1/t")
+        let escapedSlash = #"Tarda $1\/t$."#
+        XCTAssertNotNil(MarkdownMathRenderer.render(try XCTUnwrap(MarkdownMath.spans(in: escapedSlash).first), source: escapedSlash))
         let fraction = #"$\tfrac12$"#
         XCTAssertNotNil(MarkdownMathRenderer.render(try XCTUnwrap(MarkdownMath.spans(in: fraction).first), source: fraction))
     }

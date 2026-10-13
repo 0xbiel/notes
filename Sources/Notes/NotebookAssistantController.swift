@@ -47,9 +47,10 @@ final class NotebookAssistantController: ObservableObject {
             state.activities[index].title = update.title
             state.activities[index].detail = update.detail ?? state.activities[index].detail
             state.activities[index].kind = update.kind; state.activities[index].failed = update.failed
+            state.activities[index].written = update.written ?? state.activities[index].written
         } else {
             var activity = NotebookActivity(update.title)
-            activity.id = id; activity.detail = update.detail; activity.kind = update.kind; activity.failed = update.failed
+            activity.id = id; activity.detail = update.detail; activity.kind = update.kind; activity.failed = update.failed; activity.written = update.written
             state.activities.append(activity)
         }
         runs[run] = state
@@ -375,6 +376,31 @@ final class NotebookAssistantController: ObservableObject {
                 do {
                     var redundantRounds = 0
                     var repairRounds = 0
+                    // Loads one source into the request; false when it was already there.
+                    @MainActor func load(_ entry: String) throws -> Bool {
+                        // A long source is read in parts: "file.pdf#pages=12-18" or "file.pdf#find=words"; "file.zip#entry=name" is a file inside an archive.
+                        let (file, inside, selection) = request.catalog[entry] != nil ? (entry, [], nil) : NotebookLibraryContext.parse(entry)
+                        let path = selection == nil && inside.isEmpty ? file : entry
+                        try library.validate(file, notebookID: notebook.id)
+                        guard request.catalog[file] != nil else { throw MediaError.invalid("Documento solicitado inexistente: \(file)") }
+                        guard request.documents[path] == nil else { return false }
+                        self.report("Leyendo · \(path)", run: run, detail: path, kind: .tool)
+                        if selection == nil, let text = texts[path] { request.documents[path] = text }
+                        else {
+                            do {
+                                let source = try NotebookLibraryContext.read(file, inside: inside, selection: selection, library: library, notebookID: notebook.id)
+                                request.documents[path] = source.text
+                                request.sourceDigests[file] = source.sourceDigest
+                                if configuration.provider == .openCode && !source.images.isEmpty {
+                                    request.documents[path, default: ""] += "\n[This provider cannot read images. Choose an image-capable provider for scanned pages/images.]"
+                                } else if images.count + source.images.count <= NotebookAttachmentImport.maximumImages,
+                                          images.reduce(0, { $0 + $1.data.count }) + source.images.reduce(0, { $0 + $1.data.count }) <= 32 * 1024 * 1024 {
+                                    images += source.images
+                                } else { request.documents[path, default: ""] += "\n[Images omitted: request image limit reached. Ask for a smaller excerpt.]" }
+                            } catch { request.documents[path] = "[Source exists but could not be extracted: " + error.localizedDescription + "]" }
+                        }
+                        return true
+                    }
                     // Web rounds are not rationed: research runs until the assistant answers or the user stops it.
                     while true {
                         try Task.checkCancellation()
@@ -415,31 +441,7 @@ final class NotebookAssistantController: ObservableObject {
                         if !response.readFiles.isEmpty {
                             guard response.edits.isEmpty else { throw MediaError.invalid("El asistente pidió contexto y cambios a la vez.") }
                             var advanced = false
-                            for entry in response.readFiles {
-                                // A long source is read in parts: "file.pdf#pages=12-18" or "file.pdf#find=words"; "file.zip#entry=name" is a file inside an archive.
-                                let (file, inside, selection) = request.catalog[entry] != nil ? (entry, [], nil) : NotebookLibraryContext.parse(entry)
-                                let path = selection == nil && inside.isEmpty ? file : entry
-                                try library.validate(file, notebookID: notebook.id)
-                                guard request.catalog[file] != nil else { throw MediaError.invalid("Documento solicitado inexistente: \(file)") }
-                                if request.documents[path] == nil {
-                                    self.report("Leyendo · \(path)", run: run, detail: path, kind: .tool)
-                                    if selection == nil, let text = texts[path] { request.documents[path] = text }
-                                    else {
-                                        do {
-                                            let source = try NotebookLibraryContext.read(file, inside: inside, selection: selection, library: library, notebookID: notebook.id)
-                                            request.documents[path] = source.text
-                                            request.sourceDigests[file] = source.sourceDigest
-                                            if configuration.provider == .openCode && !source.images.isEmpty {
-                                                request.documents[path, default: ""] += "\n[This provider cannot read images. Choose an image-capable provider for scanned pages/images.]"
-                                            } else if images.count + source.images.count <= NotebookAttachmentImport.maximumImages,
-                                                      images.reduce(0, { $0 + $1.data.count }) + source.images.reduce(0, { $0 + $1.data.count }) <= 32 * 1024 * 1024 {
-                                                images += source.images
-                                            } else { request.documents[path, default: ""] += "\n[Images omitted: request image limit reached. Ask for a smaller excerpt.]" }
-                                        } catch { request.documents[path] = "[Source exists but could not be extracted: " + error.localizedDescription + "]" }
-                                    }
-                                    advanced = true
-                                }
-                            }
+                            for entry in response.readFiles where try load(entry) { advanced = true }
                             request.contextUpdate = (request.language == "en" ? "Requested retrieval completed. Sources available (observe any extraction limits): " : "Lectura completada. Fuentes disponibles (respeta los límites de extracción): ") + request.documents.keys.sorted().joined(separator: ", ") + (request.language == "en" ? ". Use these contents now; do not request them again. Return edits, or ask the user if the task is unclear." : ". Usa estos contenidos ahora, sin volver a pedirlos. Devuelve los cambios o pregunta si la petición es ambigua.")
                             if !advanced {
                                 redundantRounds += 1
@@ -466,7 +468,24 @@ final class NotebookAssistantController: ObservableObject {
                         try Task.checkCancellation()
                         self.report("Validando y guardando \(changes.count) archivo(s)…", run: run, detail: changes.isEmpty ? "Sin cambios en los documentos." : changes.map(\.path).joined(separator: "\n"), kind: .tool)
                         let requestedOutputs = response.outputs ?? []
-                        let imageOutputs = try NotebookDocumentOutputWriter.prepare(requestedOutputs.filter { $0.format == "image" }, documents: request.documents, changes: changes, store: self.store, notebook: notebook, sourceDigests: request.sourceDigests, attachments: allAttachments)
+                        let imageOutputs: [(String, Data)]
+                        do { imageOutputs = try NotebookDocumentOutputWriter.prepare(requestedOutputs.filter { $0.format == "image" }, documents: request.documents, changes: changes, store: self.store, notebook: notebook, sourceDigests: request.sourceDigests, attachments: allAttachments) }
+                        catch let unread as NotebookOutputSourceUnread {
+                            // Nothing has been written yet: load the page the figure comes from
+                            // and let the assistant answer again instead of losing the turn.
+                            guard repairRounds < 2, request.catalog[unread.path] != nil else { throw unread }
+                            repairRounds += 1
+                            for output in requestedOutputs where output.format == "image" {
+                                let source = NotebookLibraryContext.parse(output.sourcePath)
+                                guard source.inside.isEmpty, request.catalog[source.path] != nil, !request.documents.keys.contains(where: { NotebookLibraryContext.parse($0).path == source.path }) else { continue }
+                                _ = try load(output.page.map { source.path + "#pages=\($0)" } ?? source.path)
+                            }
+                            request.contextUpdate = request.language == "en"
+                                ? "Nothing was applied: a figure was requested from a source that had not been read. Those sources are now in documents. Repeat your complete response, with the same edits and outputs, using sourcePath values exactly as listed in catalog."
+                                : "No se aplicó nada: se pidió una figura de una fuente que no se había leído. Esas fuentes ya están en documents. Repite tu respuesta completa, con los mismos edits y outputs, usando en sourcePath las rutas exactas de catalog."
+                            self.report("Corrigiendo cambios…", run: run)
+                            continue
+                        }
                         try NotebookDocumentOutputWriter.publish(imageOutputs, workspace: self.store.workspace)
                         var outputs = imageOutputs
                         let checkpoint: NotebookCheckpoint?

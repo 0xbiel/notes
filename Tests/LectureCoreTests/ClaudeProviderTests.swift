@@ -84,7 +84,7 @@ final class ClaudeProviderTests: XCTestCase {
         XCTAssertEqual(value("--autocompact"), "300000")
         XCTAssertEqual(value("--system-prompt"), "Return JSON.")
         let settings = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(try XCTUnwrap(value("--settings")).utf8)) as? [String: Bool])
-        XCTAssertEqual(settings, ["disableAllHooks": true, "fastMode": true])
+        XCTAssertEqual(settings, ["disableAllHooks": true, "fastMode": true, "showThinkingSummaries": true])
         // Launch arguments precede the enforced options, which therefore prevail.
         XCTAssertLessThan(try XCTUnwrap(arguments.firstIndex(of: "--fallback-model")), try XCTUnwrap(arguments.firstIndex(of: "--safe-mode")))
         XCTAssertFalse(arguments.contains("--input-format"))

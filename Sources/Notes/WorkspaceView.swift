@@ -291,7 +291,6 @@ struct CourseSidebar: View {
     @ObservedObject var model: Workbench
     @State private var query = ""
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @State private var expanded: Set<String> = ["derecho"]
     @AppStorage("notes.accent") private var accent = ""
     var body: some View {
         VStack(spacing: 0) {
@@ -314,7 +313,7 @@ struct CourseSidebar: View {
                 model.librarySelections
             }, set: { values in DispatchQueue.main.async { model.setLibrarySelections(values) } })) {
                 ForEach(model.activeNotebooks) { notebook in
-                    DisclosureGroup(isExpanded: Binding(get: { expanded.contains(notebook.id) || !query.isEmpty }, set: { value in if value { expanded.insert(notebook.id) } else { expanded.remove(notebook.id) } })) {
+                    DisclosureGroup(isExpanded: Binding(get: { model.sidebarExpanded.contains(.notebook(notebook.id)) || !query.isEmpty }, set: { value in if value { model.sidebarExpanded.insert(.notebook(notebook.id)) } else { model.sidebarExpanded.remove(.notebook(notebook.id)) } })) {
                         let filenames = model.fileNames(in: notebook).filter { LibraryContentFilter.notes.includes(path: $0) && (query.isEmpty || $0.localizedCaseInsensitiveContains(query)) }
                         let relativeNames = filenames.map { notebook.rootPrefix.isEmpty ? $0 : String($0.dropFirst(notebook.rootPrefix.count + 1)) }
                         let folders = query.isEmpty ? model.folderNames(in: notebook).map { notebook.rootPrefix.isEmpty ? $0 : String($0.dropFirst(notebook.rootPrefix.count + 1)) } : []
@@ -403,10 +402,10 @@ struct CourseSidebar: View {
                 Button("Nuevo cuaderno") { model.creationInitialName = ""; model.creationKind = "cuaderno" }
                 ImportFolderAsNotebookButton(model: model)
             }
-            .onChange(of: model.selectedNotebookID) { _, id in expanded.insert(id) }
-            .onChange(of: model.libraryExpandRequest) { _, item in if case .notebook(let id) = item { expanded.insert(id) } }
+            .onChange(of: model.selectedNotebookID) { _, id in model.sidebarExpanded.insert(.notebook(id)) }
+            .onChange(of: model.libraryExpandRequest) { _, item in if case .notebook = item, let item { model.sidebarExpanded.insert(item) } }
             .onChange(of: model.notebookRevealRequest) { _, _ in
-                query = ""; expanded.insert(model.selectedNotebookID)
+                query = ""; model.sidebarExpanded.insert(.notebook(model.selectedNotebookID))
             }
 
     }
@@ -423,11 +422,15 @@ struct CourseTreeRow: View {
     let node: NotebookNode
     var expandAll = false
     var createInFolder: (String) -> Void
-    @State private var expanded = false
+    private var expanded: Bool {
+        get { model.sidebarExpanded.contains(.folder(node.path)) }
+        nonmutating set { if newValue { model.sidebarExpanded.insert(.folder(node.path)) } else { model.sidebarExpanded.remove(.folder(node.path)) } }
+    }
     var body: some View {
         Group {
             if let children = node.children {
-                DisclosureGroup(isExpanded: $expanded) {
+                // A search opens every folder for its duration without changing what is remembered.
+                DisclosureGroup(isExpanded: Binding(get: { expanded || expandAll }, set: { expanded = $0 })) {
                     ForEach(children) { child in CourseTreeRow(model: model, node: child, expandAll: expandAll, createInFolder: createInFolder) }
                 } label: {
                     HStack(spacing: 9) {
@@ -458,7 +461,6 @@ struct CourseTreeRow: View {
                 .onAppear { revealSelection() }
                 .onChange(of: model.selectedLibraryPath) { _, _ in revealSelection() }
                 .onChange(of: model.selectedFolder) { _, _ in revealSelection() }
-                .onChange(of: expandAll) { _, value in if value { expanded = true } }
                 .onChange(of: model.libraryExpandRequest) { _, item in if item == .folder(node.path) { expanded = true } }
             } else {
                 HStack(spacing: 9) {
@@ -488,7 +490,7 @@ struct CourseTreeRow: View {
         }
     }
     private func revealSelection() {
-        if expandAll || model.selectedLibraryPath?.hasPrefix(node.path + "/") == true || model.selectedFolder == node.path || model.selectedFolder?.hasPrefix(node.path + "/") == true { expanded = true }
+        if model.selectedLibraryPath?.hasPrefix(node.path + "/") == true || model.selectedFolder == node.path || model.selectedFolder?.hasPrefix(node.path + "/") == true { expanded = true }
     }
 }
 
