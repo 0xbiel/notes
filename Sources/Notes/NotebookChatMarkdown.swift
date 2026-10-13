@@ -12,6 +12,18 @@ struct NotebookChatMarkdown: View {
         var text: String
         var level = 0
     }
+    private final class Parsed: NSObject {
+        let blocks: [Block]
+        init(_ blocks: [Block]) { self.blocks = blocks }
+    }
+    private static let parsed: NSCache<NSString, Parsed> = { let cache = NSCache<NSString, Parsed>(); cache.countLimit = 600; return cache }()
+    /// Scrolling re-evaluates every visible message; each is parsed once.
+    static func cachedBlocks(_ text: String) -> [Block] {
+        if let cached = parsed.object(forKey: text as NSString) { return cached.blocks }
+        let blocks = blocks(text)
+        parsed.setObject(Parsed(blocks), forKey: text as NSString)
+        return blocks
+    }
     static func blocks(_ text: String) -> [Block] {
         var result: [Block] = [], paragraph: [String] = [], code: [String] = []
         let tables = MarkdownTables.blocks(in: text)
@@ -81,7 +93,7 @@ struct NotebookChatMarkdown: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(Array(Self.blocks(text).enumerated()), id: \.offset) { _, block in
+            ForEach(Array(Self.cachedBlocks(text).enumerated()), id: \.offset) { _, block in
                 if block.kind == "rule" {
                     Divider().padding(.vertical, 4)
                 } else if block.kind == "math" {
@@ -136,9 +148,13 @@ struct NotebookWorkLog: View {
                         NotebookWorkLogEntry(activity: activity, active: running && activity.id == activities.last?.id, language: language)
                     }
                 }.padding(.leading, 8)
-            } else if running, let activity = activities.last {
-                NotebookWorkLogEntry(activity: activity, active: true, language: language)
-                    .id(activity.id)
+            } else if running {
+                // The latest steps stay in view, with the current thought open.
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(activities.suffix(5)) { activity in
+                        NotebookWorkLogEntry(activity: activity, active: activity.id == activities.last?.id, language: language)
+                    }
+                }
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityIdentifier("notebook.workLog")
@@ -150,12 +166,21 @@ struct NotebookWorkLogEntry: View {
     let activity: NotebookActivity
     let active: Bool
     let language: String
-    @State private var expanded = false
+    /// Unset until toggled: the thought being written is open on its own.
+    @State private var toggled: Bool?
     @State private var hovered = false
+    private var expanded: Bool { toggled ?? (active && (reasoning || activity.written != nil)) }
     private var reasoning: Bool { activity.kind == .reasoning || activity.title.contains("Pensando") }
     private var detail: String { activity.detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" }
+    /// Codex titles each thought with a bold first line.
+    private var heading: String? {
+        guard reasoning, let line = detail.split(separator: "\n", maxSplits: 1).first, line.count > 4, line.count <= 120, line.hasPrefix("**"), line.hasSuffix("**") else { return nil }
+        let title = line.dropFirst(2).dropLast(2)
+        return title.contains("**") ? nil : String(title)
+    }
     private var preview: String {
-        String(detail.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression).prefix(240))
+        if let heading { return heading }
+        return String(detail.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression).prefix(240))
     }
     private var symbol: String? {
         if reasoning { return nil }
@@ -173,10 +198,12 @@ struct NotebookWorkLogEntry: View {
             if let symbol { Image(systemName: symbol).frame(width: 18) }
             Text(reasoning ? (language == "en" ? (active ? "Thinking…" : "Thought") : (active ? "Pensando…" : "Razonamiento")) : NotebookAssistantText.display(activity.title, language: language))
                 .lineLimit(1)
-            if reasoning && !expanded && !preview.isEmpty {
-                Text(preview).lineLimit(1).foregroundStyle(.tertiary)
+            if reasoning && !preview.isEmpty && (!expanded || heading != nil) {
+                Text(preview).lineLimit(1).foregroundStyle(heading == nil ? .tertiary : .secondary).fontWeight(heading == nil ? .regular : .medium)
             }
             Spacer(minLength: 4)
+            // Moves while the model writes, so a long document does not look stalled.
+            if let written = activity.written, written > 0 { Text("≈ " + UsageFormat.tokens(written / 4) + " tokens").font(.caption2).monospacedDigit().foregroundStyle(.tertiary) }
             if active { Text(language == "en" ? "Now" : "Ahora").font(.caption2).foregroundStyle(.tertiary) }
             if !detail.isEmpty { Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.system(size: 9)) }
         }.font(.system(size: 13)).foregroundStyle(activity.failed == true ? Color.red : Color.secondary)
@@ -186,7 +213,7 @@ struct NotebookWorkLogEntry: View {
         VStack(alignment: .leading, spacing: 0) {
             if detail.isEmpty { label }
             else {
-                Button { withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() } } label: { label }
+                Button { withAnimation(.easeInOut(duration: 0.15)) { toggled = !expanded } } label: { label }
                     .buttonStyle(.plain)
                     .background(hovered ? Color.primary.opacity(0.04) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
                     .onHover { hovered = $0 }
@@ -196,9 +223,10 @@ struct NotebookWorkLogEntry: View {
             }
             if expanded && !detail.isEmpty {
                 ScrollView {
-                    if reasoning { NotebookChatMarkdown(text: detail).font(.callout) }
+                    if reasoning { NotebookChatMarkdown(text: heading.map { String(detail.dropFirst($0.count + 4)).trimmingCharacters(in: .whitespacesAndNewlines) } ?? detail).font(.callout).foregroundStyle(.secondary) }
+                    else if activity.written != nil { Text(detail).font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) }
                     else { Text(NotebookAssistantText.display(detail, language: language)).font(.callout).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) }
-                }.frame(maxHeight: 220).fixedSize(horizontal: false, vertical: true)
+                }.defaultScrollAnchor(active ? .bottom : .top).frame(maxHeight: 220).fixedSize(horizontal: false, vertical: true)
                     .padding(.vertical, 8).padding(.leading, reasoning ? 4 : 28).padding(.trailing, 8)
                     .accessibilityIdentifier("notebook.workLog.detail." + activity.id)
             }
@@ -211,7 +239,22 @@ struct NotebookChangedFiles: View {
     @ObservedObject var assistant: NotebookAssistantController
     let message: NotebookMessage
     @State private var expanded: Set<String> = []
+    private final class Diff: NSObject {
+        let lines: [DiffLine]
+        init(_ lines: [DiffLine]) { self.lines = lines }
+    }
+    private static let diffs: NSCache<NSString, Diff> = { let cache = NSCache<NSString, Diff>(); cache.countLimit = 200; return cache }()
+    /// A checkpoint never changes, so its diff is read from disk once rather
+    /// than every time the conversation redraws.
     private func lines(_ path: String) -> [DiffLine] {
+        guard let checkpoint = message.checkpointID else { return [] }
+        let key = (assistant.store.workspace.root.path + "\u{0}" + model.currentNotebook.id + "\u{0}" + checkpoint + "\u{0}" + path) as NSString
+        if let cached = Self.diffs.object(forKey: key) { return cached.lines }
+        let lines = readLines(path)
+        Self.diffs.setObject(Diff(lines), forKey: key)
+        return lines
+    }
+    private func readLines(_ path: String) -> [DiffLine] {
         let timeline = assistant.store.timeline(model.currentNotebook.id)
         guard let index = timeline.firstIndex(where: { $0.id == message.checkpointID }) else { return [] }
         let before = index > 0 ? timeline[index - 1].files[path].flatMap { try? assistant.store.content($0) } ?? "" : ""

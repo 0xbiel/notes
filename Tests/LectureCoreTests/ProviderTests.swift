@@ -121,7 +121,10 @@ final class ProviderTests: XCTestCase {
         }
         XCTAssertEqual(try decoder.accept("item/reasoning/summaryTextDelta", delta("Check "))?.detail, "Check ")
         XCTAssertEqual(try decoder.accept("item/reasoning/summaryTextDelta", delta("sources."))?.detail, "Check sources.")
-        XCTAssertEqual(try decoder.accept("item/reasoning/summaryTextDelta", delta("Next step.", index: 1))?.detail, "Check sources.\n\nNext step.")
+        // A new summary section is a thought of its own.
+        let next = try decoder.accept("item/reasoning/summaryTextDelta", delta("Next step.", index: 1))
+        XCTAssertEqual(next?.detail, "Next step.")
+        XCTAssertNotEqual(next?.id, try decoder.accept("item/reasoning/summaryTextDelta", delta("", index: 0))?.id)
         XCTAssertNil(try decoder.accept("item/reasoning/summaryTextDelta", delta("foreign", turn: "other")))
         XCTAssertThrowsError(try decoder.accept("item/started", ["threadId": "thread", "turnId": "turn", "item": ["type": "commandExecution"]]))
         XCTAssertThrowsError(try decoder.accept("turn/completed", ["threadId": "thread", "turn": ["id": "turn", "status": "failed"]]))

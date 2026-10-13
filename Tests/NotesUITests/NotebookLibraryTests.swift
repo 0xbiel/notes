@@ -22,6 +22,24 @@ final class NotebookLibraryTests: XCTestCase {
         }
         return (model, root, clipboard)
     }
+
+    @MainActor func testSidebarRemembersOpenNotebooksAndFoldersAcrossRelaunch() throws {
+        let (model, root, _) = try fixture()
+        let key = "notes.sidebarExpanded"
+        addTeardownBlock {
+            var saved = UserDefaults.standard.dictionary(forKey: key) ?? [:]
+            saved[root.path] = nil
+            UserDefaults.standard.set(saved, forKey: key)
+        }
+        model.sidebarExpanded = [.notebook("a"), .folder("Tema 1/Apuntes")]
+        // Leaving for Preferences rebuilds the sidebar; the state lives in the workbench.
+        XCTAssertTrue(model.sidebarExpanded.contains(.folder("Tema 1/Apuntes")))
+        let relaunched = Workbench(workspaceRoot: root)
+        addTeardownBlock { @MainActor in relaunched.assistant?.stop(); relaunched.ai?.stop(); relaunched.media?.shutdown() }
+        XCTAssertEqual(relaunched.sidebarExpanded, [.notebook("a"), .folder("Tema 1/Apuntes")])
+        model.sidebarExpanded.remove(.notebook("a"))
+        XCTAssertEqual(Workbench(workspaceRoot: root).sidebarExpanded, [.folder("Tema 1/Apuntes")])
+    }
     @MainActor func testLegacyGeneratedImagesMigrateWithoutTouchingUserAssets() throws {
         let (model, _, _) = try fixture()
         let path = "assets/image-" + UUID().uuidString.lowercased() + ".gif"

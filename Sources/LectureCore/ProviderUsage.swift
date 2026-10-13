@@ -261,10 +261,27 @@ public struct ProviderUsageSummary: Sendable, Equatable {
         public var start: Date
         public var cost = 0.0
         public var tokens = 0
+        /// The same figures per provider, keyed like `ProviderTotal.id`.
+        public var providers: [String: Part] = [:]
         public var id: Date { start }
+    }
+    public struct Part: Sendable, Equatable {
+        public var cost = 0.0
+        public var tokens = 0
+        public init(cost: Double = 0, tokens: Int = 0) { self.cost = cost; self.tokens = tokens }
+    }
+    public struct ProviderTotal: Sendable, Equatable, Identifiable {
+        public var provider: NotesAIProvider?
+        public var requests = 0
+        public var tokens = 0
+        public var cost = 0.0
+        public var id: String { provider?.rawValue ?? "unknown" }
     }
 
     public var rows: [Row] = []
+    public var providers: [ProviderTotal] = []
+    /// What the cached input would have cost uncached, at list price.
+    public var cacheSavings = 0.0
     public var buckets: [Bucket] = []
     public var requests = 0
     public var input = 0
@@ -287,7 +304,7 @@ public struct ProviderUsageSummary: Sendable, Equatable {
         let first: Date
         if let days { first = calendar.date(byAdding: unit, value: -(hourly ? 23 : days - 1), to: last) ?? last }
         else { first = records.map(\.date).min().map(start) ?? last }
-        var grouped: [String: Row] = [:], bucketed: [Date: Bucket] = [:]
+        var grouped: [String: Row] = [:], bucketed: [Date: Bucket] = [:], totals: [String: ProviderTotal] = [:]
         for record in records where record.date >= first && record.date <= now {
             let usage = record.usage, price = ProviderUsagePricing.cost(usage, rates: rates)
             var row = grouped[(record.provider?.rawValue ?? "unknown") + "\u{0}" + usage.model] ?? Row(provider: record.provider, model: usage.model)
@@ -300,8 +317,17 @@ public struct ProviderUsageSummary: Sendable, Equatable {
             let key = start(record.date)
             var bucket = bucketed[key] ?? Bucket(start: key)
             bucket.cost += price ?? 0; bucket.tokens += usage.tokens
+            var total = totals[record.provider?.rawValue ?? "unknown"] ?? ProviderTotal(provider: record.provider)
+            total.requests += 1; total.tokens += usage.tokens; total.cost += price ?? 0
+            totals[total.id] = total
+            bucket.providers[total.id, default: Part()].cost += price ?? 0
+            bucket.providers[total.id, default: Part()].tokens += usage.tokens
             bucketed[key] = bucket
+            if let rate = ProviderUsagePricing.rate(for: usage.model, rates: rates) {
+                cacheSavings += Double(usage.cachedInput) * max(0, rate.input - rate.cachedInput) / 1_000_000
+            }
         }
+        providers = totals.values.sorted { ($0.cost, $0.tokens, $1.id) > ($1.cost, $1.tokens, $0.id) }
         rows = grouped.values.sorted { ($0.cost, $0.tokens, $1.id) > ($1.cost, $1.tokens, $0.id) }
         var cursor = first
         // A long history is still drawn as one bar per day.

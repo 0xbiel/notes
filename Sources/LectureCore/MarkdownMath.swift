@@ -30,17 +30,25 @@ public enum MarkdownMath {
         if let start = opening { excluded.append(NSRange(location: start.offset, length: source.length - start.offset)) }
         let code = try! NSRegularExpression(pattern: #"(`+)[\s\S]*?\1"#)
         excluded += code.matches(in: text, range: full).map(\.range)
+        // Read as code units once: a long note is scanned on every keystroke.
+        let units = Array(text.utf16)
         func escaped(_ index: Int) -> Bool {
             var i = index - 1, count = 0
-            while i >= 0 && source.character(at: i) == 92 { count += 1; i -= 1 }
+            while i >= 0 && units[i] == 92 { count += 1; i -= 1 }
             return count % 2 == 1
         }
         func has(_ value: String, at index: Int) -> Bool {
-            index + value.utf16.count <= source.length && source.substring(with: NSRange(location: index, length: value.utf16.count)) == value
+            let wanted = value.utf16
+            return index + wanted.count <= units.count && units[index..<index + wanted.count].elementsEqual(wanted)
         }
-        var result: [MarkdownMathSpan] = [], index = 0
+        // Code ranges in order, so each position is checked against one of them.
+        let ordered = excluded.filter { $0.length > 0 }.sorted { $0.location < $1.location }
+        var result: [MarkdownMathSpan] = [], index = 0, upcoming = 0
         while index < source.length {
-            if let skip = excluded.first(where: { NSLocationInRange(index, $0) }) { index = NSMaxRange(skip); continue }
+            while upcoming < ordered.count, NSMaxRange(ordered[upcoming]) <= index { upcoming += 1 }
+            if upcoming < ordered.count, ordered[upcoming].location <= index { index = NSMaxRange(ordered[upcoming]); continue }
+            // Only a dollar sign or a backslash opens a formula.
+            guard units[index] == 36 || units[index] == 92 else { index += 1; continue }
             let opener: String, closer: String, display: Bool
             if !escaped(index), has("$$", at: index) { opener = "$$"; closer = "$$"; display = true }
             else if !escaped(index), has("$", at: index) { opener = "$"; closer = "$"; display = false }
@@ -50,11 +58,11 @@ public enum MarkdownMath {
             let start = index + opener.utf16.count
             var end = start, found: Int?
             while end < source.length {
-                if !display && source.character(at: end) == 10 { break }
+                if !display && units[end] == 10 { break }
                 if !escaped(end), has(closer, at: end) {
                     // Currency pairs ($5 and $10) aren't math delimiters.
                     let next = end + closer.utf16.count
-                    let followedByDigit = closer == "$" && next < source.length && (48...57).contains(source.character(at: next))
+                    let followedByDigit = closer == "$" && next < units.count && (48...57).contains(units[next])
                     if !followedByDigit { found = end; break }
                 }
                 end += 1
@@ -64,7 +72,7 @@ public enum MarkdownMath {
                 let content = NSRange(location: start, length: end - start)
                 let body = source.substring(with: content)
                 let validWhitespace = display || (body.first?.isWhitespace == false && body.last?.isWhitespace == false)
-                if validWhitespace, !excluded.contains(where: { NSIntersectionRange($0, range).length > 0 }) {
+                if validWhitespace, !ordered[upcoming...].prefix(while: { $0.location < NSMaxRange(range) }).contains(where: { NSIntersectionRange($0, range).length > 0 }) {
                     result.append(.init(range: range, content: content, display: display)); index = NSMaxRange(range); continue
                 }
             }

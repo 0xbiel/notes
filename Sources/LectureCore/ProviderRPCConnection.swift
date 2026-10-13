@@ -19,6 +19,7 @@ final class ProviderRPCConnection: @unchecked Sendable {
     var sessionID: String?
     var output = ""
     var thought = ""
+    private var response = NotebookResponseStream()
     var progress: (@Sendable (NotebookProviderProgress) -> Void)?
     var notificationHandler: ((String, [String: Any]) throws -> Void)?
 
@@ -126,7 +127,8 @@ final class ProviderRPCConnection: @unchecked Sendable {
             return
         }
         guard kind == "agent_message_chunk" else { return }
-        progress?(.init(id: "provider-response", title: "Redactando respuesta…"))
+        if let update = response.accept(text) { progress?(update) }
+        else if output.isEmpty { progress?(.init(id: "provider-response", title: "Redactando respuesta…")) }
         output += text
     }
 }

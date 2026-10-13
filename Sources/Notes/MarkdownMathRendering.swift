@@ -54,6 +54,9 @@ struct RenderedMarkdownMath {
             while index < characters.count, characters[index].isLetter { index += 1 }
             let command = String(characters[(start + 1)..<index])
             if command.isEmpty {
+                // An escaped slash is how models carry a JSON habit into LaTeX; the
+                // renderer has no such command and would show the raw source.
+                if index < characters.count, characters[index] == "/" { result.append("/"); index += 1; continue }
                 result.append("\\")
                 if index < characters.count { result.append(characters[index]); index += 1 }
             } else if command == "dots" { result += "\\ldots" }
@@ -70,7 +73,7 @@ struct RenderedMarkdownMath {
         let image: NSImage; let ascent: CGFloat; let descent: CGFloat
         init(_ image: NSImage, _ ascent: CGFloat, _ descent: CGFloat) { self.image = image; self.ascent = ascent; self.descent = descent }
     }
-    private static let cache: NSCache<NSString, Cached> = { let cache = NSCache<NSString, Cached>(); cache.countLimit = 256; return cache }()
+    private static let cache: NSCache<NSString, Cached> = { let cache = NSCache<NSString, Cached>(); cache.countLimit = 4_096; return cache }()
     private static func rasterized(_ image: NSImage) -> NSImage? {
         let scale: CGFloat = 3
         let width = Int(ceil(image.size.width * scale)), height = Int(ceil(image.size.height * scale))

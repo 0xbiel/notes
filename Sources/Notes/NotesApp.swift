@@ -59,6 +59,24 @@ final class Workbench: ObservableObject {
     @Published var libraryFiles: [String] = []
     @Published var selectedFile: String?
     @Published var selectedFolder: String?
+    /// Notebooks and folders left open in the sidebar. Kept per workspace, so
+    /// they survive a visit to Preferences and closing the app.
+    @Published var sidebarExpanded: Set<NotebookSidebarSelection> = [.notebook("derecho")] {
+        didSet { if sidebarExpanded != oldValue { saveSidebarExpanded() } }
+    }
+    private static let sidebarExpandedKey = "notes.sidebarExpanded"
+    private func saveSidebarExpanded() {
+        guard let root = workspace?.root.path else { return }
+        var saved = UserDefaults.standard.dictionary(forKey: Self.sidebarExpandedKey) as? [String: [String]] ?? [:]
+        saved[root] = sidebarExpanded.compactMap { item in
+            switch item { case .notebook(let id): "n:" + id; case .folder(let path): "f:" + path; case .note: nil }
+        }.sorted()
+        UserDefaults.standard.set(saved, forKey: Self.sidebarExpandedKey)
+    }
+    private func restoreSidebarExpanded() {
+        guard let root = workspace?.root.path, let saved = (UserDefaults.standard.dictionary(forKey: Self.sidebarExpandedKey) as? [String: [String]])?[root] else { return }
+        sidebarExpanded = Set(saved.compactMap { $0.hasPrefix("n:") ? .notebook(String($0.dropFirst(2))) : $0.hasPrefix("f:") ? .folder(String($0.dropFirst(2))) : nil })
+    }
     /// A collapsed folder or notebook a drag has rested on; its row opens.
     @Published var libraryExpandRequest: NotebookSidebarSelection?
     @Published var librarySelections: Set<NotebookSidebarSelection> = []
@@ -138,6 +156,7 @@ final class Workbench: ObservableObject {
             guard let original = manifest?["originalRoot"] as? String else { throw ReplayError.missingWorkspace }
             let workspace = try SafeWorkspace(root: root, originalRoot: URL(fileURLWithPath: original))
             self.workspace = workspace
+            restoreSidebarExpanded()
             media = try MediaController(workspace: workspace)
             if let media {
                 dictationObservation = media.$isRecording.combineLatest(media.$busy)

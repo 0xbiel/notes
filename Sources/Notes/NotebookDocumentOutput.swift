@@ -60,9 +60,9 @@ import LectureCore
             return (data, attachment.name)
         }
         let parsed = NotebookLibraryContext.parse(path)
-        guard parsed.selection == nil,
-              documents.keys.contains(where: { let read = NotebookLibraryContext.parse($0); return read.path == parsed.path && read.inside == parsed.inside }) else {
-            throw MediaError.invalid("Read the image/PDF source before extracting a figure.")
+        // A page selection copied from the read path is harmless: the page is given separately.
+        guard documents.keys.contains(where: { let read = NotebookLibraryContext.parse($0); return read.path == parsed.path && read.inside == parsed.inside }) else {
+            throw NotebookOutputSourceUnread(path: parsed.path)
         }
         try NotebookFileLibrary(projects: store).validate(parsed.path, notebookID: notebook.id)
         var data = try store.workspace.readFile(parsed.path), name = parsed.path
@@ -87,4 +87,10 @@ import LectureCore
             throw error
         }
     }
+}
+
+/// A figure was requested from a source the assistant has not read yet.
+struct NotebookOutputSourceUnread: LocalizedError {
+    let path: String
+    var errorDescription: String? { "Read the image/PDF source before extracting a figure." }
 }
