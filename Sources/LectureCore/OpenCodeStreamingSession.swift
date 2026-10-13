@@ -53,7 +53,7 @@ struct OpenCodeStreamingSession {
             }
             func data(_ request: URLRequest) async throws -> Data {
                 let (data, response) = try await http.data(for: request)
-                guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode), data.count <= 2_000_000 else {
+                guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
                     throw MediaError.invalid("OpenCode no completó la petición local. No se ha cambiado la nota.")
                 }
                 return data
@@ -67,7 +67,7 @@ struct OpenCodeStreamingSession {
                 var decoder = OpenCodeProgressDecoder(sessionID: id)
                 for try await line in bytes.lines {
                     try Task.checkCancellation()
-                    guard line.hasPrefix("data: "), line.utf8.count <= 2_000_000 else { continue }
+                    guard line.hasPrefix("data: ") else { continue }
                     if let update = decoder.accept(Data(line.dropFirst(6).utf8)) { await progress(update) }
                     if decoder.finished { return }
                 }

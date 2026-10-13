@@ -1,10 +1,83 @@
 import XCTest
 import AppKit
+import SwiftUI
 import UniformTypeIdentifiers
 import LectureCore
 @testable import Notes
 
 final class NotebookWorkflowTests: XCTestCase {
+    @MainActor func testFloatingChatWelcomeAndHistoryLayouts() async throws {
+        let (model, root) = try environment()
+        defer { model.media?.shutdown(); model.ai?.stop(); try? FileManager.default.removeItem(at: root) }
+        let assistant = try XCTUnwrap(model.assistant)
+        let notebook = model.currentNotebook
+        assistant.setDraft("Pending message stays unchanged", notebook: notebook)
+        let chatID = try XCTUnwrap(assistant.chat(notebook)?.id)
+        let output = root.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("qa/floating-chat")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let suite = "floating-chat-qa-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("en", forKey: "notes.language")
+        for history in [false, true] {
+            if history {
+                var state = assistant.state(notebook)
+                let index = try XCTUnwrap(state.chats.firstIndex { $0.id == chatID })
+                state.chats[index].title = "Explain step by step, ready to hand in an exercise"
+                state.chats[index].messages = [.init(role: "user", text: "Explain this document"), .init(role: "assistant", text: "**Pipeline summary**\n\nThe existing conversation remains available here.")]
+                try assistant.installCopiedState(state, notebook: notebook)
+            }
+            for width: CGFloat in [420, 740] {
+                for dark in [false, true] {
+                    let host = NSHostingView(rootView: NotebookFloatingChat(model: model, assistant: assistant, onClose: {})
+                        .frame(width: width).frame(maxHeight: .infinity, alignment: .top)
+                        .defaultAppStorage(defaults).environment(\.colorScheme, dark ? .dark : .light))
+                    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 320), styleMask: [.titled], backing: .buffered, defer: false)
+                    window.isReleasedWhenClosed = false
+                    window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+                    window.contentView = host
+                    host.frame = NSRect(x: 0, y: 0, width: width, height: 320)
+                    host.layoutSubtreeIfNeeded()
+                    try await Task.sleep(for: .milliseconds(200))
+                    host.layoutSubtreeIfNeeded()
+                    let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+                    host.cacheDisplay(in: host.bounds, to: bitmap)
+                    let filename = "\(history ? "history" : "welcome")-\(Int(width))-\(dark ? "dark" : "light").png"
+                    try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: output.appendingPathComponent(filename))
+                    window.close()
+                }
+            }
+        }
+        XCTAssertEqual(assistant.chat(notebook)?.id, chatID)
+        XCTAssertEqual(assistant.chat(notebook)?.draft, "Pending message stays unchanged")
+    }
+    @MainActor func testExpandFloatingChatPreservesConversationAndDocumentDraft() throws {
+        let (model, root) = try environment()
+        defer { model.media?.shutdown(); model.ai?.stop(); try? FileManager.default.removeItem(at: root) }
+        model.openNote("Inicio.md")
+        let notebook = model.currentNotebook
+        let assistant = try XCTUnwrap(model.assistant)
+        assistant.setDraft("Continue this conversation", notebook: notebook)
+        let chatID = try XCTUnwrap(assistant.chat(notebook)?.id)
+        var state = assistant.state(notebook)
+        let chatIndex = try XCTUnwrap(state.chats.firstIndex { $0.id == chatID })
+        state.chats[chatIndex].messages = [.init(role: "user", text: "Explain this document"), .init(role: "assistant", text: "Existing explanation")]
+        try assistant.installCopiedState(state, notebook: notebook)
+        model.changeDraft("# Updated document\n\nUnsaved text.")
+        model.documentChatVisible = true
+        model.expandNotebookChat()
+        XCTAssertNil(model.selectedLibraryPath)
+        XCTAssertEqual(model.currentNotebook.id, notebook.id)
+        XCTAssertEqual(assistant.chat(notebook)?.id, chatID)
+        XCTAssertEqual(assistant.chat(notebook)?.draft, "Continue this conversation")
+        XCTAssertEqual(assistant.chat(notebook)?.messages.map(\.text), ["Explain this document", "Existing explanation"])
+        XCTAssertTrue(model.chatHistoryVisible)
+        XCTAssertFalse(model.documentChatVisible)
+        XCTAssertFalse(model.showsDocumentComposer)
+        XCTAssertEqual(try model.workspace!.readNote("Inicio.md"), "# Updated document\n\nUnsaved text.")
+        model.openNote("Inicio.md")
+        XCTAssertEqual(model.draftText, "# Updated document\n\nUnsaved text.")
+    }
     @MainActor private func environment() throws -> (Workbench, URL) {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent(".test-workspaces/Notebook-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root.appendingPathComponent("copied-course"), withIntermediateDirectories: true)

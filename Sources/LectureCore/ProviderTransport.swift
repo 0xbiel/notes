@@ -59,6 +59,7 @@ public struct NotesProviderTransport: Sendable {
 
     func invoke(_ configuration: AIProviderConfiguration, arguments: [String], input: URL? = nil, directory: URL? = nil, progress: (@Sendable (NotebookProviderProgress) async -> Void)? = nil) async throws -> Data {
         let command = NotesProcess(timeoutInterval: input == nil ? ProviderRequestLimits.diagnostic : ProviderRequestLimits.generation)
+        if input != nil { command.outputLimit = nil }
         command.process.executableURL = URL(fileURLWithPath: configuration.executablePath)
         command.process.arguments = arguments
         command.process.currentDirectoryURL = directory ?? store.root

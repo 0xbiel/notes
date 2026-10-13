@@ -11,7 +11,6 @@ final class ProviderRPCConnection: @unchecked Sendable {
     private let stdout = Pipe()
     private var buffer = Data()
     private var requestID = 0
-    private var bytesRead = 0
     private let lock = NSLock()
     private let terminated = DispatchSemaphore(value: 0)
     private var started = false
@@ -109,8 +108,6 @@ final class ProviderRPCConnection: @unchecked Sendable {
             if count < 0, errno == EINTR { continue }
             guard count > 0 else { throw MediaError.invalid("Antigravity cerró la conexión o agotó el tiempo; reintenta explícitamente.") }
             let chunk = Data(storage.prefix(count))
-            bytesRead += chunk.count
-            guard bytesRead <= 2_000_000 else { throw MediaError.invalid("Salida ACP demasiado grande.") }
             buffer.append(chunk)
         }
     }
@@ -130,7 +127,6 @@ final class ProviderRPCConnection: @unchecked Sendable {
         }
         guard kind == "agent_message_chunk" else { return }
         progress?(.init(id: "provider-response", title: "Redactando respuesta…"))
-        guard output.utf8.count + text.utf8.count <= 60_000 else { throw MediaError.invalid("Respuesta Antigravity demasiado grande.") }
         output += text
     }
 }

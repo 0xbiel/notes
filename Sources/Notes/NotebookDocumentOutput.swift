@@ -3,7 +3,6 @@ import LectureCore
 
 @MainActor enum NotebookDocumentOutputWriter {
     static func prepare(_ outputs: [NotebookDocumentOutput], documents: [String: String], changes: [NotebookFileChange], store: NotebookProjectStore, notebook: Notebook, sourceDigests: [String: String] = [:], attachments: [NotebookAttachment] = []) throws -> [(String, Data)] {
-        guard outputs.count <= 10 else { throw MediaError.invalid("Too many document exports.") }
         var sources = documents
         for change in changes { sources[change.path] = change.after }
         var paths = Set<String>()
@@ -23,7 +22,7 @@ import LectureCore
                 }
                 return (output.path, try DocumentOutput.markdownPDF(source, directory: try store.workspace.fileURL(output.sourcePath).deletingLastPathComponent(), root: store.workspace.courseRoot.appendingPathComponent(notebook.rootPrefix)))
             case "latex":
-                guard output.page == nil, output.crop == nil, output.test == nil, output.path.hasSuffix(".tex"), output.sourcePath.isEmpty, !output.source.isEmpty, output.source.utf8.count <= 1_000_000 else {
+                guard output.page == nil, output.crop == nil, output.test == nil, output.path.hasSuffix(".tex"), output.sourcePath.isEmpty, !output.source.isEmpty else {
                     throw MediaError.invalid("LaTeX output requires complete source and a new .tex destination.")
                 }
                 return (output.path, Data(output.source.utf8))

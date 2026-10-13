@@ -49,7 +49,7 @@ func getInterElementSpaces() -> [[InterElementSpaceType]] {
 // Get's the index for the given type. If row is true, the index is for the row (i.e. left element) otherwise it is for the column (right element)
 func getInterElementSpaceArrayIndexForType(_ type:MTMathAtomType, row:Bool) -> Int {
     switch type {
-        case .color, .textcolor, .colorBox, .ordinary, .placeholder:   // A placeholder is treated as ordinary
+        case .boxed, .color, .textcolor, .colorBox, .ordinary, .placeholder:   // A placeholder is treated as ordinary
             return 0
         case .largeOperator:
             return 1
@@ -555,6 +555,19 @@ class MTTypesetter {
                     currentPosition.x += display!.width;
                     displayAtoms.append(display!)
                     
+                case .boxed:
+                    if currentLine.length > 0 { self.addDisplayLine() }
+                    self.addInterElementSpace(prevNode, currentType: .ordinary)
+                    let box = atom as! MTBox
+                    let inner = MTTypesetter.createLineForMathList(box.innerList, font: font, style: style)!
+                    let display = MTBoxDisplay(inner: inner, padding: styleFont.fontSize * 0.2, lineThickness: max(0.5, styleFont.fontSize * 0.04), range: box.indexRange)
+                    display.position = currentPosition
+                    displayAtoms.append(display)
+                    currentPosition.x += display.width
+                    if atom.subScript != nil || atom.superScript != nil {
+                        self.makeScripts(atom, display: display, index: UInt(box.indexRange.location), delta: 0)
+                    }
+
                 case .radical:
                     // stash the existing layout
                     if currentLine.length > 0 {

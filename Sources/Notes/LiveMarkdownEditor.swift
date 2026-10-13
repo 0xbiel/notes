@@ -347,6 +347,7 @@ struct LiveMarkdownEditor: NSViewRepresentable {
     var importImage: ((Data, String) throws -> URL)?
     private var imageViews: [MarkdownImageView] = []
     private(set) var renderedMath: [RenderedMarkdownMath] = []
+    private(set) var renderedRules: [NSRange] = []
     private(set) var renderedTables: [RenderedMarkdownTable] = []
     var contextTable: MarkdownTableBlock?
     var contextTableSource = ""
@@ -553,6 +554,11 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         }
         super.draw(dirtyRect)
         positionImageViews()
+        for range in renderedRules {
+            guard let rect = thematicRuleRect(range), rect.intersects(dirtyRect) else { continue }
+            NSColor.separatorColor.setFill()
+            rect.fill()
+        }
         for render in renderedMath {
             if let rect = mathRect(render), rect.intersects(dirtyRect) {
                 render.image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
@@ -573,6 +579,15 @@ struct LiveMarkdownEditor: NSViewRepresentable {
                 NSColor.white.setStroke(); check.lineWidth = 1.7; check.lineCapStyle = .round; check.stroke()
             }
         }
+    }
+    func thematicRuleRect(_ range: NSRange) -> NSRect? {
+        guard let manager = layoutManager, let container = textContainer else { return nil }
+        manager.ensureLayout(for: container)
+        let glyph = manager.glyphIndexForCharacter(at: range.location)
+        let line = manager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        return NSRect(x: textContainerOrigin.x + line.minX + container.lineFragmentPadding,
+                      y: textContainerOrigin.y + line.midY,
+                      width: max(0, line.width - 2 * container.lineFragmentPadding), height: 1)
     }
     func mathRect(_ render: RenderedMarkdownMath) -> NSRect? {
         guard let manager = layoutManager, let container = textContainer else { return nil }
@@ -907,8 +922,11 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         }
         codeRanges += tableBlocks.map(\.range)
         var mathRanges: [NSRange] = []
+        var inlineCodeRanges: [NSRange] = []
         func inCode(_ range: NSRange) -> Bool {
-            codeRanges.contains { NSIntersectionRange($0, range).length > 0 } || mathRanges.contains {
+            codeRanges.contains {
+                NSIntersectionRange($0, range).length > 0 && !(inlineCodeRanges.contains($0) && range.location < $0.location && NSMaxRange(range) > NSMaxRange($0))
+            } || mathRanges.contains {
                 NSIntersectionRange($0, range).length > 0 && !(range.location <= $0.location && NSMaxRange(range) >= NSMaxRange($0))
             }
         }
@@ -934,6 +952,13 @@ struct LiveMarkdownEditor: NSViewRepresentable {
             }
             hide(block.opening, context: block.opening, force: collapsedBlocks.contains(block.id))
             highlightCode(in: block.body, language: block.language, source: string, storage: storage)
+        }
+        renderedRules = []
+        for match in matches(#"^[ \t]{0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$"#) where !inCode(match.range) && !visible(match.range) {
+            hide(match.range, context: match.range)
+            let style = NSMutableParagraphStyle(); style.minimumLineHeight = 24; style.maximumLineHeight = 24
+            storage.addAttribute(.paragraphStyle, value: style, range: match.range)
+            renderedRules.append(match.range)
         }
         taskItems = []
         for match in matches("^([ \\t]*)[-+*][ \\t]+\\[([ xX])\\][ \\t]+(.+)$") where !inCode(match.range) {
@@ -979,6 +1004,7 @@ struct LiveMarkdownEditor: NSViewRepresentable {
                 storage.addAttribute(.kern, value: 3, range: NSRange(location: NSMaxRange(match.range) - 1, length: 1))
             }
             codeRanges.append(match.range)
+            inlineCodeRanges.append(match.range)
         }
         let mathSpans = MarkdownMath.spans(in: string, excluding: codeRanges)
         mathRanges = mathSpans.map(\.range)
@@ -987,6 +1013,7 @@ struct LiveMarkdownEditor: NSViewRepresentable {
             let masked = source.substring(with: span.range).utf16.map { $0 == 10 ? "\n" : " " }.joined()
             formatSource.replaceCharacters(in: span.range, with: masked)
         }
+        for range in inlineCodeRanges { formatSource.replaceCharacters(in: range, with: String(repeating: " ", count: range.length)) }
         func formatMatches(_ pattern: String) -> [NSTextCheckingResult] {
             (try? NSRegularExpression(pattern: pattern, options: [.anchorsMatchLines]))?.matches(in: formatSource as String, range: full) ?? []
         }
@@ -1041,7 +1068,9 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         renderedMath = []
         for span in mathSpans where !visible(span.range) {
             let font = storage.attribute(.font, at: span.range.location, effectiveRange: nil) as? NSFont
-            guard let render = MarkdownMathRenderer.render(span, source: string, fontSize: span.display ? 20 : (font?.pointSize ?? 16)) else { continue }
+            guard let original = MarkdownMathRenderer.render(span, source: string, fontSize: span.display ? 20 : (font?.pointSize ?? 16)) else { continue }
+            let availableWidth = (textContainer?.containerSize.width ?? 680) - 2 * (textContainer?.lineFragmentPadding ?? 5) - 2
+            let render = original.fitting(width: availableWidth)
             renderedMath.append(render)
             storage.addAttribute(.foregroundColor, value: NSColor.clear, range: span.range)
             if span.display {

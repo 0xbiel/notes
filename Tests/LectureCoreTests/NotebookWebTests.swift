@@ -2,6 +2,10 @@ import XCTest
 @testable import LectureCore
 
 final class NotebookWebTests: XCTestCase {
+    func testPageTextDoesNotTruncateLongSources() {
+        let text = String(repeating: "public text ", count: 2_000) + "END"
+        XCTAssertEqual(NotebookWebClient.pageText("<p>" + text + "</p>").trimmingCharacters(in: .whitespaces), text)
+    }
     func testPublicURLValidationAndPageExtraction() throws {
         for url in ["file:///tmp/private", "http://example.com", "https://localhost", "https://127.0.0.1", "https://10.1.2.3", "https://172.16.1.2", "https://192.168.1.2", "https://user:password@example.com", "https://example.com:8080"] { XCTAssertThrowsError(try NotebookWebClient.validateURL(url), url) }
         XCTAssertNoThrow(try NotebookWebClient.validateURL("https://example.com/image.gif"))
