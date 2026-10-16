@@ -37,6 +37,8 @@ public struct NotebookMessage: Codable, Identifiable, Equatable, Sendable {
     public var activities: [NotebookActivity]?
     public var attachments: [NotebookAttachment]?
     public var usageTracked: Bool?
+    /// Legacy local command receipts: excluded from the transcript and model context.
+    public var contextCommand: Bool?
     public init(role: String, text: String, files: [String] = [], checkpointID: String? = nil, activities: [NotebookActivity]? = nil, appGenerated: Bool? = nil) {
         self.role = role; self.text = text; self.files = files; self.checkpointID = checkpointID; self.activities = activities; self.appGenerated = appGenerated
     }
@@ -62,6 +64,7 @@ public struct NotebookChat: Codable, Identifiable, Equatable, Sendable {
     public var queuedPrompts: [NotebookQueuedPrompt]?
     public var attachments: [NotebookAttachment]?
     public init(title: String = "Nuevo chat") { self.title = title }
+    public var conversationByteBudget: Int?
 }
 
 public struct NotebookProjectState: Codable, Equatable, Sendable {
@@ -80,6 +83,8 @@ public struct NotebookCheckpoint: Codable, Identifiable, Equatable, Sendable {
     public var files: [String: String]
     public var changedFiles: [String]
     public var invalidatesProposals: Bool? = nil
+    /// Older checkpoints did not record LaTeX sources, so restoring one must leave them alone.
+    public var tracksLaTeX: Bool? = true
 }
 
 public struct NotebookFileChange: Codable, Equatable, Sendable {
@@ -162,7 +167,7 @@ public final class NotebookProjectStore {
     }
     public func texts(_ notebookID: String) throws -> [String: String] {
         var result: [String: String] = [:]
-        for path in try workspace.noteNames() where owner(of: path)?.id == notebookID { result[path] = try workspace.readNote(path) }
+        for path in try workspace.editableNames() where owner(of: path)?.id == notebookID { result[path] = try workspace.readNote(path) }
         return result
     }
     private func blob(_ text: String) throws -> String {
@@ -252,7 +257,8 @@ public final class NotebookProjectStore {
     }
     @discardableResult public func restore(_ checkpoint: NotebookCheckpoint) throws -> NotebookCheckpoint {
         guard checkpoints.contains(checkpoint) else { throw MediaError.invalid("Versión desconocida.") }
-        let current = try texts(checkpoint.notebookID)
+        var current = try texts(checkpoint.notebookID)
+        if checkpoint.tracksLaTeX != true { current = current.filter { !$0.key.hasSuffix(".tex") } }
         let target = try checkpoint.files.mapValues { try content($0) }
         let changes = Set(current.keys).union(target.keys).sorted().compactMap { path -> NotebookFileChange? in
             current[path] == target[path] ? nil : .init(path: path, before: current[path], after: target[path])

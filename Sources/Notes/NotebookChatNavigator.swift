@@ -9,7 +9,7 @@ struct NotebookChatTurn: Identifiable, Equatable {
 
     static func collect(_ messages: [NotebookMessage]) -> [NotebookChatTurn] {
         var turns: [NotebookChatTurn] = []
-        for message in messages {
+        for message in messages where message.contextCommand != true {
             if message.role == "user" || turns.isEmpty {
                 turns.append(.init(id: message.id, prompt: message.text, reply: "", messageIDs: [message.id]))
             } else {

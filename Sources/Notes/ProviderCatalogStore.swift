@@ -22,6 +22,11 @@ struct ProviderCatalogKey: Codable, Hashable {
         let key: ProviderCatalogKey
         let fetchedAt: Date
         let models: [AIProviderModel]
+        /// Raised when lists fetched by older versions are incomplete, so they are fetched again
+        /// at once. Version 2: Antigravity lists its Claude and GPT models.
+        /// Version 3: each Antigravity model appears once, with its thinking levels.
+        var version: Int? = nil
+        static let current = 3
     }
     static let refreshInterval: TimeInterval = 60 * 60
     @Published private(set) var entries: [NotesAIProvider: Entry] = [:]
@@ -51,7 +56,7 @@ struct ProviderCatalogKey: Codable, Hashable {
         guard configuration.accountSendingAllowed else { return models(for: configuration) ?? [] }
         if let task = pending[key] { return try await task.value }
         if !force, let entry = entries[key.provider], entry.key == key,
-           now.timeIntervalSince(entry.fetchedAt) < Self.refreshInterval { return entry.models }
+           entry.version == Entry.current, now.timeIntervalSince(entry.fetchedAt) < Self.refreshInterval { return entry.models }
         if !force, let (failedAt, message) = failures[key], now.timeIntervalSince(failedAt) < 300 {
             if let cached = models(for: configuration) { return cached }
             throw MediaError.invalid(message)
@@ -63,7 +68,7 @@ struct ProviderCatalogKey: Codable, Hashable {
                 guard !models.isEmpty else { throw MediaError.invalid("El proveedor no devolvió modelos disponibles.") }
                 failures.removeValue(forKey: key)
                 if requested[key.provider] == key {
-                    entries[key.provider] = Entry(key: key, fetchedAt: now, models: models)
+                    entries[key.provider] = Entry(key: key, fetchedAt: now, models: models, version: Entry.current)
                     try workspace.writeStorage("ai-model-catalogs.json", data: JSONEncoder().encode(Array(entries.values)))
                 }
                 return models

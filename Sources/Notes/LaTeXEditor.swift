@@ -91,11 +91,16 @@ enum LaTeXDocument {
         catch { self.error = error.localizedDescription }
     }
     func save() throws {
-        let url = try workspace.fileURL(path)
-        guard try String(contentsOf: url, encoding: .utf8) == base else { throw ReplayError.conflict }
-        try source.write(to: url, atomically: true, encoding: .utf8)
+        // Saved like a note, so the change gets a checkpoint that can be restored.
+        try workspace.writeNote(path, expected: base, replacement: source)
         base = source
         try workspace.writeStorage(draftPath, data: JSONEncoder().encode(Draft(source: source, base: base)))
+    }
+    /// Takes the file as it is on disk after someone else (the assistant, a restore) changed it.
+    func reload() {
+        guard let disk = try? workspace.readNote(path) else { return }
+        base = disk; source = disk; error = nil
+        try? workspace.removeStorage(draftPath)
     }
     func compile() async throws -> Data {
         guard !compiling else { throw MediaError.invalid("LaTeX compilation is already running.") }

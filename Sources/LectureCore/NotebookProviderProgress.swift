@@ -10,9 +10,11 @@ public struct NotebookProviderProgress: Sendable, Equatable {
     public let failed: Bool
     /// Characters of the response written so far.
     public let written: Int?
-    public init(id: String, title: String, detail: String? = nil, kind: NotebookActivityKind = .status, failed: Bool = false, written: Int? = nil) {
+    public let context: NotebookNativeContext?
+    public init(id: String, title: String, detail: String? = nil, kind: NotebookActivityKind = .status, failed: Bool = false, written: Int? = nil, context: NotebookNativeContext? = nil) {
         self.id = id; self.title = title; self.detail = detail.map { String($0.prefix(12_000)) }
         self.kind = kind; self.failed = failed; self.written = written
+        self.context = context
     }
     static func decode(_ line: Data) -> Self? {
         guard let event = try? JSONSerialization.jsonObject(with: line) as? [String: Any],

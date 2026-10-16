@@ -101,6 +101,44 @@ final class ClaudeProviderTests: XCTestCase {
         XCTAssertEqual(ClaudeModel.selection(plain).model, "openai/gpt-router-model")
     }
 
+    func testNativeClaudeStartsResumesAndCompactsWithoutChatOutput() async throws {
+        let (workspace, root) = try environment()
+        let script = root.appendingPathComponent("native-claude.py")
+        try """
+        #!/usr/bin/python3
+        import sys,json
+        args=sys.argv[1:]
+        assert '--no-session-persistence' not in args
+        flag='--resume' if '--resume' in args else '--session-id'
+        sid=args[args.index(flag)+1]
+        text=sys.stdin.read()
+        def emit(v): print(json.dumps(v),flush=True)
+        emit({'type':'system','subtype':'init','session_id':sid,'model':'test','tools':['StructuredOutput'],'mcp_servers':[]})
+        if '--json-schema' not in args:
+            assert json.loads(text)['message']['content']=='/compact'
+            assert flag=='--resume' and '--json-schema' not in args
+            emit({'type':'system','subtype':'compact_boundary','compact_metadata':{'post_tokens':123}})
+            emit({'type':'result','subtype':'success','is_error':False,'result':''})
+        else:
+            assert (text=='first') == (flag=='--session-id')
+            out={'reply':'done','readFiles':[],'edits':[]}
+            emit({'type':'result','subtype':'success','is_error':False,'structured_output':out})
+        """.write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+        let config = AIProviderConfiguration(provider: .claudeCode, executablePath: script.path)
+        let store = LocalMediaStore(workspace: workspace)
+        let session = try NotebookNativeSession(store: store, notebookID: "n", chatID: "c", configuration: config, webEnabled: false, language: "en")
+        try session.prepare()
+        let transport = ClaudeTextTransport(store: store, configuration: config)
+        _ = try await transport.generate("first", schema: NotebookAssistantProtocol.schema, instructions: "", session: session)
+        let id = try session.load().nativeID
+        _ = try await transport.generate("second", schema: NotebookAssistantProtocol.schema, instructions: "", session: session)
+        XCTAssertEqual(try session.load().nativeID, id)
+        try await NotesProviderTransport(store: store).compactNotebook(notebookID: "n", chatID: "c", configuration: config, webEnabled: false, language: "en", progress: { _ in })
+        XCTAssertEqual(try session.load().context?.usedTokens, 123)
+        XCTAssertNotNil(try session.load().compactedAt)
+    }
+
     func testClaudeStreamAcceptsStructuredOutputAndRejectsEverythingElse() throws {
         func line(_ value: [String: Any]) throws -> Data { try JSONSerialization.data(withJSONObject: value) }
         var decoder = ClaudeStreamDecoder()
@@ -338,6 +376,54 @@ final class ClaudeProviderTests: XCTestCase {
             XCTFail("Must not send through a disabled provider")
         } catch {}
         XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path).contains { $0.hasPrefix(".provider-helper-") })
+    }
+
+    func testLiveNativeClaudeResumeAndCompact() async throws {
+        guard ProcessInfo.processInfo.environment["NOTES_LIVE_NATIVE_CLAUDE"] == "1" else { throw XCTSkip("Opt-in synthetic native Claude session test") }
+        let (workspace, _) = try environment()
+        var configuration = AIProviderSettings().claudeCode
+        configuration.executablePath = ProcessInfo.processInfo.environment["NOTES_CLAUDE_TEST_EXECUTABLE"] ?? configuration.executablePath
+        configuration.model = "default"
+        let store = LocalMediaStore(workspace: workspace)
+        let transport = NotesProviderTransport(store: store)
+        var request = NotebookTextRequest(notebook: .copiedCourse, profile: .init(), messages: [.init(role: "user", text: "Remember the invented code BLUE-731. Reply ready. Do not use tools.")], currentDocument: nil, texts: [:], language: "en")
+        request.chatID = "synthetic-native"; request.webEnabled = false
+        print("NATIVE_LIVE first start")
+        let first = try await transport.sendNotebook(request, configuration: configuration, progress: { _ in })
+        print("NATIVE_LIVE first complete")
+        request.messages.append(.init(role: "assistant", text: first.reply))
+        request.messages.append(.init(role: "user", text: "What invented code did I give you? Reply with the code only."))
+        let second = try await transport.sendNotebook(request, configuration: configuration, progress: { _ in })
+        print("NATIVE_LIVE resumed complete")
+        XCTAssertTrue(second.reply.contains("BLUE-731"))
+        do { try await transport.compactNotebook(notebookID: request.notebook.id, chatID: "synthetic-native", configuration: configuration, webEnabled: false, language: "en", progress: { event in print("NATIVE_COMPACT_EVENT \(event.id)") }) }
+        catch { XCTFail("NATIVE_COMPACT_FAILURE: " + error.localizedDescription); return }
+        let session = try NotebookNativeSession(store: store, notebookID: request.notebook.id, chatID: "synthetic-native", configuration: configuration, webEnabled: false, language: "en")
+        XCTAssertNotNil(try session.load().compactedAt)
+    }
+
+    func testLiveNativeCodexResumeAndCompact() async throws {
+        guard ProcessInfo.processInfo.environment["NOTES_LIVE_NATIVE_CODEX"] == "1" else { throw XCTSkip("Opt-in synthetic native Codex session test") }
+        let (workspace, _) = try environment()
+        var configuration = AIProviderSettings().codexCLI
+        configuration.executablePath = ProcessInfo.processInfo.environment["NOTES_CODEX_TEST_EXECUTABLE"] ?? configuration.executablePath
+        configuration.model = "default"
+        let store = LocalMediaStore(workspace: workspace)
+        let transport = NotesProviderTransport(store: store)
+        var request = NotebookTextRequest(notebook: .copiedCourse, profile: .init(), messages: [.init(role: "user", text: "Remember the invented code BLUE-731. Reply ready. Do not use tools.")], currentDocument: nil, texts: [:], language: "en")
+        request.chatID = "synthetic-native"; request.webEnabled = false
+        print("NATIVE_LIVE first start")
+        let first = try await transport.sendNotebook(request, configuration: configuration, progress: { _ in })
+        print("NATIVE_LIVE first complete")
+        request.messages.append(.init(role: "assistant", text: first.reply))
+        request.messages.append(.init(role: "user", text: "What invented code did I give you? Reply with the code only."))
+        let second = try await transport.sendNotebook(request, configuration: configuration, progress: { _ in })
+        print("NATIVE_LIVE resumed complete")
+        XCTAssertTrue(second.reply.contains("BLUE-731"))
+        do { try await transport.compactNotebook(notebookID: request.notebook.id, chatID: "synthetic-native", configuration: configuration, webEnabled: false, language: "en", progress: { event in print("NATIVE_COMPACT_EVENT \(event.id)") }) }
+        catch { XCTFail("NATIVE_COMPACT_FAILURE: " + error.localizedDescription); return }
+        let session = try NotebookNativeSession(store: store, notebookID: request.notebook.id, chatID: "synthetic-native", configuration: configuration, webEnabled: false, language: "en")
+        XCTAssertNotNil(try session.load().compactedAt)
     }
 
     func testLiveClaudeConnectionAndNotebookReply() async throws {

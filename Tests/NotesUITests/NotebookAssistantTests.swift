@@ -145,6 +145,32 @@ final class NotebookAssistantTests: XCTestCase {
         XCTAssertTrue(pdf.string?.contains("Texto inicial") == true)
         XCTAssertEqual(assistant.chat(model.currentNotebook)?.messages.last?.files, ["output/Inicio.pdf", "output/Homework.tex"])
     }
+    @MainActor func testAssistantFixesAnOpenLaTeXSourceAndCanUndoIt() async throws {
+        _ = NSApplication.shared
+        let (model, assistant, _) = try fixture()
+        let broken = "\\documentclass{article}\n\\begin{document}\n\\badmacro\n\\end{document}\n"
+        try model.workspace!.createAsset("Summary.tex", data: Data(broken.utf8))
+        model.refreshProjectFiles(["Summary.tex"])
+        let editor = try model.latexController("Summary.tex")
+        editor.change(broken + "% my unsaved line\n")
+        assistant.generate = { request, _ in
+            guard let source = request.documents["Summary.tex"] else { return .init(reply: "", readFiles: ["Summary.tex"]) }
+            XCTAssertTrue(source.contains("% my unsaved line"))
+            return .init(reply: "Removed the undefined macro.", edits: [.init(path: "Summary.tex", find: "\\badmacro\n", replacement: "Summary.\n")])
+        }
+        assistant.setDraft("The summary does not compile: fix the .tex", notebook: model.currentNotebook)
+        model.submitNotebookPrompt(); await assistant.waitUntilFinished()
+        XCTAssertNil(assistant.error)
+        let fixed = try model.workspace!.readNote("Summary.tex")
+        XCTAssertFalse(fixed.contains("\\badmacro"))
+        XCTAssertTrue(fixed.contains("Summary.") && fixed.contains("% my unsaved line"))
+        XCTAssertEqual(editor.source, fixed); XCTAssertFalse(editor.dirty)
+        // The unsaved draft was saved as its own checkpoint just before the assistant's edit.
+        let checkpoint = try XCTUnwrap(model.projects?.timeline(model.currentNotebook.id).last { $0.summary == "Guardar Summary.tex" })
+        model.restoreCheckpoint(checkpoint)
+        XCTAssertTrue(try model.workspace!.readNote("Summary.tex").contains("\\badmacro"))
+        XCTAssertTrue(editor.source.contains("\\badmacro"))
+    }
     @MainActor private func fixture() throws -> (Workbench, NotebookAssistantController, URL) {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent(".test-workspaces/NotebookAssistant-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root.appendingPathComponent("copied-course"), withIntermediateDirectories: true)
@@ -1077,6 +1103,116 @@ final class NotebookAssistantTests: XCTestCase {
         XCTAssertTrue(ai.outbox.batches.first { $0.id == batch.id }?.invalidatedByNotebook == true)
         XCTAssertTrue(model.editor?.history.first?.superseded == true)
         XCTAssertThrowsError(try model.editor?.undo())
+    }
+
+    @MainActor func testCompactCommandPersistsPerChatWithoutCallingDisabledProvider() async throws {
+        let (model, assistant, _) = try fixture()
+        let notebook = model.currentNotebook
+        assistant.setDraft("/compact", notebook: notebook)
+        var state = assistant.state(notebook)
+        let original = (0..<50).map { NotebookMessage(role: $0.isMultiple(of: 2) ? "user" : "assistant", text: "Message \($0) " + String(repeating: "word ", count: 200)) }
+        state.chats[0].messages = original
+        try assistant.installCopiedState(state, notebook: notebook)
+        var disabled = try XCTUnwrap(model.ai?.providerSettings.selected)
+        disabled.accountSendingAllowed = false
+        assistant.generate = { _, _ in XCTFail("Local command must not call a provider"); return .init(reply: "Unexpected") }
+        assistant.send(notebook: notebook, document: nil, texts: [:], configuration: disabled) { _, _, _ in XCTFail("Local command must not edit files"); return nil }
+        XCTAssertNil(assistant.error)
+        let compacted = try XCTUnwrap(assistant.chat(notebook))
+        XCTAssertEqual(compacted.conversationByteBudget, 8_000)
+        XCTAssertEqual(compacted.messages, original)
+        XCTAssertEqual(assistant.contextPanel?.chatID, compacted.id)
+        XCTAssertTrue(assistant.compactedContexts.contains(.init(notebookID: notebook.id, chatID: compacted.id)))
+        let reopened = try NotebookAssistantController(store: assistant.store)
+        XCTAssertEqual(reopened.chat(notebook)?.conversationByteBudget, 8_000)
+        assistant.setDraft("/context", notebook: notebook)
+        model.submitNotebookPrompt()
+        XCTAssertEqual(assistant.chat(notebook)?.messages, original)
+        XCTAssertEqual(try assistant.contextMetrics(notebook).budget, 8_000)
+        assistant.generate = { request, _ in
+            XCTAssertEqual(request.conversationByteBudget, 8_000)
+            XCTAssertFalse(try request.prompt().contains("/compact"))
+            return .init(reply: "Continued")
+        }
+        assistant.setDraft("Continue", notebook: notebook)
+        model.submitNotebookPrompt(); await assistant.waitUntilFinished()
+        XCTAssertNil(assistant.error)
+        _ = try assistant.newChat(notebook)
+        XCTAssertNil(assistant.chat(notebook)?.conversationByteBudget)
+    }
+
+    @MainActor func testCompactQueuesWithoutSteeringAndFollowingPromptUsesNewBudget() async throws {
+        let previous = UserDefaults.standard.object(forKey: "notes.alwaysSteer")
+        defer { UserDefaults.standard.set(previous, forKey: "notes.alwaysSteer") }
+        UserDefaults.standard.set(true, forKey: "notes.alwaysSteer")
+        let (model, assistant, _) = try fixture()
+        let notebook = model.currentNotebook
+        let gate = NotebookReplyGate()
+        var prompts: [String] = []
+        assistant.generate = { request, _ in
+            let prompt = request.messages.last!.text
+            prompts.append(prompt)
+            if prompt == "First" { return .init(reply: try await gate.reply(prompt)) }
+            XCTAssertEqual(request.conversationByteBudget, 8_000)
+            return .init(reply: "Finished")
+        }
+        assistant.setDraft("First", notebook: notebook); model.submitNotebookPrompt()
+        try await gate.waitForStarted(1)
+        assistant.setDraft("/compact", notebook: notebook); model.submitNotebookPrompt()
+        XCTAssertTrue(assistant.isRunning(notebook))
+        XCTAssertEqual(assistant.queued(notebook).map(\.text), ["/compact"])
+        assistant.setDraft("Next", notebook: notebook)
+        assistant.enqueue(notebook, configuration: model.ai!.providerSettings.selected, document: nil)
+        await gate.release("First")
+        await assistant.waitUntilFinished()
+        XCTAssertNil(assistant.error)
+        XCTAssertEqual(prompts, ["First", "Next"])
+        XCTAssertTrue(assistant.queued(notebook).isEmpty)
+        XCTAssertTrue(assistant.chat(notebook)?.messages.contains { $0.text == "Reply to First" } == true)
+        XCTAssertFalse(assistant.chat(notebook)?.messages.contains { $0.text == "/compact" || $0.contextCommand == true } == true)
+    }
+
+    @MainActor func testContextButtonPreservesDraftAttachmentsAndChatMessages() throws {
+        let (model, assistant, _) = try fixture()
+        let notebook = model.currentNotebook
+        assistant.setDraft("Unsent draft", notebook: notebook)
+        var state = assistant.state(notebook)
+        state.chats[0].messages = [.init(role: "user", text: "Keep this requirement"), .init(role: "assistant", text: "Understood")]
+        let attachment = try NotebookAttachmentImport.prepare(data: Data("Original attachment".utf8), name: "draft.txt", notebookID: notebook.id, workspace: assistant.store.workspace)
+        state.chats[0].attachments = [attachment]
+        try assistant.installCopiedState(state, notebook: notebook)
+        assistant.compactContext(notebook)
+        XCTAssertEqual(assistant.chat(notebook)?.messages, state.chats[0].messages)
+        XCTAssertEqual(assistant.chat(notebook)?.draft, "Unsent draft")
+        XCTAssertEqual(assistant.chat(notebook)?.attachments, [attachment])
+        XCTAssertEqual(assistant.chat(notebook)?.conversationByteBudget, 8_000)
+        var legacy = NotebookMessage(role: "user", text: "/compact")
+        legacy.contextCommand = true
+        XCTAssertEqual(NotebookChatTurn.collect(state.chats[0].messages + [legacy]).count, 1)
+    }
+
+    @MainActor func testConversationHistoryRetrievalUsesBoundedPagesWithoutChangingSavedChat() async throws {
+        let (model, assistant, _) = try fixture()
+        let original = "Remember " + String(repeating: "🙂á", count: 3_000)
+        assistant.setDraft(original, notebook: model.currentNotebook)
+        var rounds = 0
+        assistant.generate = { request, _ in
+            rounds += 1
+            if rounds == 1 { return .init(reply: "", readFiles: ["@conversation"]) }
+            if rounds == 2 {
+                let page = try XCTUnwrap(request.documents["@conversation"])
+                XCTAssertTrue(page.contains("@conversation#0:4000"))
+                return .init(reply: "", readFiles: ["@conversation#0:4000"])
+            }
+            XCTAssertNotNil(request.documents["@conversation"])
+            XCTAssertNotNil(request.documents["@conversation#0:4000"])
+            return .init(reply: "Recovered")
+        }
+        model.submitNotebookPrompt(); await assistant.waitUntilFinished()
+        XCTAssertNil(assistant.error)
+        XCTAssertEqual(rounds, 3)
+        XCTAssertEqual(assistant.chat(model.currentNotebook)?.messages.first?.text, original)
+        XCTAssertEqual(assistant.chat(model.currentNotebook)?.messages.count, 2)
     }
 
     @MainActor func testRedundantRetrievalGetsExplicitContextBeforeRetry() async throws {

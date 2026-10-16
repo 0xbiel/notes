@@ -6,6 +6,7 @@ final class ProviderRPCConnection: @unchecked Sendable {
     let directory: URL
     let environment: [String: String]
     let arguments: [String]
+    let removeDirectoryOnClose: Bool
     let process = Process()
     private let input = Pipe()
     private let stdout = Pipe()
@@ -23,9 +24,10 @@ final class ProviderRPCConnection: @unchecked Sendable {
     var progress: (@Sendable (NotebookProviderProgress) -> Void)?
     var notificationHandler: ((String, [String: Any]) throws -> Void)?
 
-    init(configuration: AIProviderConfiguration, directory: URL, environment: [String: String], arguments: [String] = []) {
+    init(configuration: AIProviderConfiguration, directory: URL, environment: [String: String], arguments: [String] = [], removeDirectoryOnClose: Bool = true) {
         self.configuration = configuration; self.directory = directory; self.environment = environment
         self.arguments = arguments
+        self.removeDirectoryOnClose = removeDirectoryOnClose
     }
 
     func start() throws {
@@ -45,7 +47,9 @@ final class ProviderRPCConnection: @unchecked Sendable {
     }
 
     func initialize() throws -> [String: Any] {
-        let result = try request("initialize", params: ["protocolVersion": 2, "clientInfo": ["name": "notes-text-helper", "version": "1.0"], "clientCapabilities": ["fs": ["readTextFile": false, "writeTextFile": false], "terminal": false]])
+        // Antigravity offers its Claude and GPT models only to clients it knows, such as Zed;
+        // under any other name the session lists the Gemini models alone.
+        let result = try request("initialize", params: ["protocolVersion": 2, "clientInfo": ["name": "zed", "title": "Palladium", "version": "1.0"], "clientCapabilities": ["fs": ["readTextFile": false, "writeTextFile": false], "terminal": false]])
         let info = result["agentInfo"] as? [String: Any]
         guard result["protocolVersion"] as? Int == 2, info?["name"] as? String == "antigravity-acp" else { throw MediaError.invalid("El ejecutable no identifica un servidor Antigravity ACP compatible.") }
         return result
@@ -63,7 +67,7 @@ final class ProviderRPCConnection: @unchecked Sendable {
         cancel()
         if started { terminated.wait() }
         try? stdout.fileHandleForReading.close()
-        try? FileManager.default.removeItem(at: directory)
+        if removeDirectoryOnClose { try? FileManager.default.removeItem(at: directory) }
     }
 
     func write(_ value: [String: Any]) throws {

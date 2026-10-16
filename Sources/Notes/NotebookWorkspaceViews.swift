@@ -10,8 +10,17 @@ struct NotebookHome: View {
     private var empty: Bool { assistant.isEmptyChat(notebook) }
     var body: some View {
         VStack(spacing: empty ? 18 : 0) {
-            NotebookChatPicker(notebook: notebook, assistant: assistant)
-                .padding(.top, empty ? 20 : 8).padding(.bottom, empty ? 0 : 6)
+            HStack(spacing: 8) {
+                NotebookChatPicker(notebook: notebook, assistant: assistant)
+                // Once the chat has started the title bar is shown, and the atlas button moves there.
+                if empty && model.maps != nil {
+                    Button { model.toggleMap() } label: {
+                        Image(systemName: "circle.hexagongrid").foregroundStyle(.secondary)
+                            .padding(.horizontal, 10).padding(.vertical, 8).modifier(NotebookInputSurface(radius: 7))
+                    }.buttonStyle(.plain).help("Atlas · ⇧⌘M")
+                        .accessibilityLabel("Atlas").accessibilityIdentifier("notebook.openMap")
+                }
+            }.padding(.top, empty ? 20 : 8).padding(.bottom, empty ? 0 : 6)
             if empty {
                 Spacer(minLength: 20)
                 VStack(spacing: 10) {
@@ -255,7 +264,7 @@ struct NotebookConversation: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
-                    ForEach(assistant.chat(model.currentNotebook)?.messages ?? []) { message in
+                    ForEach((assistant.chat(model.currentNotebook)?.messages ?? []).filter { $0.contextCommand != true }) { message in
                         VStack(alignment: .leading, spacing: 9) {
                             if let activities = message.activities, !activities.isEmpty { NotebookWorkLog(activities: activities, failed: message.role == "error") }
                             if let attachments = message.attachments, !attachments.isEmpty {
@@ -281,7 +290,13 @@ struct NotebookConversation: View {
                                 }
                             }
                     }
-                    if assistant.isRunning(model.currentNotebook) {
+                    if assistant.isCompacting(model.currentNotebook) {
+                        HStack {
+                            Rectangle().frame(height: 1)
+                            Label(language == "en" ? "Compacting context…" : "Compactando contexto…", systemImage: "arrow.down.right.and.arrow.up.left").fixedSize()
+                            Rectangle().frame(height: 1)
+                        }.font(.caption).foregroundStyle(.secondary).padding(.vertical, 8)
+                    } else if assistant.isRunning(model.currentNotebook) {
                         NotebookWorkLog(activities: assistant.activities(for: model.currentNotebook), running: true).padding(.vertical, 8)
                     }
                     if let error = assistant.unrepresentedError(model.currentNotebook) {
@@ -445,6 +460,9 @@ struct NotebookComposer: View {
                 HStack(spacing: 8) {
                     if let ai = model.ai { NotebookModelControls(ai: ai, disabled: running) { model.showPreferences = true } }
                     Spacer(minLength: 4)
+                    if let ai = model.ai {
+                        NotebookContextMeter(assistant: assistant, ai: ai, notebook: notebook, webEnabled: model.notebookWebEnabled)
+                    }
                     Button { choosingAttachments = true } label: { Image(systemName: "paperclip").frame(width: 28, height: 28) }
                         .buttonStyle(.plain).foregroundStyle(.secondary)
                         .disabled(assistant.importingAttachments)
@@ -674,6 +692,18 @@ struct NotebookManagement: View {
 }
 
 /// Shared study control for Markdown and imported-source previews.
+struct NotebookAtlasButton: View {
+    @ObservedObject var model: Workbench
+    var body: some View {
+        Button { model.toggleMap() } label: {
+            Image(systemName: "circle.hexagongrid")
+                .frame(width: 34, height: 34).contentShape(Rectangle())
+                .modifier(ControlHoverBackground())
+        }.buttonStyle(.plain).help("Atlas · ⇧⌘M")
+            .accessibilityLabel("Atlas").accessibilityIdentifier("notebook.openMap")
+    }
+}
+
 struct NotebookAssistantToggle: View {
     @ObservedObject var model: Workbench
     @AppStorage("notes.language") private var language = "es"

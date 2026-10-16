@@ -24,7 +24,7 @@ public struct ClaudeTextTransport: Sendable {
     }
 
     /// Launch arguments come first so the isolation options below prevail.
-    public static func arguments(_ configuration: AIProviderConfiguration, schema: [String: Any], instructions: String, webSearch: Bool = false, imageInput: Bool = false) throws -> [String] {
+    public static func arguments(_ configuration: AIProviderConfiguration, schema: [String: Any], instructions: String, webSearch: Bool = false, imageInput: Bool = false, sessionID: String? = nil, resume: Bool = false, compact: Bool = false) throws -> [String] {
         var settings: [String: Any] = ["disableAllHooks": true]
         if configuration.fastMode == true { settings["fastMode"] = true }
         func json(_ value: [String: Any]) throws -> String { String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), as: UTF8.self) }
@@ -36,10 +36,17 @@ public struct ClaudeTextTransport: Sendable {
             settings["showThinkingSummaries"] = true
             arguments += ["--thinking", "adaptive", "--thinking-display", "summarized", "--include-partial-messages"]
         }
-        if imageInput { arguments += ["--input-format", "stream-json"] }
-        arguments += ["--json-schema", try json(schema), "--system-prompt", instructions, "--settings", try json(settings)]
+        if imageInput || compact { arguments += ["--input-format", "stream-json"] }
+        if !compact { arguments += ["--json-schema", try json(schema)] }
+        arguments += ["--system-prompt", instructions, "--settings", try json(settings)]
         arguments += webSearch ? ["--tools", "WebSearch", "--allowedTools", "WebSearch"] : ["--tools", ""]
-        arguments += ["--disable-slash-commands", "--strict-mcp-config", "--permission-mode", "dontAsk", "--no-session-persistence"]
+        arguments += ["--strict-mcp-config", "--permission-mode", "dontAsk"]
+        // This flag also disables built-in /compact. Safe mode still excludes custom skills.
+        if !compact { arguments += ["--disable-slash-commands"] }
+        if let sessionID {
+            guard UUID(uuidString: sessionID) != nil else { throw MediaError.invalid("Invalid Claude session identifier.") }
+            arguments += [resume ? "--resume" : "--session-id", sessionID]
+        } else { arguments += ["--no-session-persistence"] }
         let selection = ClaudeModel.selection(configuration)
         if let model = selection.model { arguments += ["--model", model] }
         if let effort = selection.effort { arguments += ["--effort", effort] }
@@ -93,15 +100,22 @@ public struct ClaudeTextTransport: Sendable {
     }
 
     /// Returns the model's structured output as JSON text.
-    func generate(_ prompt: String, schema: [String: Any], instructions: String, images: [NotebookInputImage] = [], webSearch: Bool = false, checked: @escaping @Sendable () async -> Void = {}, usage: @escaping @Sendable (ProviderTokenUsage) -> Void = { _ in }, progress: @escaping @Sendable (NotebookProviderProgress) async -> Void = { _ in }) async throws -> String {
+    func generate(_ prompt: String, schema: [String: Any], instructions: String, images: [NotebookInputImage] = [], webSearch: Bool = false, checked: @escaping @Sendable () async -> Void = {}, usage: @escaping @Sendable (ProviderTokenUsage) -> Void = { _ in }, progress: @escaping @Sendable (NotebookProviderProgress) async -> Void = { _ in }, session: NotebookNativeSession? = nil, compact: Bool = false) async throws -> String {
         try configuration.validateSending()
         guard FileManager.default.isExecutableFile(atPath: configuration.executablePath) else { throw MediaError.invalid("No se encuentra el ejecutable. Selecciona una instalación existente; Palladium no instala proveedores.") }
-        let directory = try NotesProviderTransport(store: store).temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let input = directory.appendingPathComponent("input.txt")
-        try Self.input(prompt, images: images).write(to: input, options: .withoutOverwriting)
+        let directory = try session?.directory ?? NotesProviderTransport(store: store).temporaryDirectory()
+        defer { if session == nil { try? FileManager.default.removeItem(at: directory) } }
+        var record = try session?.load()
+        if session != nil, record?.nativeID == nil { record?.nativeID = UUID().uuidString; if let record { try session?.save(record) } }
+        let nativeID = record?.nativeID
+        let input = directory.appendingPathComponent(session == nil ? "input.txt" : "input-" + UUID().uuidString + ".txt")
+        defer { try? FileManager.default.removeItem(at: input) }
+        let inputData = compact
+            ? try JSONSerialization.data(withJSONObject: ["type": "user", "message": ["role": "user", "content": "/compact"]]) + Data([10])
+            : try Self.input(prompt, images: images)
+        try inputData.write(to: input, options: .withoutOverwriting)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: input.path)
-        let command = try command(try Self.arguments(configuration, schema: schema, instructions: instructions, webSearch: webSearch, imageInput: !images.isEmpty), directory: directory, timeout: ProviderRequestLimits.generation)
+        let command = try command(try Self.arguments(configuration, schema: schema, instructions: instructions, webSearch: webSearch, imageInput: !images.isEmpty, sessionID: nativeID, resume: record?.initialized == true, compact: compact), directory: directory, timeout: ProviderRequestLimits.generation)
         // The stream repeats the reply in its tool call, tool result and result.
         command.outputLimit = nil
         let reader = try FileHandle(forReadingFrom: input)
@@ -109,20 +123,38 @@ public struct ClaudeTextTransport: Sendable {
         defer { try? reader.close() }
         await checked()
         let events = AsyncStream<NotebookProviderProgress>.makeStream()
-        let state = ClaudeStreamState(webSearch: webSearch)
+        let state = ClaudeStreamState(webSearch: webSearch, compact: compact)
         let worker = Task.detached {
             defer { state.decoder.usage.forEach(usage); events.continuation.finish() }
             do {
                 _ = try command.run { line in
                     // The first rejected event stops the helper; later lines are ignored.
                     guard state.failure == nil else { return }
-                    do { if let update = try state.decoder.accept(line) { events.continuation.yield(update) } }
+                    do {
+                        if let update = try state.decoder.accept(line) {
+                            if let actualID = state.decoder.nativeID, let nativeID {
+                                guard actualID == nativeID else { throw MediaError.invalid("Claude resumed a different session; response rejected.") }
+                                if try session?.load().initialized == false { try session?.started(actualID) }
+                            }
+                            if let context = update.context { try session?.update(context) }
+                            events.continuation.yield(update)
+                        }
+                    }
                     catch { state.failure = error; command.cancel() }
                 }
             } catch {
                 throw state.failure ?? error
             }
             if let failure = state.failure { throw failure }
+            if compact {
+                guard state.decoder.didCompact else { throw MediaError.invalid("Claude did not confirm native compaction.") }
+                if var record = try session?.load() {
+                    record.compactedAt = Date()
+                    if state.decoder.context?.compacted != true { record.context = nil }
+                    try session?.save(record)
+                }
+                return ""
+            }
             guard let output = state.decoder.output else { throw MediaError.invalid("Claude no devolvió una respuesta completa.") }
             return output
         }
@@ -171,7 +203,7 @@ public struct ClaudeTextTransport: Sendable {
 private final class ClaudeStreamState: @unchecked Sendable {
     var decoder: ClaudeStreamDecoder
     var failure: Error?
-    init(webSearch: Bool) { decoder = ClaudeStreamDecoder(webSearch: webSearch) }
+    init(webSearch: Bool, compact: Bool = false) { decoder = ClaudeStreamDecoder(webSearch: webSearch, compact: compact) }
 }
 
 /// Reads `--output-format stream-json` lines. The session must expose only the
@@ -179,6 +211,10 @@ private final class ClaudeStreamState: @unchecked Sendable {
 /// other tool, MCP server or failed result rejects the response.
 struct ClaudeStreamDecoder {
     var webSearch = false
+    var compact = false
+    private(set) var nativeID: String?
+    private(set) var didCompact = false
+    private(set) var context: NotebookNativeContext?
     private(set) var output: String?
     /// Tokens per model, read from the final result even when it failed.
     private(set) var usage: [ProviderTokenUsage] = []
@@ -199,7 +235,15 @@ struct ClaudeStreamDecoder {
         guard let event = try? JSONSerialization.jsonObject(with: line) as? [String: Any], let type = event["type"] as? String else { return nil }
         switch type {
         case "system":
+            if event["subtype"] as? String == "compact_boundary" {
+                didCompact = true
+                if let metadata = event["compact_metadata"] as? [String: Any], let tokens = metadata["post_tokens"] as? Int, tokens > 0 {
+                    context = .init(usedTokens: tokens, maxTokens: context?.maxTokens, model: model, compacted: true)
+                }
+                return .init(id: "native-compact", title: "Contexto compactado", context: context?.compacted == true ? context : nil)
+            }
             guard event["subtype"] as? String == "init" else { return nil }
+            nativeID = event["session_id"] as? String
             let tools = event["tools"] as? [String] ?? []
             let servers = event["mcp_servers"] as? [Any] ?? []
             model = event["model"] as? String ?? ""
@@ -207,6 +251,10 @@ struct ClaudeStreamDecoder {
             return .init(id: "provider-start", title: "Pensando…", kind: .reasoning)
         case "assistant":
             guard let message = event["message"] as? [String: Any], let blocks = message["content"] as? [[String: Any]] else { return nil }
+            if let usage = message["usage"] as? [String: Any] {
+                let tokens = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"].reduce(0) { $0 + ProviderTokenUsage.count(usage[$1]) }
+                context = .init(usedTokens: tokens, maxTokens: context?.maxTokens, model: message["model"] as? String ?? model)
+            }
             var update: NotebookProviderProgress?
             for block in blocks {
                 switch block["type"] as? String {
@@ -256,6 +304,7 @@ struct ClaudeStreamDecoder {
             return .init(id: thought.id, title: "Pensando…", detail: thought.text.isEmpty ? nil : thought.text, kind: .reasoning)
         case "result":
             usage = Self.usage(event, model: model)
+            if let models = event["modelUsage"] as? [String: [String: Any]], let modelContext = models[context?.model ?? model]?["contextWindow"] as? Int, modelContext > 0 { context?.maxTokens = modelContext }
             let detail = String((event["result"] as? String ?? "").prefix(500))
             guard event["is_error"] as? Bool != true, event["subtype"] as? String == "success" else {
                 throw MediaError.invalid(detail.isEmpty ? "Claude no completó la petición; revisa la cuenta/configuración y reintenta explícitamente." : "Claude: " + detail)
@@ -263,7 +312,7 @@ struct ClaudeStreamDecoder {
             if let structured = event["structured_output"], !(structured is NSNull), JSONSerialization.isValidJSONObject(structured) {
                 output = String(decoding: try JSONSerialization.data(withJSONObject: structured), as: UTF8.self)
             } else if !detail.isEmpty { output = event["result"] as? String }
-            return .init(id: "provider-finished", title: "Comprobando respuesta…")
+            return .init(id: "provider-finished", title: compact ? "Contexto compactado" : "Comprobando respuesta…", context: context)
         default: return nil
         }
     }

@@ -134,11 +134,15 @@ public struct AntigravityTextTransport: Sendable {
                     guard let sessionID = session["sessionId"] as? String, UUID(uuidString: sessionID) != nil else { throw MediaError.invalid("Sesión Antigravity inválida.") }
                     connection.sessionID = sessionID
                     _ = try connection.request("session/set_mode", params: ["sessionId": sessionID, "modeId": "default"])
-                    if configuration.model != "default" {
-                        _ = try connection.request("session/set_model", params: ["sessionId": sessionID, "modelId": configuration.model])
-                    }
                     let current = (session["models"] as? [String: Any])?["currentModelId"] as? String
-                    return (sessionID, configuration.model == "default" ? current ?? "default" : configuration.model)
+                    // The app shows one model per family; the thinking level picks its entry.
+                    var model = configuration.model
+                    if model == "default", configuration.reasoningEffort != nil, let current, let variant = ProviderModelCatalog.antigravityVariant(current) { model = variant.model }
+                    guard model != "default" else { return (sessionID, current ?? "default") }
+                    let entries = ((try? ProviderModelCatalog.antigravityVariants(session)) ?? []).map(\.id)
+                    let entry = ProviderModelCatalog.antigravityEntry(model, effort: configuration.reasoningEffort, entries: entries, current: current)
+                    if entry != current { _ = try connection.request("session/set_model", params: ["sessionId": sessionID, "modelId": entry]) }
+                    return (sessionID, entry)
                 } catch { connection.close(); throw error }
             }.value
             await checked()

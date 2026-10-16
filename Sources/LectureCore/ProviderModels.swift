@@ -47,7 +47,14 @@ public enum ProviderModelCatalog {
         }
     }
 
+    /// Antigravity lists one entry per thinking level ("Gemini 3.8 Flash (High)",
+    /// gemini-3.8-flash-high). The app shows each model once, with those levels as its reasoning.
     public static func antigravitySession(_ response: [String: Any]) throws -> [AIProviderModel] {
+        antigravityGrouped(try antigravityVariants(response))
+    }
+
+    /// The session's entries as Antigravity names them, one per thinking level.
+    public static func antigravityVariants(_ response: [String: Any]) throws -> [AIProviderModel] {
         let options = response["configOptions"] as? [[String: Any]] ?? []
         if let selection = options.first(where: { $0["id"] as? String == "model" }), let entries = selection["options"] as? [[String: Any]] {
             let flattened = entries.flatMap { entry in entry["options"] as? [[String: Any]] ?? [entry] }
@@ -65,6 +72,50 @@ public enum ProviderModelCatalog {
             }
         }
         throw MediaError.invalid("El proveedor no devolvió modelos disponibles.")
+    }
+
+    static let antigravityEfforts = ["low", "medium", "high"]
+
+    /// "gemini-3.8-flash-high" is the model "gemini-3.8-flash" at the "high" level.
+    public static func antigravityVariant(_ identifier: String) -> (model: String, effort: String)? {
+        for effort in antigravityEfforts where identifier.hasSuffix("-" + effort) && identifier.count > effort.count + 1 {
+            return (String(identifier.dropLast(effort.count + 1)), effort)
+        }
+        return nil
+    }
+
+    static func antigravityGrouped(_ variants: [AIProviderModel]) -> [AIProviderModel] {
+        var result: [AIProviderModel] = [], positions: [String: Int] = [:]
+        for variant in variants {
+            guard let (identifier, effort) = antigravityVariant(variant.id) else { result.append(variant); continue }
+            if let position = positions[identifier] {
+                result[position].reasoning.append(effort)
+                if variant.isDefault { result[position].isDefault = true; result[position].defaultReasoningEffort = effort }
+                continue
+            }
+            let name = variant.name.replacingOccurrences(of: #"\s*\((Low|Medium|High)\)$"#, with: "", options: .regularExpression)
+            var model = AIProviderModel(id: identifier, name: name, isDefault: variant.isDefault, reasoning: [effort])
+            if variant.isDefault { model.defaultReasoningEffort = effort }
+            positions[identifier] = result.count
+            result.append(model)
+        }
+        for position in positions.values {
+            result[position].reasoning.sort { antigravityEfforts.firstIndex(of: $0)! < antigravityEfforts.firstIndex(of: $1)! }
+            // A model offered at one level only has nothing to choose.
+            if result[position].reasoning.count == 1 { result[position].reasoning = [] }
+        }
+        return result
+    }
+
+    /// The entry to ask the session for: the chosen level of the model, else the
+    /// level the session already uses, else Medium. Older settings naming an entry keep it.
+    public static func antigravityEntry(_ model: String, effort: String?, entries: [String], current: String?) -> String {
+        if entries.contains(model) { return model }
+        let levels = entries.filter { antigravityVariant($0)?.model == model }
+        guard !levels.isEmpty else { return model }
+        if let effort, levels.contains(model + "-" + effort) { return model + "-" + effort }
+        if let current, levels.contains(current) { return current }
+        return levels.first { $0 == model + "-medium" } ?? levels[levels.count / 2]
     }
 
     public static func validateID(_ identifier: String) throws {

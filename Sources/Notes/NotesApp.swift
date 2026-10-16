@@ -20,7 +20,7 @@ struct NotesApp: App {
                 }
                 .onDisappear { model.flushAutosave(); model.assistant?.stop(); model.ai?.stop(); if model.media?.isRecording == true { model.media?.stopMicrophone() } }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in model.flushAutosave() }
-                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in model.flushAutosave(); model.assistant?.stop(); model.ai?.stop(); model.media?.shutdown() }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in model.flushAutosave(); model.assistant?.stop(); model.ai?.stop(); model.media?.shutdown(); model.maps?.shutdown() }
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentMinSize)
@@ -44,6 +44,7 @@ struct NotesApp: App {
             CommandMenu("Notas") {
                 Button("Abrir nota…") { model.showQuickOpen = true }.keyboardShortcut("p", modifiers: [.command, .shift])
                 Button("Buscar nota…") { model.showQuickOpen = true }.keyboardShortcut("t")
+                Button("Atlas") { model.toggleMap() }.keyboardShortcut("m", modifiers: [.command, .shift]).disabled(model.maps == nil || model.activeNotebooks.isEmpty)
             }
         }
     }
@@ -116,6 +117,8 @@ final class Workbench: ObservableObject {
     @Published var ai: AIController?
     var projects: NotebookProjectStore?
     @Published var assistant: NotebookAssistantController?
+    @Published var maps: NotebookMapController?
+    @Published var showMap = false
     @Published var showNotebookManagement = false
     @Published var notebookCheckpointSelection: String?
     var engine: ReplayEngine?
@@ -193,6 +196,8 @@ final class Workbench: ObservableObject {
             notes = try workspace.noteNames(); libraryFiles = try workspace.fileNames(); folders = try workspace.folderNames()
             assistant = try NotebookAssistantController(store: projects)
             assistant?.onLibraryChange = { [weak self] paths in self?.refreshProjectFiles(paths) }
+            maps = NotebookMapController(workspace: workspace)
+            maps?.stale = { [weak self] in self?.refreshMap() }
             assistant?.dispatchQueued = { [weak self] notebook, chatID, item in
                 self?.dispatchNotebookPrompt(notebook: notebook, chatID: chatID, item: item)
             }
