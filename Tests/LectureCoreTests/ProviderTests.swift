@@ -359,12 +359,47 @@ final class ProviderTests: XCTestCase {
         XCTAssertEqual(gravity.first?.isDefault, true)
         XCTAssertThrowsError(try ProviderModelCatalog.codexPage(["data": [["model": "unsafe --flag"]]]))
         let (workspace, _) = try environment()
+        try testAntigravityShowsEachModelOnceWithItsThinkingLevels(workspace)
         var settings = AIProviderSettings()
         var preferences = AIProviderModelPreferences()
         preferences.favorites = ["model-a"]; preferences.hidden = ["model-b"]; preferences.order = ["model-b", "model-a"]
         settings.modelPreferences = [NotesAIProvider.antigravity.rawValue: preferences]
         try settings.save(in: workspace)
         XCTAssertEqual(try AIProviderSettings.load(in: workspace).modelPreferences, settings.modelPreferences)
+    }
+
+    private func testAntigravityShowsEachModelOnceWithItsThinkingLevels(_ workspace: SafeWorkspace) throws {
+        let entries = ["gemini-4-argon-medium", "gemini-4-argon-high", "gemini-4-argon-low", "gemini-3.8-flash-high", "gemini-3.8-flash-low", "gpt-oss-120b-medium"]
+        let names = ["Gemini 4 Argon (Medium)", "Gemini 4 Argon (High)", "Gemini 4 Argon (Low)", "Gemini 3.8 Flash (High)", "Gemini 3.8 Flash (Low)", "GPT-OSS 120B (Medium)"]
+        let session: [String: Any] = ["configOptions": [["id": "model", "currentValue": "gemini-3.8-flash-high", "options": zip(entries, names).map { ["value": $0, "name": $1] }]]]
+        let models = try ProviderModelCatalog.antigravitySession(session)
+        XCTAssertEqual(models.map(\.id), ["gemini-4-argon", "gemini-3.8-flash", "gpt-oss-120b"])
+        XCTAssertEqual(models.map(\.name), ["Gemini 4 Argon", "Gemini 3.8 Flash", "GPT-OSS 120B"])
+        XCTAssertEqual(models.map(\.reasoning), [["low", "medium", "high"], ["low", "high"], []])
+        XCTAssertEqual(models.map(\.isDefault), [false, true, false])
+        XCTAssertEqual(models[1].defaultReasoningEffort, "high")
+
+        XCTAssertEqual(ProviderModelCatalog.antigravityEntry("gemini-4-argon", effort: "low", entries: entries, current: "gemini-3.8-flash-high"), "gemini-4-argon-low")
+        XCTAssertEqual(ProviderModelCatalog.antigravityEntry("gemini-4-argon", effort: nil, entries: entries, current: "gemini-3.8-flash-high"), "gemini-4-argon-medium")
+        XCTAssertEqual(ProviderModelCatalog.antigravityEntry("gemini-3.8-flash", effort: nil, entries: entries, current: "gemini-3.8-flash-high"), "gemini-3.8-flash-high")
+        XCTAssertEqual(ProviderModelCatalog.antigravityEntry("gemini-3.8-flash", effort: "medium", entries: entries, current: nil), "gemini-3.8-flash-low")
+        XCTAssertEqual(ProviderModelCatalog.antigravityEntry("gpt-oss-120b", effort: nil, entries: entries, current: nil), "gpt-oss-120b-medium")
+        XCTAssertEqual(ProviderModelCatalog.antigravityEntry("gemini-4-argon-high", effort: "low", entries: entries, current: nil), "gemini-4-argon-high")
+
+        // Settings saved when each level was its own model move to the merged model.
+        var settings = AIProviderSettings()
+        settings.antigravity.model = "gemini-4-argon-high"
+        var options = AIProviderModelPreferences()
+        options.favorites = ["gemini-3.8-flash-high", "gemini-4-argon-medium", "gemini-3.8-flash-low"]
+        options.hidden = ["gemini-4-argon-low", "other"]
+        settings.modelPreferences = [NotesAIProvider.antigravity.rawValue: options]
+        try settings.save(in: workspace)
+        let loaded = try AIProviderSettings.load(in: workspace)
+        XCTAssertEqual(loaded.antigravity.model, "gemini-4-argon")
+        XCTAssertEqual(loaded.antigravity.reasoningEffort, "high")
+        XCTAssertEqual(loaded.modelPreferences?[NotesAIProvider.antigravity.rawValue]?.favorites, ["gemini-3.8-flash", "gemini-4-argon"])
+        XCTAssertEqual(loaded.modelPreferences?[NotesAIProvider.antigravity.rawValue]?.hidden, ["other"])
+        try workspace.removeStorage("ai-provider-settings.json")
     }
 
     func testInstalledProviderModelCatalogs() async throws {

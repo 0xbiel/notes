@@ -11,6 +11,7 @@ final class NotebookAssistantController: ObservableObject {
     struct RunState {
         var progress = ""
         var activities: [NotebookActivity] = []
+        var compacting = false
     }
     @Published private(set) var runs: [RunKey: RunState] = [:]
     // Aggregate accessors are used only by workspace-wide status and file-management guards.
@@ -37,6 +38,7 @@ final class NotebookAssistantController: ObservableObject {
         runs[run] = state
     }
     private func report(_ update: NotebookProviderProgress, run: RunKey, round: String) {
+        if update.context != nil { revision += 1; if update.title.isEmpty { return } }
         guard var state = runs[run] else { return }
         let id = round + "." + update.id
         state.progress = update.title
@@ -270,12 +272,133 @@ final class NotebookAssistantController: ObservableObject {
     }
 
     func queued(_ notebook: Notebook) -> [NotebookQueuedPrompt] { chat(notebook)?.queuedPrompts ?? [] }
+    struct ContextMetrics {
+        let bytes: Int
+        let budget: Int
+        let selected: Int
+        let total: Int
+        // Keep the meter scale stable so manual compaction visibly frees space.
+        var capacity: Int { NotebookConversationContext.byteBudget }
+        var fraction: Double { min(1, Double(bytes) / Double(capacity)) }
+    }
+    @Published var contextPanel: RunKey?
+    @Published private(set) var compactedContexts: Set<RunKey> = []
+
+    func isCompacting(_ notebook: Notebook) -> Bool {
+        guard let chat = chat(notebook) else { return false }
+        return runs[.init(notebookID: notebook.id, chatID: chat.id)]?.compacting == true
+    }
+    private var contextLanguage: String { UserDefaults.standard.string(forKey: "notes.language") == "en" ? "en" : "es" }
+    func nativeContext(_ notebook: Notebook, configuration: AIProviderConfiguration, webEnabled: Bool) -> NotebookNativeContext? {
+        guard let chat = chat(notebook) else { return nil }
+        return try? transport.notebookNativeContext(notebookID: notebook.id, chatID: chat.id, configuration: configuration, webEnabled: webEnabled, language: contextLanguage)
+    }
+    func hasNativeCompaction(_ notebook: Notebook, configuration: AIProviderConfiguration, webEnabled: Bool) -> Bool {
+        guard let chat = chat(notebook) else { return false }
+        return (try? transport.hasCompactedNotebookSession(notebookID: notebook.id, chatID: chat.id, configuration: configuration, webEnabled: webEnabled, language: contextLanguage)) == true
+    }
+    func hasNativeSession(_ notebook: Notebook, configuration: AIProviderConfiguration, webEnabled: Bool) -> Bool {
+        guard let chat = chat(notebook) else { return false }
+        return (try? transport.hasNativeNotebookSession(notebookID: notebook.id, chatID: chat.id, configuration: configuration, webEnabled: webEnabled, language: contextLanguage)) == true
+    }
+    private func compactNative(_ notebook: Notebook, chatID: String, configuration: AIProviderConfiguration, webEnabled: Bool) {
+        let key = RunKey(notebookID: notebook.id, chatID: chatID)
+        guard runs[key] == nil else { return }
+        let language = contextLanguage
+        runs[key] = RunState(compacting: true)
+        report("Compactando contexto…", run: key)
+        error = nil
+        workers[key] = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                self.runs.removeValue(forKey: key); self.workers.removeValue(forKey: key)
+                self.revision += 1
+                self.advanceQueue(notebook, chatID: chatID)
+            }
+            do {
+                try await self.transport.compactNotebook(notebookID: notebook.id, chatID: chatID, configuration: configuration, webEnabled: webEnabled, language: language) { [weak self] progress in
+                    await self?.report(progress, run: key, round: "compact")
+                }
+                try Task.checkCancellation()
+                self.compactedContexts.insert(key)
+            } catch {
+                self.heldQueues.insert(key)
+                self.error = Task.isCancelled ? "Compactación cancelada." : error.localizedDescription
+            }
+        }
+    }
+
+    func contextMetrics(_ notebook: Notebook) throws -> ContextMetrics {
+        let chat = chat(notebook)
+        let messages = chat?.messages ?? []
+        let budget = NotebookConversationContext.effectiveBudget(chat?.conversationByteBudget)
+        let indices = try NotebookConversationContext.selectedIndices(messages, budget: budget)
+        return ContextMetrics(bytes: try NotebookConversationContext.encodedBytes(messages, indices: indices),
+            budget: budget, selected: indices.count, total: messages.filter { $0.contextCommand != true }.count)
+    }
+
+    /// The toolbar action preserves the composer draft and attachments.
+    func compactContext(_ notebook: Notebook, configuration: AIProviderConfiguration? = nil, webEnabled: Bool = true) {
+        guard let chat = chat(notebook), !isRunning(notebook), !importingAttachments else { return }
+        if let configuration, NotesProviderTransport.supportsNativeNotebookSession(configuration.provider) {
+            compactNative(notebook, chatID: chat.id, configuration: configuration, webEnabled: webEnabled)
+            return
+        }
+        var value = state(notebook)
+        guard let i = value.chats.firstIndex(where: { $0.id == chat.id }),
+              value.chats[i].messages.contains(where: { $0.contextCommand != true }) else { return }
+        do {
+            value.chats[i].conversationByteBudget = NotebookConversationContext.compactByteBudget
+            try save(value, id: notebook.id)
+            let key = RunKey(notebookID: notebook.id, chatID: chat.id)
+            compactedContexts.insert(key)
+            contextPanel = key
+            error = nil
+        } catch { self.error = error.localizedDescription }
+    }
+
+    /// Slash commands are composer actions, never chat messages or provider prompts.
+    @discardableResult func handleContextCommand(_ notebook: Notebook, chatID: String? = nil, queuedInput: NotebookQueuedPrompt? = nil, configuration: AIProviderConfiguration? = nil, webEnabled: Bool = true) -> Bool {
+        var value = state(notebook)
+        guard let i = value.chats.firstIndex(where: { $0.id == (chatID ?? value.activeChatID) }) else { return false }
+        let text = queuedInput?.text ?? value.chats[i].draft
+        let attachments = queuedInput?.attachments ?? value.chats[i].attachments ?? []
+        guard let command = NotebookConversationContext.command(text, hasAttachments: !attachments.isEmpty) else { return false }
+        guard !isRunning(notebook, chatID: value.chats[i].id), !importingAttachments else { return true }
+        let key = RunKey(notebookID: notebook.id, chatID: value.chats[i].id)
+        if command == .usage {
+            if queuedInput != nil { heldQueues.insert(key) }
+            error = UserDefaults.standard.string(forKey: "notes.language") == "en"
+                ? "Use /compact or /context without arguments." : "Usa /compact o /context sin argumentos."
+            return true
+        }
+        do {
+            let hasHistory = value.chats[i].messages.contains { $0.contextCommand != true }
+            let native = configuration.map { NotesProviderTransport.supportsNativeNotebookSession($0.provider) } == true
+            if command == .compact && hasHistory && !native { value.chats[i].conversationByteBudget = NotebookConversationContext.compactByteBudget }
+            if let queuedInput { value.chats[i].queuedPrompts?.removeAll { $0.id == queuedInput.id } }
+            else { value.chats[i].draft = "" }
+            try save(value, id: notebook.id)
+            if command == .compact && hasHistory && !native { compactedContexts.insert(key) }
+            if value.activeChatID == key.chatID { contextPanel = key }
+            error = nil
+            if command == .compact, native, let configuration {
+                compactNative(notebook, chatID: key.chatID, configuration: configuration, webEnabled: queuedInput?.webEnabled ?? webEnabled)
+                return true
+            }
+            if queuedInput != nil { advanceQueue(notebook, chatID: key.chatID) }
+        } catch { self.error = error.localizedDescription }
+        return true
+    }
+
     func enqueue(_ notebook: Notebook, configuration: AIProviderConfiguration, document: String?, webEnabled: Bool = true, steer: Bool = false) {
         guard let chat = chat(notebook), !importingAttachments else { return }
         let text = chat.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !(chat.attachments ?? []).isEmpty else { return }
+        let localCommand = NotebookConversationContext.command(text, hasAttachments: !(chat.attachments ?? []).isEmpty) != nil
+        let steer = steer && !localCommand && !isCompacting(notebook)
         do {
-            try configuration.validateSending()
+            if !localCommand { try configuration.validateSending() }
             var value = state(notebook)
             guard let i = value.chats.firstIndex(where: { $0.id == chat.id }) else { return }
             let item = NotebookQueuedPrompt(text: text, attachments: chat.attachments ?? [], configuration: configuration, document: document, webEnabled: webEnabled)
@@ -314,7 +437,7 @@ final class NotebookAssistantController: ObservableObject {
         guard let chat = chat(notebook) else { return }
         let key = RunKey(notebookID: notebook.id, chatID: chat.id)
         heldQueues.remove(key)
-        if isRunning(notebook) { steering.insert(key); workers[key]?.cancel() }
+        if isRunning(notebook), !isCompacting(notebook) { steering.insert(key); workers[key]?.cancel() }
         else { advanceQueue(notebook, chatID: chat.id) }
     }
     func resumeQueue(_ notebook: Notebook) {
@@ -335,12 +458,14 @@ final class NotebookAssistantController: ObservableObject {
         if let queuedInput { chat.draft = queuedInput.text; chat.attachments = queuedInput.attachments }
         let prompt = chat.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty || !(chat.attachments ?? []).isEmpty else { return }
+        if handleContextCommand(notebook, chatID: chat.id, queuedInput: queuedInput, configuration: configuration, webEnabled: webEnabled) { return }
         do {
             try configuration.validateSending()
             var value = state(notebook)
             guard let i = value.chats.firstIndex(where: { $0.id == chat.id }) else { return }
             let allAttachments = value.chats[i].messages.flatMap { $0.attachments ?? [] } + (chat.attachments ?? [])
-            var images = try NotebookAttachmentImport.images(allAttachments, notebookID: notebook.id, workspace: store.workspace)
+            let unsentAttachments = try transport.notebookUnsentAttachments(messages: value.chats[i].messages, notebookID: notebook.id, chatID: chat.id, configuration: configuration, webEnabled: queuedInput?.webEnabled ?? webEnabled, language: contextLanguage) + (chat.attachments ?? [])
+            var images = try NotebookAttachmentImport.images(unsentAttachments, notebookID: notebook.id, workspace: store.workspace)
             if configuration.provider == .openCode && !images.isEmpty { throw MediaError.invalid("This provider does not support image/PDF attachments. Select Codex, Claude or Antigravity.") }
             var message = NotebookMessage(role: "user", text: prompt.isEmpty ? (UserDefaults.standard.string(forKey: "notes.language") == "en" ? "Review the attached files." : "Revisa los archivos adjuntos.") : prompt)
             message.attachments = chat.attachments
@@ -353,6 +478,8 @@ final class NotebookAssistantController: ObservableObject {
             let libraryFiles = try store.workspace.fileNames().filter { store.owner(of: $0)?.id == notebook.id }
             let language = UserDefaults.standard.string(forKey: "notes.language") ?? "es"
             var candidate = NotebookTextRequest(notebook: notebook, profile: value.profile, messages: value.chats[i].messages, currentDocument: document, texts: texts, language: language, libraryFiles: libraryFiles)
+            candidate.conversationByteBudget = value.chats[i].conversationByteBudget
+            candidate.chatID = chat.id
             for attachment in allAttachments where attachment.isImage || attachment.isPDF {
                 candidate.sourceDigests["attachment:" + attachment.id] = NotebookSourceImage.digest(try store.workspace.readStorage(attachment.storagePrefix + "/original"))
             }
@@ -377,8 +504,22 @@ final class NotebookAssistantController: ObservableObject {
                     var redundantRounds = 0
                     var automaticContinuationSent = false
                     var repairRounds = 0
+                    var historyPages: [String] = []
                     // Loads one source into the request; false when it was already there.
                     @MainActor func load(_ entry: String) throws -> Bool {
+                        if entry == NotebookConversationContext.historyPath || entry.hasPrefix(NotebookConversationContext.historyPath + "#") {
+                            guard request.documents[entry] == nil else { return false }
+                            let page = try NotebookConversationContext.read(entry, messages: request.messages)
+                            request.documents[entry] = page
+                            historyPages.append(entry)
+                            // Provider rounds are stateless: retain several pages so a long
+                            // message can be reconstructed, while bounding archive growth.
+                            while historyPages.count > 1 && historyPages.reduce(0, { $0 + (request.documents[$1]?.utf8.count ?? 0) }) > NotebookConversationContext.byteBudget {
+                                request.documents.removeValue(forKey: historyPages.removeFirst())
+                            }
+                            self.report("Leyendo · \(entry)", run: run, detail: entry, kind: .tool)
+                            return true
+                        }
                         // A long source is read in parts: "file.pdf#pages=12-18" or "file.pdf#find=words"; "file.zip#entry=name" is a file inside an archive.
                         let (file, inside, selection) = request.catalog[entry] != nil ? (entry, [], nil) : NotebookLibraryContext.parse(entry)
                         let path = selection == nil && inside.isEmpty ? file : entry
@@ -582,22 +723,27 @@ extension Workbench {
     }
     func dispatchNotebookPrompt(notebook: Notebook, chatID: String?, item: NotebookQueuedPrompt?) {
         guard let assistant, let projects, let ai else { return }
+        if assistant.handleContextCommand(notebook, chatID: chatID, queuedInput: item, configuration: item?.configuration ?? ai.providerSettings.selected, webEnabled: item?.webEnabled ?? notebookWebEnabled) { return }
         do {
             let disk = try projects.texts(notebook.id)
             var effective = disk
             for (path, text) in drafts where projects.owner(of: path)?.id == notebook.id && hasDraft(for: path) { effective[path] = text }
+            for (path, editor) in latexEditors where projects.owner(of: path)?.id == notebook.id && editor.dirty { effective[path] = editor.source }
             let snapshot = effective
             assistant.send(notebook: notebook, document: item == nil ? selectedLibraryPath : item?.document, texts: snapshot, configuration: item?.configuration ?? ai.providerSettings.selected, chatID: chatID, queuedInput: item, webEnabled: notebookWebEnabled) { [weak self] changes, read, prompt in
                 guard let self else { throw CancellationError() }
                 guard !changes.isEmpty else { return nil }
                 for (path, original) in read where disk[path] != nil {
-                    guard try self.workspace?.readNote(path) == disk[path], (self.hasDraft(for: path) ? self.drafts[path] : disk[path]) == original else { throw ReplayError.conflict }
+                    let shown = self.latexEditors[path].map { $0.source } ?? (self.hasDraft(for: path) ? self.drafts[path] : disk[path])
+                    guard try self.workspace?.readNote(path) == disk[path], shown == original else { throw ReplayError.conflict }
                 }
                 for change in changes {
                     try projects.validate(change.path, notebookID: notebook.id)
                     if change.before == nil, disk[change.path] != nil { throw ReplayError.conflict }
                 }
                 try self.checkpointDrafts(notebook.id, paths: Set(changes.map(\.path)))
+                // An unsaved LaTeX draft the assistant read is saved first, so its edits apply to that text.
+                for change in changes { if let editor = self.latexEditors[change.path], editor.dirty { try editor.save() } }
                 let checkpoint = try projects.apply(notebook.id, summary: String(prompt.prefix(160)), changes: changes, invalidatesProposals: true)
                 self.refreshProjectFiles(changes.map(\.path))
                 return checkpoint
@@ -621,6 +767,7 @@ extension Workbench {
         guard let workspace else { return }
         do {
             notes = try workspace.noteNames(); libraryFiles = try workspace.fileNames(); folders = try workspace.folderNames()
+            mapContentChanged(paths)
             let previousTexts = drafts
             for path in paths {
                 let text = notes.contains(path) ? try workspace.readNote(path) : nil
@@ -633,6 +780,7 @@ extension Workbench {
             if let selectedNote, !notes.contains(selectedNote) { openNotebook(selectedNotebookID) }
             if let selectedFile, !libraryFiles.contains(selectedFile) { openNotebook(selectedNotebookID) }
             refreshEditorFromDisk()
+            for path in paths { latexEditors[path]?.reload() }
             try reconcileProjectHistory()
             if let target = engine?.session.targetNote, paths.contains(target) {
                 busy = false; engine = nil
@@ -652,6 +800,7 @@ extension Workbench {
         guard let projects, assistant?.runningNotebookID == nil, media?.isRecording != true else { return }
         do {
             try checkpointDrafts(checkpoint.notebookID)
+            for (path, editor) in latexEditors where editor.dirty && projects.owner(of: path)?.id == checkpoint.notebookID { try editor.save() }
             let restored = try projects.restore(checkpoint)
             refreshProjectFiles(restored.changedFiles)
         } catch { errorText = error.localizedDescription }

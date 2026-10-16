@@ -80,8 +80,8 @@ public enum ProviderLimitsProbe {
         return .init(id: id, kind: kind, scope: scope, usedPercent: (1 - min(1, max(0, remaining))) * 100, resetsAt: date(quota["resetTime"]))
     }
 
-    /// `retrieveUserQuotaSummary` names the shared buckets; Claude and GPT
-    /// models draw on one allowance.
+    /// `retrieveUserQuotaSummary` names the shared buckets: Gemini, Claude and GPT
+    /// together, and on Pro plans a separate weekly one for Gemini 4 Argon.
     static func antigravity(summary: [String: Any]) -> [ProviderLimitWindow] {
         var groups = (summary["groups"] as? [[String: Any]] ?? []).filter { !($0["buckets"] as? [Any] ?? []).isEmpty }
         if groups.isEmpty { groups = [["buckets": summary["buckets"] ?? []]] }
@@ -91,7 +91,11 @@ public enum ProviderLimitsProbe {
             let buckets = (group["buckets"] as? [[String: Any]] ?? []).enumerated().sorted { ($0.element["window"] as? String == "5h" ? 0 : 1, $0.offset) < ($1.element["window"] as? String == "5h" ? 0 : 1, $1.offset) }.map(\.element)
             for bucket in buckets where bucket["disabled"] as? Bool != true {
                 guard let id = bucket["bucketId"] as? String, !id.isEmpty, !windows.contains(where: { $0.id == id }) else { continue }
-                let family = id.hasPrefix("gemini-") ? "Gemini" : id.hasPrefix("3p-") ? "Claude & GPT" : (group["displayName"] as? String)?.trimmingCharacters(in: .whitespaces) ?? id
+                // "Gemini Models" is the shared Gemini allowance; other Gemini groups such as
+                // "Gemini 4 Argon" keep their own name, as their bucket ids also start with "gemini-".
+                let name = (group["displayName"] as? String)?.trimmingCharacters(in: .whitespaces)
+                let shared = name.map { $0.lowercased().hasSuffix("models") } ?? true
+                let family = id.hasPrefix("3p-") ? "Claude & GPT" : id.hasPrefix("gemini-") && shared ? "Gemini" : name ?? id
                 let kind: ProviderLimitWindow.Kind = bucket["window"] as? String == "weekly" ? .weekly : bucket["window"] as? String == "5h" ? .session : .other
                 if let window = quota(id, kind: kind, scope: family, bucket) { windows.append(window) }
             }
@@ -165,7 +169,9 @@ public enum ProviderLimitsProbe {
                 request.httpMethod = "POST"
                 request.setValue("Bearer " + access, forHTTPHeaderField: "Authorization")
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                request.setValue("antigravity/hub/1.0.0 (aidev_client; os_type=darwin; arch=arm64)", forHTTPHeaderField: "User-Agent")
+                // Named as the ACP agent Palladium runs. The quota service answers by client: under the
+                // older "hub" name it lists only the Claude and GPT group, without Gemini or Gemini 4 Argon.
+                request.setValue("antigravity/acp/1.0.0 (aidev_client; os_type=darwin; arch=arm64)", forHTTPHeaderField: "User-Agent")
                 request.httpBody = try? JSONSerialization.data(withJSONObject: project.isEmpty ? [:] : ["project": project])
                 if let found = (try? await json(request, session: session)).map(parse), !found.isEmpty { return found }
             }

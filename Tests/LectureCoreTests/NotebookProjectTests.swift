@@ -33,6 +33,35 @@ final class NotebookProjectTests: XCTestCase {
         XCTAssertFalse(NotebookAssistantProtocol.requestsDeletion("No borres la nota"))
     }
 
+    func testLaTeXSourcesAreEditedAndRestoredLikeNotes() throws {
+        let (workspace, store, _) = try fixture()
+        try workspace.createAsset("Summary.tex", data: Data("\\begin{document}\n\\badmacro\n\\end{document}\n".utf8))
+        XCTAssertEqual(try store.texts("derecho")["Summary.tex"], "\\begin{document}\n\\badmacro\n\\end{document}\n")
+        XCTAssertFalse(try workspace.noteNames().contains("Summary.tex"))
+        let before = try store.capture("derecho", summary: "Before fix")
+        let response = NotebookAssistantResponse(reply: "Fixed", edits: [.init(path: "Summary.tex", find: "\\badmacro", replacement: "Fixed.")])
+        let changes = try NotebookAssistantProtocol.changes(response, documents: try store.texts("derecho"))
+        _ = try store.apply("derecho", summary: "Fix", changes: changes)
+        XCTAssertEqual(try workspace.readNote("Summary.tex"), "\\begin{document}\nFixed.\n\\end{document}\n")
+        _ = try store.restore(before)
+        XCTAssertTrue(try workspace.readNote("Summary.tex").contains("\\badmacro"))
+        // Imported files other than notes and LaTeX stay read-only.
+        XCTAssertThrowsError(try NotebookAssistantProtocol.changes(.init(reply: "", edits: [.init(path: "data.csv", find: "a", replacement: "b")]), documents: ["data.csv": "a"]))
+
+        // A checkpoint saved before LaTeX was tracked does not list .tex files; restoring it keeps them.
+        var old = try JSONSerialization.jsonObject(with: JSONEncoder().encode(before)) as! [String: Any]
+        old.removeValue(forKey: "tracksLaTeX")
+        var legacy = try JSONDecoder().decode(NotebookCheckpoint.self, from: JSONSerialization.data(withJSONObject: old))
+        XCTAssertNil(legacy.tracksLaTeX)
+        legacy.files.removeValue(forKey: "Summary.tex")
+        try workspace.writeStorage("projects/checkpoints.json", data: JSONEncoder().encode(store.checkpoints + [legacy]))
+        let reopened = try NotebookProjectStore(workspace: workspace, notebooks: store.notebooks)
+        try workspace.writeNote("One.md", expected: "One", replacement: "Changed")
+        _ = try reopened.restore(legacy)
+        XCTAssertEqual(try workspace.readNote("One.md"), "One")
+        XCTAssertTrue(try workspace.readNote("Summary.tex").contains("\\badmacro"))
+    }
+
     func testDeletionPermissionUsesUserHistoryAndHonoursRevocation() {
         let original = NotebookMessage(role: "user", text: "Delete the provisional note after moving its content.")
         let retry = NotebookMessage(role: "user", text: "Try again")

@@ -65,7 +65,7 @@ extension Workbench {
             let checkpoint = try projects.capture(notebook.id, summary: "Antes de eliminar")
             let files = checkpoint.files.filter { paths.contains($0.key) }
             var assets: [String: String] = [:]
-            for filename in paths where !filename.hasSuffix(".md") {
+            for filename in paths where files[filename] == nil {
                 try NotebookFileLibrary(projects: projects).validate(filename, notebookID: notebook.id)
                 let data = try workspace.readFile(filename)
                 let hash = digest(data)

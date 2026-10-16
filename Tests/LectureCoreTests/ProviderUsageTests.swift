@@ -121,9 +121,18 @@ final class ProviderUsageTests: XCTestCase {
         XCTAssertEqual(summary.map(\.scope), ["Gemini", "Claude & GPT"])
         XCTAssertEqual(summary.map(\.kind), [.session, .weekly])
         XCTAssertEqual(summary.map(\.usedPercent), [0, 75])
+        // The account's real shape: Gemini, Claude and GPT, and a separate Gemini 4 Argon allowance.
+        let groups = ProviderLimitsProbe.antigravity(summary: ["groups": [
+            ["displayName": "Gemini Models", "buckets": [["bucketId": "gemini-weekly", "window": "weekly", "remainingFraction": 1], ["bucketId": "gemini-5h", "window": "5h", "remainingFraction": 1]]],
+            ["displayName": "Claude and GPT models", "buckets": [["bucketId": "3p-weekly", "window": "weekly", "remainingFraction": 0.97], ["bucketId": "3p-5h", "window": "5h", "remainingFraction": 0.93]]],
+            ["displayName": "Gemini 4 Argon", "buckets": [["bucketId": "gemini-argon-wtu-weekly", "displayName": "Gemini 4 Argon Weekly Limit", "window": "weekly", "remainingFraction": 0.83]]]]])
+        XCTAssertEqual(groups.map(\.scope), ["Gemini", "Gemini", "Claude & GPT", "Claude & GPT", "Gemini 4 Argon"])
+        XCTAssertEqual(groups.map(\.kind), [.session, .weekly, .session, .weekly, .weekly])
+        XCTAssertEqual(groups.last?.usedPercent ?? 0, 17, accuracy: 0.001)
         let models = ProviderLimitsProbe.antigravity(models: ["models": ["gemini-3-pro": ["quotaInfo": ["remainingFraction": 0.5]], "gemini-3-flash": ["quotaInfo": ["remainingFraction": 0.9]], "claude-x": ["weeklyQuotaInfo": ["remainingFraction": 0.2]], "other": ["quotaInfo": ["remainingFraction": 0]]]])
         XCTAssertEqual(models.map(\.id), ["claude-weekly", "gemini-quota"])
         XCTAssertEqual(models.map(\.usedPercent), [80, 50])
+
     }
 
     func testSummarySplitsEachBucketByProvider() {
@@ -239,10 +248,14 @@ final class ProviderUsageTests: XCTestCase {
         var decoder = CodexNotebookProgressDecoder(threadID: "thread", model: "gpt-6-luna")
         XCTAssertNil(try decoder.accept("thread/tokenUsage/updated", ["threadId": "other", "tokenUsage": ["total": ["inputTokens": 9, "outputTokens": 9]]]))
         XCTAssertNil(decoder.usage)
-        XCTAssertNil(try decoder.accept("thread/tokenUsage/updated", ["threadId": "thread", "turnId": "turn", "tokenUsage": [
+        let context = try decoder.accept("thread/tokenUsage/updated", ["threadId": "thread", "turnId": "turn", "tokenUsage": [
             "total": ["inputTokens": 1_000, "cachedInputTokens": 800, "outputTokens": 120, "reasoningOutputTokens": 70, "totalTokens": 1_120],
-            "last": ["inputTokens": 1, "outputTokens": 1]]]))
+            "last": ["inputTokens": 1, "outputTokens": 1]]])
+        XCTAssertEqual(context?.context?.usedTokens, 2)
         XCTAssertEqual(decoder.usage, .init(model: "gpt-6-luna", input: 200, cachedInput: 800, output: 120))
+        var resumed = CodexNotebookProgressDecoder(threadID: "thread", model: "gpt-6-luna", initialUsage: decoder.cumulativeUsage)
+        _ = try resumed.accept("thread/tokenUsage/updated", ["threadId": "thread", "tokenUsage": ["total": ["inputTokens": 1100, "cachedInputTokens": 850, "outputTokens": 140], "last": ["inputTokens": 50, "outputTokens": 20]]])
+        XCTAssertEqual(resumed.usage, .init(model: "gpt-6-luna", input: 50, cachedInput: 50, output: 20))
     }
 
     func testAntigravityUsesReportedTokensOrApproximatesThem() {

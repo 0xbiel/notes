@@ -20,7 +20,7 @@ public enum NotesAIProvider: String, Codable, CaseIterable, Sendable, Identifiab
         }
     }
     /// Providers whose catalogs publish reasoning levels and speed tiers.
-    public var supportsReasoning: Bool { self == .codexCLI || self == .claudeCode }
+    public var supportsReasoning: Bool { self != .openCode }
     public var supportsNativeWebSearch: Bool { self == .codexCLI || self == .claudeCode }
     public var supportsCustomModels: Bool { self != .openCode }
 }
@@ -167,6 +167,21 @@ public struct AIProviderSettings: Codable, Equatable, Sendable {
         claudeCode = try values.decodeIfPresent(AIProviderConfiguration.self, forKey: .claudeCode) ?? defaults.claudeCode
         antigravity = try values.decode(AIProviderConfiguration.self, forKey: .antigravity)
         modelPreferences = try values.decodeIfPresent([String: AIProviderModelPreferences].self, forKey: .modelPreferences)
+        // Antigravity models used to be listed once per thinking level; they are now one model with levels.
+        if let variant = ProviderModelCatalog.antigravityVariant(antigravity.model) {
+            antigravity.model = variant.model
+            antigravity.reasoningEffort = antigravity.reasoningEffort ?? variant.effort
+        }
+        if var options = modelPreferences?[NotesAIProvider.antigravity.rawValue] {
+            func merged(_ identifiers: [String]) -> [String] {
+                var seen = Set<String>()
+                return identifiers.map { ProviderModelCatalog.antigravityVariant($0)?.model ?? $0 }.filter { seen.insert($0).inserted }
+            }
+            options.favorites = merged(options.favorites); options.order = merged(options.order)
+            // Hiding one level must not hide the whole model, so those entries are dropped.
+            options.hidden.removeAll { ProviderModelCatalog.antigravityVariant($0) != nil }
+            modelPreferences?[NotesAIProvider.antigravity.rawValue] = options
+        }
     }
 
     private static func latestExecutable(in root: URL, suffix: String) -> String? {

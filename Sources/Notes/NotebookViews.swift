@@ -97,6 +97,7 @@ extension Workbench {
             // silently onto text the user has changed.
             bases[name] = after; drafts[name] = after
             persistDrafts()
+            mapContentChanged([name])
             do { try engine?.acknowledgeEditorSave(filename: name, before: before, after: after) }
             catch {
                 // Preserve the saved user edit even if an older replay session is

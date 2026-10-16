@@ -19,7 +19,9 @@ struct WorkbenchView: View {
             HStack(spacing: 0) {
                 Color.clear.frame(width: chrome.compact ? 0 : sidebarWidth)
                 VStack(spacing: 0) {
-                    if model.selectedNote == nil && model.selectedFile == nil, let assistant = model.assistant {
+                    if model.mapVisible {
+                        // The atlas carries its own title bar.
+                    } else if model.selectedNote == nil && model.selectedFile == nil, let assistant = model.assistant {
                         NotebookChatTitleBar(model: model, assistant: assistant)
                     } else {
                         WorkspaceTitleBar(model: model)
@@ -166,7 +168,7 @@ struct WorkspaceTitleBar: View {
                 else if let file = model.selectedFile {
                     if NotebookPracticeTest.isPracticeTest(file) { NotebookPracticeLayoutSelector() }
                     NotebookAssistantToggle(model: model)
-                }
+                } else if model.maps != nil { NotebookAtlasButton(model: model) }
             }
             .padding(.horizontal, 18).frame(height: 58)
             .background(WindowDragRegion())
@@ -465,7 +467,8 @@ struct CourseTreeRow: View {
             } else {
                 HStack(spacing: 9) {
                     HStack(spacing: 9) {
-                        Image(systemName: LibraryFileIcon.symbol(node.path))
+                        // One width for every symbol, so titles line up whatever the file type.
+                        Image(systemName: LibraryFileIcon.symbol(node.path)).frame(width: 18)
                             .foregroundStyle(model.selectedLibraryPath == node.path ? .primary : .secondary)
                         Text(node.name).font(.callout).lineLimit(2)
                     }.background(LibraryRowMarker(item: .note(node.path)))
@@ -518,6 +521,8 @@ struct NoteWorkspace: View {
                     imageRoot: model.workspace?.courseRoot.appendingPathComponent(model.currentNotebook.rootPrefix),
                     importImage: { data, ext in try model.importDocumentImage(data, fileExtension: ext, note: note) },
                     onChange: { model.changeDraft($0) }, onLink: { _ = model.openWikilink($0) }, onTaskToggle: { _ in if model.layout == "preview" { model.saveDraft() } })
+            } else if model.mapVisible, let maps = model.maps {
+                NotebookAtlasView(model: model, maps: maps)
             } else {
                 if let assistant = model.assistant { NotebookHome(model: model, assistant: assistant) }
                 else { ContentUnavailableView("Abre una nota", systemImage: "doc.text", description: Text("⇧⌘P para buscar")) }

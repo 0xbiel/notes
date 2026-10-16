@@ -58,9 +58,12 @@ public final class SafeWorkspace {
         return lexical
     }
 
+    /// Markdown notes and LaTeX sources are the text files edited through checkpoints.
+    public static func isEditableText(_ filename: String) -> Bool { filename.hasSuffix(".md") || filename.hasSuffix(".tex") }
+
     public func noteURL(_ filename: String) throws -> URL {
         let components = filename.components(separatedBy: "/")
-        guard !filename.hasPrefix("/"), filename.hasSuffix(".md"),
+        guard !filename.hasPrefix("/"), Self.isEditableText(filename),
               components.allSatisfy({ !$0.isEmpty && !$0.hasPrefix(".") && $0 != ".." }) else {
             throw ReplayError.unsafePath(filename)
         }
@@ -138,6 +141,12 @@ public final class SafeWorkspace {
             }
         }
         return names.sorted()
+    }
+
+    /// Notes plus LaTeX sources: everything the assistant and checkpoints may rewrite.
+    public func editableNames() throws -> [String] {
+        let sources = try fileNames().filter { $0.hasSuffix(".tex") && $0.components(separatedBy: "/").allSatisfy { !$0.hasPrefix(".") } }
+        return try (noteNames() + sources).sorted()
     }
 
     public func createFolder(_ relative: String) throws {

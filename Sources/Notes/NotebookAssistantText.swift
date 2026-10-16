@@ -8,7 +8,7 @@ enum NotebookAssistantText {
         "Corrigiendo cambios…": "Correcting edits…",
         "Corrigiendo respuesta…": "Correcting response…",
         "Reintentando automáticamente…": "Retrying automatically…",
-        "Solo se pueden editar notas Markdown. Los archivos importados son fuentes de solo lectura.": "Only Markdown notes can be edited. Imported files are read-only sources.",
+        "Solo se pueden editar notas Markdown y fuentes LaTeX. Los archivos importados son fuentes de solo lectura.": "Only Markdown notes and LaTeX sources can be edited. Imported files are read-only sources.",
         "Elige un archivo, no una carpeta ni un enlace.": "Choose a regular file, not a folder or link.",
         "Los archivos adjuntos no pueden superar 20 MB.": "Attachments must be 20 MB or smaller.",
         "El archivo debe contener datos y no superar 20 MB.": "Attachments must contain data and be 20 MB or smaller.",
