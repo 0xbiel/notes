@@ -109,6 +109,15 @@ struct CodexNotebookProgressDecoder {
     private(set) var finished = false
     private var response = NotebookResponseStream()
     private var writing = false
+
+    init(threadID: String, webEnabled: Bool = false, model: String = "default", compact: Bool = false, initialUsage: ProviderTokenUsage? = nil) {
+        self.threadID = threadID
+        self.webEnabled = webEnabled
+        self.model = model
+        self.compact = compact
+        self.initialUsage = initialUsage
+    }
+
     mutating func accept(_ method: String, _ params: [String: Any]) throws -> NotebookProviderProgress? {
         guard params["threadId"] as? String == threadID else { return nil }
         if let id = params["turnId"] as? String, let turnID, id != turnID { return nil }
