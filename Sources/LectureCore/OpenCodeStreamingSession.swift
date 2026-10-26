@@ -111,6 +111,11 @@ struct OpenCodeProgressDecoder {
     private var thoughts: [String: String] = [:]
     private var began = false
     private(set) var finished = false
+
+    init(sessionID: String) {
+        self.sessionID = sessionID
+    }
+
     mutating func accept(_ data: Data) -> NotebookProviderProgress? {
         guard let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let type = event["type"] as? String, let properties = event["properties"] as? [String: Any] else { return nil }
