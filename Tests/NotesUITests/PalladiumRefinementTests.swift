@@ -193,9 +193,14 @@ final class PalladiumRefinementTests: XCTestCase {
 
     @MainActor func testPreferencesSharePublishedCatalogAndReopenWithModels() async throws {
         let (model, root) = try environment(); defer { clean(model, root) }
-        let ai = try XCTUnwrap(model.ai)
+        // Test catalog publication without depending on a provider installation.
+        let ai = try AIController(workspace: XCTUnwrap(model.workspace), editor: XCTUnwrap(model.editor),
+                                  catalogFetch: { _ in
+            [.init(id: OpenRouterHarness.model, name: "Fixture model", isDefault: true)]
+        })
+        defer { ai.stop() }
         let first = ProviderPreferencesModel(ai: ai), second = ProviderPreferencesModel(ai: ai)
-        // OpenCode's catalog is local fixed metadata; no account/API probe.
+        XCTAssertTrue(first.models.isEmpty)
         _ = try await ai.modelCatalogs.refresh(ai.providerSettings.openCode)
         XCTAssertFalse(first.models.isEmpty)
         XCTAssertEqual(first.models, second.models)

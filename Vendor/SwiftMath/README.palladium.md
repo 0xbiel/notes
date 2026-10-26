@@ -12,3 +12,12 @@ checkout's build directory.
 The local math renderer also supports `\boxed{...}` with a padded outline,
 nested formulas and normal superscripts/subscripts. This preserves the authored
 LaTeX rather than stripping the unsupported command or replacing it with brackets.
+
+Unicode currency symbols are parsed as ordinary atoms, including inside
+`\text{...}` and nested font commands. This keeps symbols such as `€`, `£`, and
+`¥` instead of silently dropping them or leaving an empty, unrenderable formula.
+
+`\xrightarrow{above}` and `\xleftarrow[below]{above}` use native relation-spaced
+arrows that expand to fit their script-sized labels in inline and display math.
+Upper and optional lower labels, nested formulas, and external scripts are
+preserved in the parsed math list and its serialized LaTeX.

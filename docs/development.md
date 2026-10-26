@@ -19,6 +19,31 @@ The generated app embeds its workspace path and is ad-hoc signed. It is not a po
 
 Tests use invented fixtures and cover Markdown preservation, editor state, guarded document changes, notebook transactions, attachments, dictation routing, and the audio pipeline. Standard tests do not activate the physical microphone or invoke external inference. Native UI changes also need inspection in the running app: a build or offscreen render alone does not establish interaction behavior.
 
+## Releases and versioning
+
+`.github/workflows/release.yml` runs on every branch push, `v*` tag push, and manual Actions run. It tests on a macOS runner with Xcode 26 or later (the UI uses the macOS 26 SDK), builds release-mode DMGs for Apple silicon and Intel, verifies their ad-hoc signatures and disk images, and uploads both installers plus `SHA256SUMS.txt` to GitHub Releases. Publishing runs only after all these steps succeed; installers also remain available as Actions artifacts for 14 days. GitHub's built-in token supplies release access; no personal access token is needed. Actions must be enabled for the repository, and organization policies must allow the publishing job's `contents: write` permission.
+
+`VERSION` is the single source for the numeric app version, initially `0.3.0`. Branch pushes publish prereleases such as `v0.3.0-dev.42.1`, where `42` is the workflow run number and `1` its attempt. A rerun has a new attempt suffix. These builds do not replace the latest stable release. All branches publish, so a feature branch installer may contain unfinished changes; release metadata links to its exact source commit.
+
+For a stable release, update `VERSION` to the desired `major.minor.patch`, commit and push, then push a matching tag:
+
+```sh
+# Example: after committing VERSION containing 0.3.1
+git tag v0.3.1
+git push origin v0.3.1
+```
+
+The tag must exactly match `v` plus `VERSION`; mismatches fail before testing or packaging. Tag releases publish without the prerelease flag and become the latest stable download. Re-running the same stable tag replaces its installer assets. GitHub release notes are generated automatically. Workflow-created development tags use the built-in token and do not trigger recursive workflow runs.
+
+Both local packaging scripts read `VERSION`. CI sets `NOTES_BUILD_NUMBER` to `run.attempt` for `CFBundleVersion`; `CFBundleShortVersionString` remains the numeric version. `NOTES_RELEASE_VERSION` adds the development suffix to DMG filenames without putting it in the numeric bundle version. Local builds default to build number `1`:
+
+```sh
+zsh scripts/build-dmg.sh              # both architectures
+zsh scripts/build-dmg.sh arm64        # Apple silicon only
+```
+
+The DMGs contain a portable app with an Applications shortcut, without an embedded demo-workspace path. Installed apps create their workspace in Application Support. No updater is included: install a newer DMG to upgrade. Developer ID signing and Apple notarization require separate Apple credentials and are not configured by this workflow.
+
 ## Workspace and editing
 
 Markdown files live under the workspace’s `copied-course/` directory. Notebook definitions and local state live under `session-storage/`. Notebook chats, profiles, attachments, checkpoints, and transaction journals are stored in `session-storage/projects/`.

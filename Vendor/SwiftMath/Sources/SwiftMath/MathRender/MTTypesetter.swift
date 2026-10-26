@@ -55,7 +55,7 @@ func getInterElementSpaceArrayIndexForType(_ type:MTMathAtomType, row:Bool) -> I
             return 1
         case .binaryOperator:
             return 2;
-        case .relation:
+        case .relation, .extensibleArrow:
             return 3;
         case .open:
             return 4;
@@ -555,6 +555,20 @@ class MTTypesetter {
                     currentPosition.x += display!.width;
                     displayAtoms.append(display!)
                     
+                case .extensibleArrow:
+                    if currentLine.length > 0 { self.addDisplayLine() }
+                    self.addInterElementSpace(prevNode, currentType: .relation)
+                    let arrow = atom as! MTExtensibleArrow
+                    let upperLabel = MTTypesetter.createLineForMathList(arrow.upperLabel, font: font, style: self.scriptStyle())
+                    let lowerLabel = arrow.lowerLabel.flatMap { MTTypesetter.createLineForMathList($0, font: font, style: self.scriptStyle()) }
+                    let display = MTExtensibleArrowDisplay(upperLabel: upperLabel, lowerLabel: lowerLabel, pointsLeft: arrow.pointsLeft, fontSize: styleFont.fontSize, axisHeight: styleFont.mathTable!.axisHeight, range: arrow.indexRange)
+                    display.position = currentPosition
+                    displayAtoms.append(display)
+                    currentPosition.x += display.width
+                    if atom.subScript != nil || atom.superScript != nil {
+                        self.makeScripts(atom, display: display, index: UInt(arrow.indexRange.location), delta: 0)
+                    }
+
                 case .boxed:
                     if currentLine.length > 0 { self.addDisplayLine() }
                     self.addInterElementSpace(prevNode, currentType: .ordinary)

@@ -49,6 +49,7 @@ public enum MTMathAtomType: Int, CustomStringConvertible, Comparable {
     /// An accented atom - Accent in TeX
     case accent
     case boxed
+    case extensibleArrow
     
     // Atoms after this point do not support subscripts or superscripts
     
@@ -77,7 +78,7 @@ public enum MTMathAtomType: Int, CustomStringConvertible, Comparable {
     
     func isNotBinaryOperator() -> Bool {
         switch self {
-            case .binaryOperator, .relation, .open, .punctuation, .largeOperator: return true
+            case .binaryOperator, .relation, .extensibleArrow, .open, .punctuation, .largeOperator: return true
             default: return false
         }
     }
@@ -105,6 +106,7 @@ public enum MTMathAtomType: Int, CustomStringConvertible, Comparable {
             case .overline:       return "Overline"
             case .accent:         return "Accent"
             case .boxed:          return "Boxed"
+            case .extensibleArrow: return "Extensible Arrow"
             case .boundary:       return "Boundary"
             case .space:          return "Space"
             case .style:          return "Style"
@@ -237,6 +239,8 @@ public class MTMathAtom: NSObject {
                 return MTAccent(self as? MTAccent)
             case .boxed:
                 return MTBox(self as? MTBox)
+            case .extensibleArrow:
+                return MTExtensibleArrow(self as? MTExtensibleArrow)
             case .space:
                 return MTMathSpace(self as? MTMathSpace)
             case .color:
@@ -533,6 +537,32 @@ public class MTOverLine: MTMathAtom {
     override init() {
         super.init()
         self.type = .overline
+    }
+}
+
+public class MTExtensibleArrow: MTMathAtom {
+    public var upperLabel: MTMathList?
+    public var lowerLabel: MTMathList?
+    public var pointsLeft = false
+
+    override public var finalized: MTMathAtom {
+        let arrow = super.finalized as! MTExtensibleArrow
+        arrow.upperLabel = arrow.upperLabel?.finalized
+        arrow.lowerLabel = arrow.lowerLabel?.finalized
+        return arrow
+    }
+
+    init(_ arrow: MTExtensibleArrow?) {
+        super.init(arrow)
+        self.type = .extensibleArrow
+        self.upperLabel = MTMathList(arrow?.upperLabel)
+        self.lowerLabel = MTMathList(arrow?.lowerLabel)
+        self.pointsLeft = arrow?.pointsLeft ?? false
+    }
+
+    override init() {
+        super.init()
+        self.type = .extensibleArrow
     }
 }
 

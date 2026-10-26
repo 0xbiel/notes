@@ -1,15 +1,106 @@
 import XCTest
 import AppKit
 import SwiftUI
+import SwiftMath
 import LectureCore
 @testable import Notes
 
 final class MarkdownMathTests: XCTestCase {
+    @MainActor func testLabeledArrowScreenshotRendersWithoutChangingSource() throws {
+        let formulas = [Self.labeledArrowFormula, #"a\xrightarrow{N\to\infty}b"#,
+                        #"a\xrightarrow[\text{below}]{\text{long label above}}b"#,
+                        #"a\xleftarrow{n}b"#, #"a\xrightarrow{}b"#,
+                        #"\frac{1}{\xrightarrow{n}}"#, #"\xrightarrow{n}^{2}_{i}"#]
+        for formula in formulas {
+            for source in ["$" + formula + "$", "$$" + formula + "$$"] {
+                let span = try XCTUnwrap(MarkdownMath.spans(in: source).first)
+                XCTAssertNotNil(MarkdownMathRenderer.render(span, source: source), formula)
+                XCTAssertEqual(MarkdownMathText.attributed(source).string, "\u{fffc}")
+                let view = MarkdownTextView(frame: NSRect(x: 0, y: 0, width: 900, height: 200))
+                view.string = source
+                view.liveEditing = false
+                view.renderMarkdown()
+                XCTAssertEqual(view.string, source)
+                XCTAssertEqual(view.renderedMath.count, 1)
+            }
+        }
+    }
+
+    static let labeledArrowFormula = #"W(N)=\frac{6N+3}{6N+8}\ \text{instr./ciclo}\;\xrightarrow{N\to\infty}\;1"#
+
+    @MainActor func testLabeledArrowLabelsRoundTripAndScale() throws {
+        let source = #"\xrightarrow[\text{below}]{N\to\infty}"#
+        let list = try XCTUnwrap(MTMathListBuilder.build(fromString: source))
+        let arrow = try XCTUnwrap(list.atoms.first as? MTExtensibleArrow)
+        for candidate in [arrow, arrow.copy(), arrow.finalized] {
+            let candidate = try XCTUnwrap(candidate as? MTExtensibleArrow)
+            XCTAssertFalse(candidate.pointsLeft)
+            XCTAssertEqual(candidate.upperLabel?.atoms.map(\.nucleus).joined(), "N→∞")
+            XCTAssertEqual(candidate.lowerLabel?.atoms.map(\.nucleus).joined(), "below")
+        }
+        let serialized = MTMathListBuilder.mathListToString(list)
+        let roundTrip = try XCTUnwrap(MTMathListBuilder.build(fromString: serialized)?.atoms.first as? MTExtensibleArrow)
+        XCTAssertEqual(roundTrip.upperLabel?.atoms.map(\.nucleus), arrow.upperLabel?.atoms.map(\.nucleus))
+        XCTAssertEqual(roundTrip.lowerLabel?.atoms.map(\.nucleus), arrow.lowerLabel?.atoms.map(\.nucleus))
+        func render(_ formula: String) throws -> RenderedMarkdownMath {
+            let source = "$" + formula + "$"
+            return try XCTUnwrap(MarkdownMathRenderer.render(try XCTUnwrap(MarkdownMath.spans(in: source).first), source: source))
+        }
+        let short = try render(#"\xrightarrow{n}"#)
+        let long = try render(#"\xrightarrow{\text{a much longer label}}"#)
+        let below = try render(#"\xrightarrow[\text{below}]{n}"#)
+        XCTAssertGreaterThan(long.size.width, short.size.width)
+        XCTAssertGreaterThan(below.descent, short.descent)
+        XCTAssertGreaterThan(below.size.height, short.size.height)
+        XCTAssertEqual(try render(#"\xleftarrow{n}"#).size.width, short.size.width, accuracy: 0.01)
+        for malformed in [#"\xrightarrow"#, #"\xrightarrow[below]"#, #"\xrightarrow[below{n}"#, #"\xrightarrow{n"#] {
+            var error: NSError?
+            XCTAssertNil(MTMathListBuilder.build(fromString: malformed, error: &error), malformed)
+            XCTAssertNotNil(error)
+        }
+    }
+
+    @MainActor func testCurrencyInsideTextCommandsKeepsSymbolsAndRenders() throws {
+        let formulas = [#"2.020,00\text{ €}"#, #"\text{Importe: }2.020,00\text{ €}"#,
+                        #"\text{£} + \text{¥} + \text{€}"#, #"\text{Total {€}}"#,
+                        #"\text{\textbf{€}}"#]
+        for formula in formulas {
+            let list = try XCTUnwrap(MTMathListBuilder.build(fromString: formula))
+            let nuclei = list.atoms.map(\.nucleus).joined()
+            for symbol in ["€", "£", "¥"] where formula.contains(symbol) {
+                XCTAssertTrue(nuclei.contains(symbol), "Dropped \(symbol) in \(formula)")
+            }
+            for source in ["$" + formula + "$", "$$" + formula + "$$"] {
+                let spans = MarkdownMath.spans(in: source)
+                XCTAssertEqual(spans.count, 1)
+                let span = try XCTUnwrap(spans.first)
+                XCTAssertNotNil(MarkdownMathRenderer.render(span, source: source))
+                XCTAssertEqual(MarkdownMathText.attributed(source).string, "\u{fffc}")
+                let view = MarkdownTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 200))
+                view.string = source
+                view.liveEditing = false
+                view.renderMarkdown()
+                XCTAssertEqual(view.string, source)
+                XCTAssertEqual(view.renderedMath.count, 1)
+            }
+        }
+    }
+
     @MainActor func testScreenshotFormattingVisuals() async throws {
         let source = #"""
         **a) ¿Problema según qué ocurre con la instrucción siguiente al salto (`add r5,r0,c`)?**
 
         La instrucción siguiente conserva su formato de código.
+
+        - **Accidente *in itinere* y secuelas (BBVA):**
+
+        **Importe:** $2.020,00\text{ €}$
+
+        $$\text{Total: }2.020,00\text{ €}$$
+
+        $$W(N)=\frac{6N+3}{6N+8}\ \text{instr./ciclo}\;\xrightarrow{N\to\infty}\;1$$
+
+        $$a\xrightarrow[\text{below}]{\text{long label above}}b\quad a\xleftarrow{n}b$$
 
         ---
 
@@ -29,11 +120,11 @@ final class MarkdownMathTests: XCTestCase {
                     ? AnyView(NotebookChatMarkdown(text: source).padding(24))
                     : AnyView(LiveMarkdownEditor(documentID: "formatting-qa", text: source, editing: false, onChange: { _ in }, onLink: { _ in }))
                 let host = NSHostingView(rootView: content.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).background(Color(nsColor: .textBackgroundColor)).environment(\.colorScheme, dark ? .dark : .light))
-                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 560), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
                 window.isReleasedWhenClosed = false
                 window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
                 window.contentView = host
-                host.frame = NSRect(x: 0, y: 0, width: 800, height: 560)
+                host.frame = NSRect(x: 0, y: 0, width: 800, height: 900)
                 host.layoutSubtreeIfNeeded()
                 try await Task.sleep(for: .milliseconds(200))
                 host.layoutSubtreeIfNeeded()
@@ -81,6 +172,46 @@ final class MarkdownMathTests: XCTestCase {
         XCTAssertEqual(blocks.filter { $0.kind == "rule" }.count, 3)
         XCTAssertEqual(blocks.first(where: { $0.kind == "code:text" })?.text, "---")
         XCTAssertEqual(blocks.filter { $0.kind == "table" }.count, 1)
+    }
+
+    @MainActor func testBoldContainingItalicTextPreservesNestedTraitsAndSource() throws {
+        let examples = [
+            ("- **Accidente *in itinere* y secuelas (BBVA):**", "Accidente", "in itinere", "secuelas"),
+            ("**Accidente _in itinere_ y secuelas**", "Accidente", "in itinere", "secuelas"),
+            ("__Accidente _in itinere_ y secuelas__", "Accidente", "in itinere", "secuelas"),
+            ("__Accidente *in itinere* y secuelas__", "Accidente", "in itinere", "secuelas")
+        ]
+        for (source, before, italic, after) in examples {
+            let view = MarkdownTextView(frame: NSRect(x: 0, y: 0, width: 900, height: 200))
+            view.string = source
+            view.liveEditing = false
+            view.renderMarkdown()
+            XCTAssertEqual(view.string, source)
+            let storage = try XCTUnwrap(view.textStorage)
+            for term in [before, italic, after] {
+                let position = (source as NSString).range(of: term).location
+                let font = try XCTUnwrap(storage.attribute(.font, at: position, effectiveRange: nil) as? NSFont)
+                let traits = NSFontManager.shared.traits(of: font)
+                XCTAssertTrue(traits.contains(.boldFontMask), "Missing bold on \(term) in \(source)")
+                XCTAssertEqual(traits.contains(.italicFontMask), term == italic)
+            }
+            for (position, character) in source.utf16.enumerated() where character == 42 || character == 95 {
+                XCTAssertEqual(storage.attribute(.foregroundColor, at: position, effectiveRange: nil) as? NSColor, .clear)
+            }
+            view.liveEditing = true
+            view.setSelectedRange((source as NSString).range(of: before))
+            view.renderMarkdown()
+            let opening = (source as NSString).range(of: source.contains("**") ? "**" : "__").location
+            XCTAssertNotEqual(storage.attribute(.foregroundColor, at: opening, effectiveRange: nil) as? NSColor, .clear)
+            XCTAssertEqual(view.string, source)
+            let chat = NotebookChatMarkdown.inlineAttributed(source, accent: .purple)
+            XCTAssertFalse(String(chat.characters).contains("*"))
+            XCTAssertFalse(String(chat.characters).contains("_"))
+            XCTAssertTrue(chat.runs.contains {
+                let intent = $0.inlinePresentationIntent ?? []
+                return intent.contains(.stronglyEmphasized) && intent.contains(.emphasized)
+            })
+        }
     }
 
     @MainActor func testBoldContainingInlineCodeAndThematicBreaksInNotes() throws {
