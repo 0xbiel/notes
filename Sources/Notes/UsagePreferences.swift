@@ -193,6 +193,15 @@ struct UsagePreferences: View {
     private func value(_ part: ProviderUsageSummary.Part) -> String { showsCost ? UsageFormat.cost(part.cost) : UsageFormat.tokens(part.tokens) }
 
     /// The legend and the table of the chart at once.
+    private func providerTotalDetail(_ total: ProviderUsageSummary.ProviderTotal, summary: ProviderUsageSummary) -> String {
+        if showsCost {
+            let share: String = UsageFormat.share(total.cost, of: summary.cost)
+            return share + " · " + UsageFormat.tokens(total.tokens) + " tokens"
+        }
+        let share: String = UsageFormat.share(Double(total.tokens), of: Double(summary.tokens))
+        return share + " · " + UsageFormat.cost(total.cost)
+    }
+
     private func providerRow(_ total: ProviderUsageSummary.ProviderTotal, summary: ProviderUsageSummary) -> some View {
         HStack(spacing: 8) {
             Circle().fill(color(total.id)).frame(width: 8, height: 8)
@@ -200,7 +209,7 @@ struct UsagePreferences: View {
             Text(name(total.provider)).font(.callout)
             Text(text("\(total.requests) peticiones", "\(total.requests) requests")).font(.caption).foregroundStyle(.secondary)
             Spacer(minLength: 8)
-            Text(showsCost ? UsageFormat.share(total.cost, of: summary.cost) + " · " + UsageFormat.tokens(total.tokens) + " tokens" : UsageFormat.share(Double(total.tokens), of: Double(summary.tokens)) + " · " + UsageFormat.cost(total.cost))
+            Text(providerTotalDetail(total, summary: summary))
                 .font(.caption).foregroundStyle(.secondary).monospacedDigit()
             Text(value(.init(cost: total.cost, tokens: total.tokens))).font(.callout.weight(.medium)).monospacedDigit().frame(minWidth: 62, alignment: .trailing)
         }.accessibilityElement(children: .combine).accessibilityIdentifier("usage.provider." + total.id)
@@ -383,6 +392,14 @@ struct UsagePreferences: View {
         }
     }
 
+    private func modelRowDetail(_ row: ProviderUsageSummary.Row) -> String {
+        var parts: [String] = [row.provider?.shortName ?? text("Proveedor desconocido", "Unknown provider")]
+        parts.append(text("\(row.requests) peticiones", "\(row.requests) requests"))
+        parts.append(UsageFormat.tokens(row.tokens) + " tokens")
+        if row.estimated { parts.append(text("aproximado", "approximate")) }
+        return parts.joined(separator: " · ")
+    }
+
     private func modelRow(_ row: ProviderUsageSummary.Row, summary: ProviderUsageSummary) -> some View {
         let share = showsCost ? (summary.cost > 0 ? row.cost / summary.cost : 0) : Double(row.tokens) / Double(max(1, summary.tokens))
         return VStack(alignment: .leading, spacing: 8) {
@@ -391,7 +408,7 @@ struct UsagePreferences: View {
                 else { Image(systemName: "clock.arrow.circlepath").frame(width: 24, height: 24).foregroundStyle(.secondary) }
                 VStack(alignment: .leading, spacing: 3) {
                     Text(row.provider == nil ? text("Chat histórico (modelo desconocido)", "Historical chat (model unknown)") : row.model).font(.callout.weight(.semibold)).lineLimit(1).truncationMode(.middle)
-                    Text((row.provider?.shortName ?? text("Proveedor desconocido", "Unknown provider")) + " · " + text("\(row.requests) peticiones", "\(row.requests) requests") + " · " + UsageFormat.tokens(row.tokens) + " tokens" + (row.estimated ? text(" · aproximado", " · approximate") : ""))
+                    Text(modelRowDetail(row))
                         .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 8)

@@ -430,6 +430,10 @@ public struct MTMathListBuilder {
                             str += "\\end{\(table.environment)}"
                         }
                     }
+                } else if let arrow = atom as? MTExtensibleArrow {
+                    str += arrow.pointsLeft ? "\\xleftarrow" : "\\xrightarrow"
+                    if let lowerLabel = arrow.lowerLabel { str += "[\(mathListToString(lowerLabel))]" }
+                    str += "{\(mathListToString(arrow.upperLabel ?? MTMathList()))}"
                 } else if atom.type == .boxed, let box = atom as? MTBox, let innerList = box.innerList {
                     str += "\\boxed{\(mathListToString(innerList))}"
                 } else if atom.type == .overline {
@@ -518,6 +522,9 @@ public struct MTMathListBuilder {
     }
     
     mutating func atomForCommand(_ command:String) -> MTMathAtom? {
+        if command == "xrightarrow" || command == "xleftarrow" {
+            return buildExtensibleArrow(command)
+        }
         if let atom = MTMathAtomFactory.atom(forLatexSymbol: command) {
             return atom
         }
@@ -783,7 +790,35 @@ public struct MTMathListBuilder {
         }
     }
     
+    mutating func buildExtensibleArrow(_ command: String) -> MTMathAtom? {
+        let arrow = MTExtensibleArrow()
+        arrow.pointsLeft = command == "xleftarrow"
+        self.skipSpaces()
+        if self.hasCharacters {
+            if self.getNextCharacter() == "[" {
+                arrow.lowerLabel = self.buildInternal(false, stopChar: "]")
+            } else {
+                self.unlookCharacter()
+            }
+        }
+        self.skipSpaces()
+        guard self.hasCharacters else {
+            self.setError(.characterNotFound, message: "Missing label for \\" + command)
+            return nil
+        }
+        let start = self.currentCharIndex
+        arrow.upperLabel = self.buildInternal(true)
+        guard self.currentCharIndex != start, arrow.upperLabel != nil, self.error == nil else {
+            self.setError(.characterNotFound, message: "Missing label for \\" + command)
+            return nil
+        }
+        return arrow
+    }
+
     mutating func atom(forCommand command: String) -> MTMathAtom? {
+        if command == "xrightarrow" || command == "xleftarrow" {
+            return buildExtensibleArrow(command)
+        }
         if let atom = MTMathAtomFactory.atom(forLatexSymbol: command) {
             return atom
         }

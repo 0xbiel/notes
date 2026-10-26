@@ -248,7 +248,9 @@ struct NotebookChangedFiles: View {
     /// than every time the conversation redraws.
     private func lines(_ path: String) -> [DiffLine] {
         guard let checkpoint = message.checkpointID else { return [] }
-        let key = (assistant.store.workspace.root.path + "\u{0}" + model.currentNotebook.id + "\u{0}" + checkpoint + "\u{0}" + path) as NSString
+        let root: String = assistant.store.workspace.root.path
+        let notebookID: String = model.currentNotebook.id
+        let key = [root, notebookID, checkpoint, path].joined(separator: "\u{0}") as NSString
         if let cached = Self.diffs.object(forKey: key) { return cached.lines }
         let lines = readLines(path)
         Self.diffs.setObject(Diff(lines), forKey: key)

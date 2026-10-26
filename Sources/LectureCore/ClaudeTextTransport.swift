@@ -229,6 +229,11 @@ struct ClaudeStreamDecoder {
     private var response = NotebookResponseStream()
     private var streamedResponse = false
 
+    init(webSearch: Bool = false, compact: Bool = false) {
+        self.webSearch = webSearch
+        self.compact = compact
+    }
+
     private var allowedTools: Set<String> { webSearch ? ["StructuredOutput", "WebSearch"] : ["StructuredOutput"] }
 
     mutating func accept(_ line: Data) throws -> NotebookProviderProgress? {

@@ -18,14 +18,15 @@ final class AIController: ObservableObject {
     private var worker: Task<Void, Never>?
     private var latestMedia: [String: MediaJob] = [:]
     private var drainIDs: Set<String> = []
-    init(workspace: SafeWorkspace, editor: NotebookEditor) throws {
+    init(workspace: SafeWorkspace, editor: NotebookEditor,
+         catalogFetch: ((AIProviderConfiguration) async throws -> [AIProviderModel])? = nil) throws {
         self.editor = editor
         outbox = try AIOutbox(workspace: workspace)
         harness = OpenRouterHarness(store: LocalMediaStore(workspace: workspace))
         transport = NotesProviderTransport(store: LocalMediaStore(workspace: workspace))
         providerSettings = try AIProviderSettings.load(in: workspace)
         let catalogTransport = transport
-        modelCatalogs = ProviderCatalogStore(workspace: workspace) { try await catalogTransport.models($0) }
+        modelCatalogs = ProviderCatalogStore(workspace: workspace, fetch: catalogFetch ?? { try await catalogTransport.models($0) })
         try outbox.recoverApplications(editor: editor); refresh()
     }
     func refresh() { batches = outbox.batches }

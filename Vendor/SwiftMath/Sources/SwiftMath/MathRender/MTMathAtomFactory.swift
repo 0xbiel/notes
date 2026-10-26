@@ -616,6 +616,8 @@ public class MTMathAtomFactory {
     public static func atom(forCharacter ch: Character) -> MTMathAtom? {
         let chStr = String(ch)
         switch chStr {
+            case _ where ch.unicodeScalars.count == 1 && ch.unicodeScalars.first?.properties.generalCategory == .currencySymbol:
+                return MTMathAtom(type: .ordinary, value: chStr)
             case "\u{0410}"..."\u{044F}":
 				// Cyrillic alphabet
                 return MTMathAtom(type: .ordinary, value: chStr)

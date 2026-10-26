@@ -1048,10 +1048,10 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         let boldItalic = NSFontManager.shared.convert(.systemFont(ofSize: 16), toHaveTrait: [.boldFontMask, .italicFontMask])
         let formats: [(String, NSAttributedString.Key, Any, Int)] = [
             (#"(?<![\\*])\*\*\*([^*\n]+)\*\*\*(?!\*)"#, .font, boldItalic, 3),
-            (#"(?<![\\*])\*\*([^*\n]+)\*\*(?!\*)"#, .font, NSFont.boldSystemFont(ofSize: 16), 2),
+            (#"(?<![\\*])\*\*([^\n]+?)\*\*(?!\*)"#, .font, NSFont.boldSystemFont(ofSize: 16), 2),
             (#"(?<![\\*])\*([^*\n]+)\*(?!\*)"#, .font, NSFontManager.shared.convert(.systemFont(ofSize: 16), toHaveTrait: .italicFontMask), 1),
             (#"(?<![\\\p{L}\p{N}_])___([^_\n]+)___(?![\p{L}\p{N}_])"#, .font, boldItalic, 3),
-            (#"(?<![\\\p{L}\p{N}_])__([^_\n]+)__(?![\p{L}\p{N}_])"#, .font, NSFont.boldSystemFont(ofSize: 16), 2),
+            (#"(?<![\\\p{L}\p{N}_])__([^\n]+?)__(?![\p{L}\p{N}_])"#, .font, NSFont.boldSystemFont(ofSize: 16), 2),
             (#"(?<![\\\p{L}\p{N}_])_([^_\n]+)_(?![\p{L}\p{N}_])"#, .font, NSFontManager.shared.convert(.systemFont(ofSize: 16), toHaveTrait: .italicFontMask), 1),
             ("(?<!\\\\)~~([^~\\n]+)~~", .strikethroughStyle, NSUnderlineStyle.single.rawValue, 2)
         ]

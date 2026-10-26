@@ -75,7 +75,8 @@ public struct NotebookWebClient: Sendable {
             try Task.checkCancellation()
             let ext = uti.preferredFilenameExtension ?? "png"
             let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-            let path = (notebook.rootPrefix.isEmpty ? "" : notebook.rootPrefix + "/") + ".palladium-images/" + digest + "." + ext
+            let folder: String = notebook.rootPrefix.isEmpty ? "" : notebook.rootPrefix + "/"
+            let path = "\(folder).palladium-images/\(digest).\(ext)"
             if !FileManager.default.fileExists(atPath: try workspace.fileURL(path).path) { try workspace.createAsset(path, data: data) }
             return .init(action: action, source: response.url?.absoluteString ?? action.url,
                          text: "Downloaded locally. Use this file in Markdown, with a path relative to the note. Preserve a source link.", localImagePath: path)

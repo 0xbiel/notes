@@ -10,6 +10,12 @@ Palladium is a native macOS notebook app for Markdown notes, AI-assisted editing
 - **Local or API dictation.** Speak into the chat composer using a local Whisper model or the OpenAI API. Review and edit the resulting text before sending. Manage models and your API key in Preferences.
 - **Your own appearance.** Choose light, dark, or system appearance, adjust the theme and accent colors, and use compact mode when you want more room for your notes.
 
+## Download
+
+Download an installer from [GitHub Releases](https://github.com/0xbiel/notes/releases): choose `arm64` for Apple silicon or `x86_64` for Intel, open the DMG, and drag Palladium to Applications. Requires macOS 14 or later. Installers are ad-hoc signed, not Apple notarized; macOS may require allowing the app in System Settings → Privacy & Security.
+
+Every branch push publishes a numbered development prerelease after tests and both installer builds succeed. Stable releases use version tags. See [release instructions](docs/development.md#releases-and-versioning).
+
 ## Run locally
 
 **Preferences → Usage** keeps a local, deduplicated usage ledger independent of chat history, so deleting chats or notebooks does not reduce recorded usage. Existing saved chats are backfilled once. When an older chat has no provider usage record, only its saved question and answer are counted as approximate tokens; its provider/model and API cost remain unknown. These estimates exclude notebook context, tool calls, retries and images. New provider-reported requests are not counted again from chat text. Usage covers Palladium only, not other sessions in provider apps, and API-price estimates are not subscription charges.

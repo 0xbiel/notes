@@ -1,0 +1,79 @@
+name: Build and publish installers
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 45
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+          python3 -c 'import subprocess; assert int(subprocess.check_output(["xcrun", "--sdk", "macosx", "--show-sdk-version"], text=True).split(".")[0]) >= 26, "Xcode 26 or later is required"'
+      - name: Test release versioning
+        run: python3 scripts/test_release_version.py
+      - name: Determine version
+        id: version
+        run: python3 scripts/release_version.py --github-output
+      - name: Build Apple silicon and Intel installers
+        env:
+          NOTES_RELEASE_VERSION: ${{ steps.version.outputs.release }}
+          NOTES_BUILD_NUMBER: ${{ steps.version.outputs.build }}
+        run: zsh scripts/build-dmg.sh arm64 x86_64
+      - name: Generate checksums
+        working-directory: build
+        run: shasum -a 256 Palladium-*.dmg > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installers
+          path: |
+            build/*.dmg
+            build/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.build.outputs.tag }}
+      PRERELEASE: ${{ needs.build.outputs.prerelease }}
+      COMMIT: ${{ github.sha }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: installers
+          path: installers
+      - name: Publish GitHub release
+        shell: bash
+        run: |
+          set -euo pipefail
+          flags=()
+          if [[ "$PRERELEASE" == true ]]; then
+            flags+=(--prerelease --latest=false)
+          else
+            flags+=(--latest)
+          fi
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --target "$COMMIT" --title "Palladium $RELEASE_TAG" --generate-notes --draft "${flags[@]}"
+          fi
+          gh release upload "$RELEASE_TAG" installers/*.dmg installers/SHA256SUMS.txt --clobber
+          gh release edit "$RELEASE_TAG" --draft=false "${flags[@]}"

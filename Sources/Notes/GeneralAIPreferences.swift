@@ -81,7 +81,7 @@ struct GeneralAIPreferences: View {
                     Button(text("Cancelar", "Cancel")) { connectionTask?.cancel() }.font(.caption)
                 }
             } else if preferences.connectionResultIsCurrent, let result = preferences.connectionResult {
-                Label(text("Conexión verificada", "Connection verified") + " · " + result.model + " · " + String(format: "%.1f s", result.elapsedSeconds), systemImage: "checkmark.circle.fill")
+                Label([text("Conexión verificada", "Connection verified"), result.model, String(format: "%.1f s", result.elapsedSeconds)].joined(separator: " · "), systemImage: "checkmark.circle.fill")
                     .font(.caption).foregroundStyle(.green).accessibilityIdentifier("general.ai.test.success")
             } else if preferences.connectionResultIsCurrent, let error = preferences.connectionError {
                 Label(error, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange).textSelection(.enabled)

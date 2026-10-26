@@ -11,6 +11,9 @@ notes_workspace="${1:-${NOTES_WORKSPACE:-$prototype_root}}"
 python3 - "$notes_workspace" <<'PY'
 from pathlib import Path
 import os,plistlib,shutil,tempfile,subprocess,sys
+sys.path.insert(0, str(Path.cwd()/'scripts'))
+from release_version import metadata
+release_metadata=metadata()
 root=Path.cwd(); stage=Path(tempfile.mkdtemp(prefix='derecho-build-stage-'))
 try:
     workspace=Path(sys.argv[1]).absolute()
@@ -23,7 +26,7 @@ try:
         shutil.copytree(bundle, app/'Contents/Resources'/bundle.name, dirs_exist_ok=True)
     shutil.copyfile(root/'Resources/Branding/Palladium.icns', app/'Contents/Resources/Palladium.icns')
     shutil.copyfile(root/'Resources/Branding/PalladiumMark.png', app/'Contents/Resources/PalladiumMark.png')
-    info={"CFBundleExecutable":"Notes","CFBundleIdentifier":"local.biel.DerechoReplayPrototype","CFBundleName":"Palladium","CFBundleDisplayName":"Palladium","CFBundleIconFile":"Palladium.icns","CFBundlePackageType":"APPL","CFBundleShortVersionString":"0.3.0","CFBundleVersion":"3","LSMinimumSystemVersion":"14.0","NSHighResolutionCapable":True,"NSMicrophoneUsageDescription":"Dictar en el cuadro de mensaje únicamente cuando pulses el micrófono. El modelo local funciona en este Mac; la opción API envía audio a OpenAI.","PrototypeWorkspace":str(workspace)}
+    info={"CFBundleExecutable":"Notes","CFBundleIdentifier":"local.biel.DerechoReplayPrototype","CFBundleName":"Palladium","CFBundleDisplayName":"Palladium","CFBundleIconFile":"Palladium.icns","CFBundlePackageType":"APPL","CFBundleShortVersionString":release_metadata["version"],"CFBundleVersion":release_metadata["build"],"LSMinimumSystemVersion":"14.0","NSHighResolutionCapable":True,"NSMicrophoneUsageDescription":"Dictar en el cuadro de mensaje únicamente cuando pulses el micrófono. El modelo local funciona en este Mac; la opción API envía audio a OpenAI.","PrototypeWorkspace":str(workspace)}
     (app/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
     # SwiftPM resources can arrive read-only; make staged copies writable for signing cleanup.
     for file in app.rglob('*'):

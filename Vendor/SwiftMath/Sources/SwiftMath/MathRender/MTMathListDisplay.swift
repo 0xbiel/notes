@@ -103,6 +103,67 @@ public class MTDisplay:NSObject {
     
 }
 
+class MTExtensibleArrowDisplay: MTDisplay {
+    let upperLabel: MTMathListDisplay?
+    let lowerLabel: MTMathListDisplay?
+    let pointsLeft: Bool
+    let axisHeight: CGFloat
+    let headSize: CGFloat
+    let lineThickness: CGFloat
+
+    init(upperLabel: MTMathListDisplay?, lowerLabel: MTMathListDisplay?, pointsLeft: Bool, fontSize: CGFloat, axisHeight: CGFloat, range: NSRange) {
+        self.upperLabel = upperLabel
+        self.lowerLabel = lowerLabel
+        self.pointsLeft = pointsLeft
+        self.axisHeight = axisHeight
+        self.headSize = fontSize * 0.16
+        self.lineThickness = max(0.4, fontSize * 0.035)
+        super.init()
+        self.range = range
+        let padding = fontSize * 0.3
+        let gap = fontSize * 0.12
+        width = max(fontSize * 1.5, max(upperLabel?.width ?? 0, lowerLabel?.width ?? 0) + 2 * padding)
+        ascent = axisHeight + headSize + lineThickness / 2
+        descent = max(0, headSize + lineThickness / 2 - axisHeight)
+        if let upperLabel {
+            upperLabel.position = CGPoint(x: (width - upperLabel.width) / 2, y: ascent + gap + upperLabel.descent)
+            ascent = upperLabel.position.y + upperLabel.ascent
+        }
+        if let lowerLabel {
+            lowerLabel.position = CGPoint(x: (width - lowerLabel.width) / 2, y: axisHeight - headSize - lineThickness / 2 - gap - lowerLabel.ascent)
+            descent = max(descent, lowerLabel.descent - lowerLabel.position.y)
+        }
+    }
+
+    override var textColor: MTColor? {
+        get { super.textColor }
+        set {
+            super.textColor = newValue
+            upperLabel?.textColor = newValue
+            lowerLabel?.textColor = newValue
+        }
+    }
+
+    override public func draw(_ context: CGContext) {
+        super.draw(context)
+        context.saveGState()
+        context.translateBy(x: position.x, y: position.y)
+        upperLabel?.draw(context)
+        lowerLabel?.draw(context)
+        if let textColor { context.setStrokeColor(textColor.cgColor) }
+        context.setLineWidth(lineThickness)
+        let tip = pointsLeft ? lineThickness / 2 : width - lineThickness / 2
+        let shoulder = tip + (pointsLeft ? headSize * 1.8 : -headSize * 1.8)
+        context.move(to: CGPoint(x: lineThickness / 2, y: axisHeight))
+        context.addLine(to: CGPoint(x: width - lineThickness / 2, y: axisHeight))
+        context.move(to: CGPoint(x: shoulder, y: axisHeight + headSize))
+        context.addLine(to: CGPoint(x: tip, y: axisHeight))
+        context.addLine(to: CGPoint(x: shoulder, y: axisHeight - headSize))
+        context.strokePath()
+        context.restoreGState()
+    }
+}
+
 class MTBoxDisplay: MTDisplay {
     let inner: MTMathListDisplay
     let lineThickness: CGFloat
