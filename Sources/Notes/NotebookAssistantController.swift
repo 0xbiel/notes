@@ -533,7 +533,8 @@ final class NotebookAssistantController: ObservableObject {
                                 let source = try NotebookLibraryContext.read(file, inside: inside, selection: selection, library: library, notebookID: notebook.id)
                                 request.documents[path] = source.text
                                 request.sourceDigests[file] = source.sourceDigest
-                                if configuration.provider == .openCode && !source.images.isEmpty {
+                                let hasImages = !source.images.isEmpty
+                                if configuration.provider == .openCode && hasImages {
                                     request.documents[path, default: ""] += "\n[This provider cannot read images. Choose an image-capable provider for scanned pages/images.]"
                                 } else if images.count + source.images.count <= NotebookAttachmentImport.maximumImages,
                                           images.reduce(0, { $0 + $1.data.count }) + source.images.reduce(0, { $0 + $1.data.count }) <= 32 * 1024 * 1024 {
