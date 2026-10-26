@@ -808,7 +808,8 @@ extension Workbench {
     func sessionNote(in notebook: Notebook, title: String = "Grabación") throws -> String {
         guard let workspace else { throw ReplayError.missingWorkspace }
         let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
-        let stem = (notebook.rootPrefix.isEmpty ? "" : notebook.rootPrefix + "/") + title + " " + formatter.string(from: Date())
+        let folder: String = notebook.rootPrefix.isEmpty ? "" : notebook.rootPrefix + "/"
+        let stem = "\(folder)\(title) \(formatter.string(from: Date()))"
         var path = stem + ".md", index = 2
         while notes.contains(path) { path = stem + " (\(index)).md"; index += 1 }
         try workspace.createNote(path, text: "# \(title)\n\n")

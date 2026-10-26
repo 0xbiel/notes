@@ -416,7 +416,8 @@ extension Workbench {
                                 let bytes = try workspace.readFile(target)
                                 let image = try DocumentImageInput.validated(bytes)
                                 let prefix = activeNotebooks.first { $0.id == notebookID }!.rootPrefix
-                                target = (prefix.isEmpty ? "" : prefix + "/") + ".palladium-images/image-" + UUID().uuidString.lowercased() + "." + image.fileExtension
+                                let folder: String = prefix.isEmpty ? "" : prefix + "/"
+                                target = "\(folder).palladium-images/image-\(UUID().uuidString.lowercased()).\(image.fileExtension)"
                                 try workspace.createAsset(target, data: bytes); copiedImages[target] = bytes
                                 imageTargets[reference.path] = target
                             }

@@ -93,7 +93,8 @@ struct NotebookNativeSession: Sendable {
         snapshot.images = previous.images.union(images.map(imageKey))
         snapshot.webResults = Set(web.map(\.digest))
         let text = String(decoding: try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]), as: UTF8.self)
-        return ("Current request JSON:\n" + text + correction + (newImages.isEmpty ? "" : "\nAttached image order: " + newImages.map(\.name).joined(separator: ", ")), snapshot, newImages)
+        let imageOrder: String = newImages.isEmpty ? "" : "\nAttached image order: \(newImages.map(\.name).joined(separator: ", "))"
+        return ("Current request JSON:\n\(text)\(correction)\(imageOrder)", snapshot, newImages)
     }
 }
 
