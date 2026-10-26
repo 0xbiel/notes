@@ -94,7 +94,10 @@ final class LiveTests: XCTestCase {
         let after = data.count; try converter.finish(); XCTAssertEqual(data.count, after)
     }
     func testDecoderRepetitionIsFlaggedButOrdinaryCorrectionIsPreserved() {
-        let repeated = (0..<4).map { MediaTranscriptSegment(id: "r\($0)", start: Double($0 * 3), end: Double($0 * 3 + 3), text: "La figura inventada contiene cinco elementos.") }
+        let repeated: [MediaTranscriptSegment] = (0..<4).map { (index: Int) -> MediaTranscriptSegment in
+            let start = Double(index) * 3
+            return MediaTranscriptSegment(id: "r\(index)", start: start, end: start + 3, text: "La figura inventada contiene cinco elementos.")
+        }
         XCTAssertNotNil(ASRQuality.repetitionWarning(repeated))
         XCTAssertNotNil(ASRQuality.repetitionWarning([.init(id: "loop", start: 0, end: 10, text: Array(repeating: "El dragón azul tiene cuatro alas", count: 4).joined(separator: ", "))]))
         let correction = [.init(id: "a", start: 0, end: 5, text: "Son tres pasos."), MediaTranscriptSegment(id: "b", start: 5, end: 10, text: "No, corrijo: son dos pasos. Esto no lo copiéis todavía.")]
