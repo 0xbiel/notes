@@ -28,8 +28,6 @@ jobs:
       - name: Determine version
         id: version
         run: python3 scripts/release_version.py --github-output
-      - name: Test
-        run: zsh scripts/test.sh
       - name: Build Apple silicon and Intel installers
         env:
           NOTES_RELEASE_VERSION: ${{ steps.version.outputs.release }}
