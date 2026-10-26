@@ -383,7 +383,10 @@ final class NotebookAtlasGraphView: NSView {
         link.add(to: .main, forMode: .common)
         self.link = link
     }
-    @objc private func frame(_ link: CADisplayLink) {
+    @objc private func frame(_ link: CADisplayLink) { advanceFrame() }
+
+    /// Also used to advance offscreen interaction tests, which receive no display refreshes.
+    func advanceFrame() {
         if heat > 0.003 || dragged != nil { tick() }
         if let flight {
             let progress = min(1, (CACurrentMediaTime() - flight.start) / 0.45), eased = CGFloat(progress < 0.5 ? 2 * progress * progress : 1 - pow(-2 * progress + 2, 2) / 2)
@@ -392,7 +395,7 @@ final class NotebookAtlasGraphView: NSView {
             if progress >= 1 { self.flight = nil }
         }
         needsDisplay = true
-        if heat <= 0.003 && dragged == nil && flight == nil { link.invalidate(); self.link = nil }
+        if heat <= 0.003 && dragged == nil && flight == nil { link?.invalidate(); link = nil }
     }
     /// One step: links pull alike places together, every point pushes its near neighbours away, and each is drawn
     /// gently back to where the atlas put it.

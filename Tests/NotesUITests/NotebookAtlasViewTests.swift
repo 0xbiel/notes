@@ -131,7 +131,15 @@ final class NotebookAtlasInteractionTests: XCTestCase {
         }
         send(.leftMouseUp, at: NSPoint(x: start.x + offset.dx, y: start.y + offset.dy), in: window)
     }
-    @MainActor private func settle(_ seconds: Double = 0.3) async throws { try await Task.sleep(for: .seconds(seconds)) }
+    @MainActor private func settle(_ seconds: Double = 0.3, graph: NotebookAtlasGraphView? = nil) async throws {
+        // Offscreen windows do not receive CADisplayLink callbacks. Advance the real
+        // simulation and camera code while allowing SwiftUI updates to run.
+        let deadline = ProcessInfo.processInfo.systemUptime + seconds
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(for: .milliseconds(16))
+            graph?.advanceFrame()
+        }
+    }
     /// A point that is shown and clear of the panels laid over the graph.
     @MainActor private func clearPoint(_ graph: NotebookAtlasGraphView, _ window: NSWindow) throws -> Int {
         let height = try XCTUnwrap(window.contentView).bounds.height
@@ -170,7 +178,7 @@ final class NotebookAtlasInteractionTests: XCTestCase {
         let moved = spot(index, graph)
         XCTAssertEqual(moved.x, start.x + 150, accuracy: 6, "the point did not follow the pointer")
         XCTAssertEqual(moved.y, start.y + 90, accuracy: 6)
-        try await settle(0.5)
+        try await settle(0.5, graph: graph)
         let after = graph.nodes[neighbour].position
         XCTAssertGreaterThan(hypot(after.x - neighbourBefore.x, after.y - neighbourBefore.y), 1, "its neighbour stayed put")
         XCTAssertNil(model.selectedNote, "dragging a point opened it")
@@ -203,7 +211,7 @@ final class NotebookAtlasInteractionTests: XCTestCase {
         // The first row of the region panel: its name, then its colour square to the left.
         let row = NSPoint(x: 150, y: height - 112), square = NSPoint(x: 37, y: height - 108)
         send(.leftMouseDown, at: row, in: window); send(.leftMouseUp, at: row, in: window)
-        try await settle(1)
+        try await settle(1, graph: graph)
         let members = graph.nodes.filter { $0.region == 0 }
         let middle = CGPoint(x: members.map(\.position.x).reduce(0, +) / CGFloat(members.count), y: members.map(\.position.y).reduce(0, +) / CGFloat(members.count))
         XCTAssertLessThan(hypot(graph.centre.x - middle.x, graph.centre.y - middle.y), 60, "picking the region did not fly to it")
