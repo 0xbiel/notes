@@ -38,3 +38,43 @@ struct NotebookGlassCloseSurface: ViewModifier {
         } else { content.modifier(NotebookInputSurface(radius: 100)) }
     }
 }
+
+/// Solid inset controls keep the composer's outer glass surface visually distinct.
+struct NotebookSolidButtonStyle: ButtonStyle {
+    var tint: Color? = nil
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isEnabled) private var isEnabled
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(isEnabled ? 1 : 0.4)
+            .modifier(NotebookSolidControlSurface(tint: tint))
+            .overlay(Capsule().fill(.black.opacity(configuration.isPressed ? 0.08 : 0)))
+            .contentShape(Capsule())
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: configuration.isPressed)
+    }
+}
+
+struct NotebookSolidControlSurface: ViewModifier {
+    var tint: Color? = nil
+    @Environment(\.colorScheme) private var colorScheme
+    func body(content: Content) -> some View {
+        content.background(tint ?? Color(white: colorScheme == .dark ? 0.26 : 0.88), in: Capsule())
+    }
+}
+
+/// The chat disclosure sits outside the composer so its glass samples the document.
+struct NotebookChatPillStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    func makeBody(configuration: Configuration) -> some View {
+        Group {
+            if #available(macOS 26.0, *), !reduceTransparency {
+                configuration.label.glassEffect(.regular.interactive(), in: .capsule)
+            } else {
+                configuration.label.modifier(NotebookInputSurface(radius: 100, floating: true))
+            }
+        }
+        .scaleEffect(configuration.isPressed ? 0.97 : 1)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: configuration.isPressed)
+    }
+}

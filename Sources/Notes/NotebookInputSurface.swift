@@ -5,16 +5,33 @@ struct NotebookInputSurface: ViewModifier {
     var floating = false
     var opaque = false
     var borderOpacity: Double = 0.35
+    var fillOpacity: Double = 0
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         content.background {
-            let shape = RoundedRectangle(cornerRadius: radius)
-            if opaque || reduceTransparency { shape.fill(Color(nsColor: .controlBackgroundColor)) }
-            else if floating { shape.fill(.ultraThinMaterial) }
-            else { shape.fill(Color.primary.opacity(0.045)) }
+            if opaque || reduceTransparency {
+                shape.fill(Color(nsColor: .controlBackgroundColor))
+            } else if !floating {
+                shape.fill(Color.primary.opacity(0.045))
+            } else if #available(macOS 26.0, *) {
+                shape.fill(.clear)
+                    .glassEffect(.regular, in: .rect(cornerRadius: radius))
+                    .overlay(shape.fill(Color(nsColor: .controlBackgroundColor).opacity(fillOpacity)))
+            } else {
+                shape.fill(.regularMaterial)
+                    .overlay(shape.fill(Color(nsColor: .controlBackgroundColor).opacity(fillOpacity)))
+            }
         }
-        .overlay(RoundedRectangle(cornerRadius: radius).strokeBorder(.separator.opacity(borderOpacity), lineWidth: 1))
-        .shadow(color: .black.opacity(floating ? 0.08 : 0), radius: 12, y: 4)
+        .overlay {
+            if !floating { shape.strokeBorder(.separator.opacity(borderOpacity), lineWidth: 1) }
+            else if borderOpacity > 0 { shape.strokeBorder(
+            LinearGradient(colors: [.white.opacity(reduceTransparency ? 0 : 0.22),
+                                    .primary.opacity(borderOpacity * 0.16),
+                                    .white.opacity(reduceTransparency ? 0 : 0.07)],
+                           startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1) }
+        }
+        .shadow(color: .black.opacity(floating ? 0.14 : 0), radius: 18, y: 6)
     }
 }
 

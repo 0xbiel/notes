@@ -5,6 +5,8 @@ public struct Notebook: Codable, Identifiable, Equatable, Sendable {
     public var name: String
     public var rootPrefix: String
     public var archivedAt: Date? = nil
+    /// Named preset from `NotebookColor`; nil follows the neutral default.
+    public var color: String? = nil
     public init(id: String = UUID().uuidString, name: String, rootPrefix: String) {
         self.id = id; self.name = name; self.rootPrefix = rootPrefix
     }

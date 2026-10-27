@@ -30,7 +30,7 @@ struct AIReasoningSelector: View {
                 Text(label(selection))
                 Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
             }.font(.callout).padding(.horizontal, 9).frame(height: 34)
-                .modifier(NotebookInputSurface(radius: 7))
+                .modifier(NotebookSolidControlSurface())
         }.buttonStyle(.plain).accessibilityLabel(title).accessibilityValue(label(selection) + (fast ? " · Fast" : ""))
             .popover(isPresented: $presented, arrowEdge: .bottom) {
                 VStack(spacing: 8) {

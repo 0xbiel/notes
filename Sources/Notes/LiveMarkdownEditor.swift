@@ -1069,6 +1069,10 @@ struct LiveMarkdownEditor: NSViewRepresentable {
                 } else { storage.addAttribute(key, value: value, range: match.range(at: 1)) }
                 hide(NSRange(location: match.range.location, length: count), context: match.range)
                 hide(NSRange(location: NSMaxRange(match.range) - count, length: count), context: match.range)
+                // Mask consumed markers so nested emphasis such as `**a *b***` still finds its inner pair.
+                let mask = String(repeating: "\u{1}", count: count)
+                formatSource.replaceCharacters(in: NSRange(location: match.range.location, length: count), with: mask)
+                formatSource.replaceCharacters(in: NSRange(location: NSMaxRange(match.range) - count, length: count), with: mask)
             }
         }
         for span in InlineUnderline.spans(in: string, excluding: codeRanges) {
