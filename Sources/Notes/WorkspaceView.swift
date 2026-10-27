@@ -13,6 +13,10 @@ struct WorkbenchView: View {
     @State private var preferencesSection: NotebookPreferencesSection = .general
 
     private let sidebarWidth = CompactLayout.sidebarWidth
+    /// The compact sidebar floats over the document, so the title bar starts past it.
+    private var titleBarInset: CGFloat {
+        chrome.compact && chrome.sidebarVisible ? sidebarWidth + CompactLayout.horizontalInset - 8 : 0
+    }
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -22,9 +26,9 @@ struct WorkbenchView: View {
                     if model.mapVisible {
                         // The atlas carries its own title bar.
                     } else if model.selectedNote == nil && model.selectedFile == nil, let assistant = model.assistant {
-                        NotebookChatTitleBar(model: model, assistant: assistant)
+                        NotebookChatTitleBar(model: model, assistant: assistant, leadingInset: titleBarInset)
                     } else {
-                        WorkspaceTitleBar(model: model)
+                        WorkspaceTitleBar(model: model, leadingInset: titleBarInset)
                     }
                     NoteWorkspace(model: model)
                     if model.assistant == nil {
@@ -146,42 +150,161 @@ struct WorkbenchView: View {
 struct NotebookChatTitleBar: View {
     @ObservedObject var model: Workbench
     @ObservedObject var assistant: NotebookAssistantController
+    var leadingInset: CGFloat = 0
     var body: some View {
-        if !assistant.isEmptyChat(model.currentNotebook) {
-            WorkspaceTitleBar(model: model)
-        }
+        WorkspaceTitleBar(model: model, leadingInset: leadingInset)
     }
 }
 
 struct WorkspaceTitleBar: View {
     @ObservedObject var model: Workbench
+    var leadingInset: CGFloat = 0
     private var notebookName: String { model.currentNotebook.name }
+    @State private var actionsPresented = false
+    @AppStorage("notes.language") private var language = "es"
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
+            HStack(spacing: 4) {
                 noteLocation
                 Spacer(minLength: 8)
-                if let path = model.selectedNote ?? model.selectedFile {
-                    DocumentFileActions(model: model, path: path)
+                if model.selectedLibraryPath != nil {
+                    Button { model.hideStudyComposer.toggle() } label: {
+                        Image(systemName: model.hideStudyComposer ? "bubble.left" : "bubble.left.fill")
+                            .font(.system(size: 14, weight: .medium))
+                            .frame(width: 30, height: 30)
+                            .contentShape(RoundedRectangle(cornerRadius: 8))
+                            .modifier(ControlHoverBackground(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(language == "en" ? (model.hideStudyComposer ? "Show assistant" : "Hide assistant") : (model.hideStudyComposer ? "Mostrar asistente" : "Ocultar asistente"))
+                    .accessibilityIdentifier("notebook.toggleAssistant")
+                    .help(language == "en" ? (model.hideStudyComposer ? "Show assistant" : "Hide assistant") : (model.hideStudyComposer ? "Mostrar asistente" : "Ocultar asistente"))
                 }
-                if model.selectedNote != nil { NoteToolbar(model: model) }
-                else if let file = model.selectedFile {
-                    if NotebookPracticeTest.isPracticeTest(file) { NotebookPracticeLayoutSelector() }
-                    NotebookAssistantToggle(model: model)
-                } else if model.maps != nil { NotebookAtlasButton(model: model) }
+                Button { actionsPresented.toggle() } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 14, weight: .medium))
+                        .frame(width: 30, height: 30)
+                        .contentShape(RoundedRectangle(cornerRadius: 8))
+                        .modifier(ControlHoverBackground(cornerRadius: 8))
+                        .background(actionsPresented ? Color.primary.opacity(0.06) : .clear, in: RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(language == "en" ? "Workspace actions" : "Acciones del espacio de trabajo")
+                .accessibilityIdentifier("workspace.toggleActions")
+                .accessibilityAddTraits(actionsPresented ? .isSelected : [])
+                .help(language == "en" ? "Show workspace actions" : "Mostrar acciones del espacio de trabajo")
+                .popover(isPresented: $actionsPresented, arrowEdge: .bottom) { actionsPanel }
+                if model.selectedNote != nil { NoteModeSelector(model: model).padding(.leading, 4) }
             }
-            .padding(.horizontal, 18).frame(height: 58)
-            .background(WindowDragRegion())
+            .padding(.leading, 12 + leadingInset).padding(.trailing, 14).frame(height: 48)
+            .modifier(WindowDragArea())
             Divider().opacity(0.4)
         }.accessibilityElement(children: .contain).accessibilityIdentifier("workspace.titleBar")
     }
 
+    private var actionsPanel: some View {
+        let en = language == "en"
+        return VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(notebookName).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                Text(documentBreadcrumb ?? (en ? "Notebook home" : "Inicio del cuaderno"))
+                    .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            }.padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 8)
+            if let path = model.selectedNote ?? model.selectedFile {
+                panelSection(en ? "Document" : "Documento") {
+                    DocumentFileActions(model: model, path: path, vertical: true)
+                    if model.selectedNote != nil {
+                        Menu { NoteOptionsMenuItems(model: model) } label: {
+                            Label(en ? "Note options" : "Opciones de la nota", systemImage: "ellipsis.circle")
+                        }.menuStyle(.button).menuIndicator(.hidden)
+                            .accessibilityIdentifier("document.noteOptions")
+                    }
+                }
+            }
+            if let file = model.selectedFile, NotebookPracticeTest.isPracticeTest(file) {
+                panelSection(en ? "View" : "Vista") {
+                    NotebookPracticeLayoutSelector().padding(.horizontal, 6).padding(.vertical, 4)
+                }
+            }
+            panelSection(en ? "Notebook" : "Cuaderno") {
+                Button { model.notebookCheckpointSelection = nil; model.showNotebookManagement = true; actionsPresented = false } label: {
+                    Label(en ? "Manage notebook" : "Gestionar cuaderno", systemImage: "slider.horizontal.3")
+                }
+                NotebookColorMenu(model: model, notebook: model.currentNotebook).menuStyle(.button).menuIndicator(.hidden)
+                if model.maps != nil {
+                    Button { model.toggleMap(); actionsPresented = false } label: {
+                        Label(en ? "Notebook map" : "Mapa del cuaderno", systemImage: "circle.hexagongrid")
+                    }.accessibilityIdentifier("notebook.openMap")
+                }
+            }
+        }
+        .font(.system(size: 13))
+        .labelStyle(WorkspacePanelLabelStyle())
+        .buttonStyle(WorkspacePanelButtonStyle())
+        .foregroundStyle(.primary)
+        .padding(6).padding(.bottom, 2).frame(width: 280)
+        .onExitCommand { actionsPresented = false }
+    }
+
+    private func panelSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Divider().padding(.horizontal, 6).padding(.bottom, 6)
+            Text(title).font(.system(size: 11, weight: .medium)).foregroundStyle(.tertiary)
+                .padding(.horizontal, 12).padding(.bottom, 2)
+            content()
+        }.padding(.bottom, 6)
+    }
+
+    private var documentBreadcrumb: String? {
+        guard let path = model.selectedLibraryPath else { return nil }
+        let prefix = model.currentNotebook.rootPrefix.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let relative = !prefix.isEmpty && path.hasPrefix(prefix + "/")
+            ? String(path.dropFirst(prefix.count + 1)) : path
+        var components = relative.components(separatedBy: "/").filter { !$0.isEmpty }
+        if let filename = components.last {
+            components[components.count - 1] = URL(fileURLWithPath: filename).deletingPathExtension().lastPathComponent
+        }
+        return components.joined(separator: " / ")
+    }
+
+    private var breadcrumbComponents: [String] {
+        documentBreadcrumb?.components(separatedBy: " / ") ?? []
+    }
+
     private var noteLocation: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(model.selectedLibraryPath.map { URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent } ?? notebookName)
-                .font(.system(size: 13, weight: .medium)).lineLimit(1)
-            if model.selectedLibraryPath != nil { Text(notebookName).font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
-        }.frame(minWidth: 100, alignment: .leading)
+        HStack(spacing: 4) {
+            Button {
+                model.expandNotebookChat()
+                model.showMap = false
+                actionsPresented = false
+            } label: {
+                HStack(spacing: 6) {
+                    Circle().fill(NotebookColor.color(for: model.currentNotebook) ?? Color.secondary.opacity(0.6))
+                        .frame(width: 8, height: 8)
+                    Text(notebookName)
+                        .foregroundStyle(documentBreadcrumb == nil ? .primary : .secondary)
+                        .lineLimit(1).truncationMode(.tail)
+                }
+                    .fixedSize(horizontal: documentBreadcrumb != nil && notebookName.count <= 24, vertical: false)
+                    .padding(.horizontal, 6).padding(.vertical, 5)
+                    .contentShape(RoundedRectangle(cornerRadius: 6))
+                    .modifier(ControlHoverBackground(cornerRadius: 6))
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("workspace.notebookHome")
+            .help(language == "en" ? "Back to notebook home" : "Volver al inicio del cuaderno")
+            let parts = breadcrumbComponents
+            ForEach(Array(parts.enumerated()), id: \.offset) { index, part in
+                Text("/").foregroundStyle(.tertiary)
+                Text(part).lineLimit(1).truncationMode(.middle)
+                    .foregroundStyle(index == parts.count - 1 ? .primary : .secondary)
+                    .layoutPriority(index == parts.count - 1 ? 2 : 1)
+            }
+        }
+        .font(.system(size: 13, weight: .medium))
+        .frame(minWidth: 100, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .help([notebookName, documentBreadcrumb].compactMap { $0 }.joined(separator: " / "))
     }
 
 }
@@ -189,9 +312,11 @@ struct WorkspaceTitleBar: View {
 struct DocumentFileActions: View {
     @ObservedObject var model: Workbench
     let path: String
+    var vertical = false
     @AppStorage("notes.language") private var language = "es"
     var body: some View {
-        HStack(spacing: 14) {
+        let layout = vertical ? AnyLayout(VStackLayout(alignment: .leading, spacing: 0)) : AnyLayout(HStackLayout(spacing: 14))
+        layout {
             Button { model.printSelectedDocument() } label: {
                 Label(language == "en" ? "Print" : "Imprimir", systemImage: "printer")
             }.disabled(!model.canPrintDocument).accessibilityIdentifier("document.print")
@@ -212,78 +337,92 @@ struct DocumentFileActions: View {
             } label: {
                 Label(language == "en" ? "Show in Finder" : "Mostrar en Finder", systemImage: "folder")
             }.accessibilityIdentifier("document.showInFinder")
-        }.buttonStyle(.plain).font(.caption).foregroundStyle(.secondary).fixedSize()
+        }.buttonStyle(WorkspacePanelButtonStyle()).font(.system(size: 13)).foregroundStyle(vertical ? .primary : .secondary)
+            .fixedSize(horizontal: !vertical, vertical: true)
     }
 }
 
-struct NoteToolbar: View {
+/// Custom because AppKit segmented controls don't receive clicks inside the hidden title bar.
+/// Tuned to the macOS 26 segmented control: the glass thumb lifts on press, tracks the pointer, then settles.
+struct NoteModeSelector: View {
     @ObservedObject var model: Workbench
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Namespace private var selectionAnimation
+    @State private var dragOffset: CGFloat?
+    @State private var pressed = false
+    private let segment: CGFloat = 56
+    private let modes = [("Editar", "edit"), ("Ver", "preview")]
+    private var restingOffset: CGFloat { model.layout == "preview" ? segment : 0 }
+    private var thumbOffset: CGFloat { dragOffset ?? restingOffset }
+    private var hovered: String { thumbOffset < segment / 2 ? "edit" : "preview" }
+
     var body: some View {
-        controls.fixedSize().accessibilityElement(children: .contain)
-    }
-    private var modeSelector: some View {
-        HStack(spacing: 2) {
-            modeButton("Editar", value: "edit")
-            modeButton("Ver", value: "preview")
-        }.padding(4)
-            .background(.primary.opacity(0.045), in: Capsule())
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Modo de la nota")
-            .help("Editar o ver la nota · ⌘E")
-    }
-    private func modeButton(_ title: String, value: String) -> some View {
-        Button { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { model.layout = value } } label: {
-            Text(LocalizedStringKey(title)).font(.system(size: 13, weight: model.layout == value ? .semibold : .regular))
-                .foregroundStyle(model.layout == value ? .primary : .secondary)
-                .frame(width: 64, height: 30)
-                .background {
-                    if model.layout == value {
-                        if #available(macOS 26.0, *), !reduceTransparency {
-                            Capsule().fill(.clear).glassEffect(.regular.interactive(), in: .capsule)
-                                .matchedGeometryEffect(id: "note-mode", in: selectionAnimation)
-                        } else {
-                            Capsule().fill(Color(nsColor: .controlBackgroundColor))
-                                .overlay(Capsule().stroke(.separator.opacity(0.5)))
-                        }
-                    }
+        ZStack(alignment: .leading) {
+            thumb
+                .frame(width: segment, height: 26)
+                .scaleEffect(pressed ? 1.08 : 1)
+                .offset(x: thumbOffset)
+            HStack(spacing: 0) {
+                ForEach(modes, id: \.1) { title, value in
+                    Text(LocalizedStringKey(title)).font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(hovered == value ? .primary : .secondary)
+                        .frame(width: segment, height: 26)
+                        .accessibilityAddTraits(model.layout == value ? .isSelected : [])
                 }
-                .contentShape(Capsule())
-        }.buttonStyle(.plain)
-            .accessibilityLabel(title)
-            .accessibilityAddTraits(model.layout == value ? .isSelected : [])
+            }.allowsHitTesting(false)
+        }
+        .padding(2)
+        .background(.primary.opacity(0.06), in: Capsule())
+        .contentShape(Capsule())
+        .gesture(DragGesture(minimumDistance: 0).onChanged { drag in
+            if !pressed { animate { pressed = true } }
+            // Small moves are treated as a click; the thumb only tracks once the pointer travels.
+            guard abs(drag.translation.width) > 3 else { return }
+            dragOffset = min(max(drag.location.x - 2 - segment / 2, 0), segment)
+        }.onEnded { drag in
+            let target = abs(drag.translation.width) > 3 ? hovered : (drag.location.x < segment + 2 ? "edit" : "preview")
+            animate { model.layout = target; dragOffset = nil; pressed = false }
+        })
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Modo de la nota")
+        .accessibilityValue(model.layout == "edit" ? "Editar" : "Ver")
+        .accessibilityAdjustableAction { _ in animate { model.layout = model.layout == "edit" ? "preview" : "edit" } }
+        .help("Editar o ver la nota · ⌘E")
     }
-    private var controls: some View {
-        HStack(spacing: 7) {
-                modeSelector
-                NotebookAssistantToggle(model: model)
-                Menu {
-                        Button("Marcar/desmarcar tarea") { NSApp.sendAction(#selector(MarkdownTextView.toggleMarkdownTask(_:)), to: nil, from: nil) }.keyboardShortcut("l", modifiers: [.command, .shift])
-                    Section("Formato") {
-                        Button("Negrita") { NSApp.sendAction(#selector(MarkdownTextView.toggleMarkdownBold(_:)), to: nil, from: nil) }.keyboardShortcut("b")
-                        Button("Cursiva") { NSApp.sendAction(#selector(MarkdownTextView.toggleMarkdownItalic(_:)), to: nil, from: nil) }.keyboardShortcut("i")
-                        Button("Código en línea") { NSApp.sendAction(#selector(MarkdownTextView.toggleMarkdownCode(_:)), to: nil, from: nil) }.keyboardShortcut("k", modifiers: [.command, .shift])
-                    }.disabled(model.layout != "edit" || model.selectedNote == nil)
-                    Button("Insertar tabla…") { NSApp.sendAction(#selector(MarkdownTextView.insertMarkdownTable(_:)), to: nil, from: nil) }.disabled(model.layout != "edit" || model.selectedNote == nil)
-                    Divider()
-                    Button("Deshacer edición guardada") { model.undoEditor() }
-                        .disabled(model.isDirty || model.editor?.history.contains(where: { !$0.undone && $0.superseded != true }) != true)
-                    Divider()
-                    Button("Nueva nota") { model.creationInitialName = ""; model.creationKind = "nota" }
-                    Button("Nuevo documento LaTeX") { model.creationInitialName = ""; model.creationKind = "latex" }
-                    Button("Nueva carpeta") { model.creationInitialName = ""; model.creationKind = "carpeta" }
-                    Button("Nuevo cuaderno") { model.creationInitialName = ""; model.creationKind = "cuaderno" }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .frame(width: 34, height: 34)
-                        .contentShape(Rectangle())
-                        .modifier(ControlHoverBackground())
-                }.menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
-                    .accessibilityLabel("Opciones de la nota").accessibilityIdentifier("document.noteOptions")
-                    .help("Opciones de la nota")
-        }.labelStyle(.iconOnly).buttonStyle(.plain).padding(.horizontal, 12).padding(.vertical, 7)
+
+    @ViewBuilder private var thumb: some View {
+        if #available(macOS 26.0, *), !reduceTransparency {
+            Capsule().fill(.clear).glassEffect(pressed ? .clear.interactive() : .regular.interactive(), in: .capsule)
+                .shadow(color: .black.opacity(pressed ? 0.12 : 0.06), radius: pressed ? 6 : 2, y: 1)
+        } else {
+            Capsule().fill(Color(nsColor: .controlBackgroundColor))
+                .shadow(color: .black.opacity(0.1), radius: 1.5, y: 0.5)
+        }
+    }
+
+    private func animate(_ change: () -> Void) {
+        withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.86), change)
+    }
+}
+
+struct NoteOptionsMenuItems: View {
+    @ObservedObject var model: Workbench
+    var body: some View {
+        Button("Marcar/desmarcar tarea") { NSApp.sendAction(#selector(MarkdownTextView.toggleMarkdownTask(_:)), to: nil, from: nil) }.keyboardShortcut("l", modifiers: [.command, .shift])
+        Section("Formato") {
+            Button("Negrita") { NSApp.sendAction(#selector(MarkdownTextView.toggleMarkdownBold(_:)), to: nil, from: nil) }.keyboardShortcut("b")
+            Button("Cursiva") { NSApp.sendAction(#selector(MarkdownTextView.toggleMarkdownItalic(_:)), to: nil, from: nil) }.keyboardShortcut("i")
+            Button("Código en línea") { NSApp.sendAction(#selector(MarkdownTextView.toggleMarkdownCode(_:)), to: nil, from: nil) }.keyboardShortcut("k", modifiers: [.command, .shift])
+        }.disabled(model.layout != "edit" || model.selectedNote == nil)
+        Button("Insertar tabla…") { NSApp.sendAction(#selector(MarkdownTextView.insertMarkdownTable(_:)), to: nil, from: nil) }.disabled(model.layout != "edit" || model.selectedNote == nil)
+        Divider()
+        Button("Deshacer edición guardada") { model.undoEditor() }
+            .disabled(model.isDirty || model.editor?.history.contains(where: { !$0.undone && $0.superseded != true }) != true)
+        Divider()
+        Button("Nueva nota") { model.creationInitialName = ""; model.creationKind = "nota" }
+        Button("Nuevo documento LaTeX") { model.creationInitialName = ""; model.creationKind = "latex" }
+        Button("Nueva carpeta") { model.creationInitialName = ""; model.creationKind = "carpeta" }
+        Button("Nuevo cuaderno") { model.creationInitialName = ""; model.creationKind = "cuaderno" }
     }
 }
 
@@ -325,7 +464,7 @@ struct CourseSidebar: View {
                     } label: {
                         Button { model.openNotebook(notebook.id) } label: {
                             HStack(spacing: 9) {
-                                Image(systemName: "book.closed.fill").foregroundStyle(.secondary).frame(width: 18, height: 20, alignment: .center)
+                                Image(systemName: "book.closed.fill").foregroundStyle(NotebookColor.color(for: notebook).map(AnyShapeStyle.init) ?? AnyShapeStyle(.secondary)).frame(width: 18, height: 20, alignment: .center)
                                 Text(notebook.name).font(.callout.weight(.semibold))
                                     .lineLimit(2).truncationMode(.tail).fixedSize(horizontal: false, vertical: true)
                                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -346,6 +485,7 @@ struct CourseSidebar: View {
                             FolderImportOptions(model: model, notebookID: notebook.id)
                             Divider()
                             Button(UserDefaults.standard.string(forKey: "notes.language") == "en" ? "Rename…" : "Renombrar…") { model.renamingItem = .notebook(notebook.id) }.disabled(!model.canManageFiles)
+                            NotebookColorMenu(model: model, notebook: notebook)
                             Button("Copiar cuaderno") { model.copyLibraryItem(.notebook(notebook.id)) }.disabled(!model.canManageFiles)
                             Button("Pegar") { model.pasteLibraryItems(into: notebook.rootPrefix, notebookID: notebook.id) }.disabled(!model.canManageFiles)
                             Divider()
@@ -561,8 +701,8 @@ struct ListeningDock: View {
     }
     private var controls: some View {
         HStack(spacing: 4) {
-            Button { model.notebookCheckpointSelection = nil; model.showNotebookManagement = true } label: { Image(systemName: "slider.horizontal.3").frame(width: 30, height: 32) }
-                .buttonStyle(.plain).help("Gestionar cuaderno").accessibilityLabel("Gestionar cuaderno").accessibilityIdentifier("notebook.manage")
+            Button { model.notebookCheckpointSelection = nil; model.showNotebookManagement = true } label: { Image(systemName: "slider.horizontal.3").frame(width: 34, height: 34) }
+                .buttonStyle(NotebookSolidButtonStyle()).help("Gestionar cuaderno").accessibilityLabel("Gestionar cuaderno").accessibilityIdentifier("notebook.manage")
             if let media = model.media { MicrophoneButton(model: model, media: media, compact: embedded) }
 
         }.padding(embedded ? 0 : 6)
@@ -674,10 +814,11 @@ struct MicrophoneButton: View {
                 if media.busy && !media.isRecording { ProgressView().controlSize(.small) }
                 else { Image(systemName: media.isRecording ? "stop.fill" : "mic.fill") }
                 if !compact { Text(media.isRecording ? (language == "en" ? "Stop dictation" : "Detener dictado") : (language == "en" ? "Dictate" : "Dictar")) }
-            }.padding(.horizontal, 12).padding(.vertical, 8)
+            }.padding(.horizontal, compact ? 0 : 12).padding(.vertical, compact ? 0 : 8)
+                .frame(minWidth: 34, minHeight: 34)
         }.accessibilityLabel(media.isRecording ? (language == "en" ? "Stop dictation" : "Detener dictado") : (language == "en" ? "Dictate into chat" : "Dictar en el chat"))
             .accessibilityIdentifier("notebook.dictation")
-            .buttonStyle(.plain).foregroundStyle(media.isRecording ? Color.red : Color.primary)
+            .buttonStyle(NotebookSolidButtonStyle()).foregroundStyle(media.isRecording ? Color.red : Color.primary)
             .disabled(!media.isRecording && (media.busy || model.busy || media.modelOperation != nil))
             .help(language == "en" ? "Dictate into the message box. Review before sending." : "Dicta en el cuadro de mensaje. Revísalo antes de enviar.")
     }
@@ -767,5 +908,27 @@ private struct RecordingOnlyDock: View {
     @ObservedObject var media: MediaController
     var body: some View {
         if media.isRecording { HStack { Spacer(); ListeningDock(model: model) }.padding(12) }
+    }
+}
+
+/// Full-width rows mirror the compact utility panel in T3 Code.
+struct WorkspacePanelLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 10) {
+            configuration.icon.foregroundStyle(.secondary).frame(width: 20)
+            configuration.title.lineLimit(1)
+            Spacer(minLength: 10)
+        }
+    }
+}
+
+struct WorkspacePanelButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
+            .padding(.horizontal, 8)
+            .background(configuration.isPressed ? Color.primary.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 8))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
+            .modifier(ControlHoverBackground())
     }
 }

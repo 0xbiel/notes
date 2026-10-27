@@ -15,7 +15,7 @@ struct AIModelSelector: View {
                 Text(preferences.selectedModel?.name ?? preferences.draft.selected.model).lineLimit(1)
                 Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
             }.font(.callout).padding(.horizontal, 10).frame(height: 34)
-                .modifier(NotebookInputSurface(radius: 7))
+                .modifier(NotebookSolidControlSurface())
         }.buttonStyle(.plain).accessibilityIdentifier("general.ai.model")
             .accessibilityLabel(language == "en" ? "Choose provider and model" : "Elegir proveedor y modelo")
             .popover(isPresented: $isPresented, arrowEdge: .bottom) {

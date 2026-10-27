@@ -264,6 +264,12 @@ extension Workbench {
         try workspace.writeStorage("notebooks.json", data: JSONEncoder().encode(updated))
         notebooks = updated
     }
+    func setNotebookColor(_ id: String, color: String?) throws {
+        guard let workspace, let i = notebooks.firstIndex(where: { $0.id == id }) else { throw ReplayError.conflict }
+        var updated = notebooks; updated[i].color = color
+        try workspace.writeStorage("notebooks.json", data: JSONEncoder().encode(updated))
+        notebooks = updated
+    }
     func renameLibraryFolder(_ path: String, name: String) throws { try renameLibraryItem(path, name: name, folder: true) }
     func renameLibraryFile(_ path: String, name: String) throws { try renameLibraryItem(path, name: name, folder: false) }
     private func renameLibraryItem(_ path: String, name: String, folder: Bool) throws {

@@ -7,6 +7,7 @@ struct NotebookContextMeter: View {
     @ObservedObject var ai: AIController
     let notebook: Notebook
     var webEnabled = true
+    var expandedLabel = false
     @AppStorage("notes.language") private var language = "es"
     private var english: Bool { language == "en" }
     private var configuration: AIProviderConfiguration { ai.providerSettings.selected }
@@ -26,6 +27,11 @@ struct NotebookContextMeter: View {
             : metrics?.fraction
         let compacting = assistant.isCompacting(notebook)
         Button { presented.wrappedValue.toggle() } label: {
+            if expandedLabel {
+                ComposerOptionRow(title: english ? "Context usage" : "Uso del contexto",
+                                  detail: fraction.map { "\(Int($0 * 100))% " + (english ? "used" : "utilizado") } ?? (english ? "View conversation context" : "Ver contexto de la conversación"),
+                                  symbol: "chart.pie")
+            } else {
             ZStack {
                 Circle().stroke(.secondary.opacity(0.2), lineWidth: 2.5)
                 if compacting { ProgressView().controlSize(.mini) }
@@ -35,8 +41,9 @@ struct NotebookContextMeter: View {
                         .rotationEffect(.degrees(-90))
                 }
             }.frame(width: 17, height: 17).frame(width: 28, height: 28)
+            }
         }
-        .buttonStyle(.plain).disabled(key == nil)
+        .buttonStyle(ContextMeterButtonStyle(expanded: expandedLabel)).disabled(key == nil)
         .help(english ? "Context window" : "Ventana de contexto")
         .accessibilityLabel(english ? "Context window" : "Ventana de contexto")
         .accessibilityIdentifier("notebook.contextMeter")
@@ -89,5 +96,13 @@ struct NotebookContextMeter: View {
                 }
             }.font(.caption).padding(16).frame(width: 300)
         }
+    }
+}
+
+private struct ContextMeterButtonStyle: ButtonStyle {
+    let expanded: Bool
+    func makeBody(configuration: Configuration) -> some View {
+        if expanded { WorkspacePanelButtonStyle().makeBody(configuration: configuration) }
+        else { configuration.label }
     }
 }

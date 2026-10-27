@@ -24,6 +24,7 @@ struct NeutralSidebarSelection: NSViewRepresentable {
         var sidebarFocused = false
         private(set) var selectionOverlay: SelectionOverlay?
         private var pointerMonitor: Any?
+        private var styleObservation: NSKeyValueObservation?
         // Pointer state, driven by the library pointer extension.
         var pointer = NotebookPointerReorder()
         var press: LibraryPointerPress?
@@ -46,6 +47,13 @@ struct NeutralSidebarSelection: NSViewRepresentable {
             }
             guard let table else { return }
             table.selectionHighlightStyle = .none
+            if styleObservation == nil {
+                // SwiftUI restores the native source-list highlight when it re-renders the List
+                // (hovering any control triggers that), which flashes over our overlay.
+                styleObservation = table.observe(\.selectionHighlightStyle) { table, _ in
+                    if table.selectionHighlightStyle != .none { table.selectionHighlightStyle = .none }
+                }
+            }
             if let outline = table as? NSOutlineView {
                 outline.indentationPerLevel = 18
                 outline.indentationMarkerFollowsCell = true
@@ -112,7 +120,11 @@ struct NeutralSidebarSelection: NSViewRepresentable {
             overlay.frame = table.bounds
             overlay.lineColor = accent
             overlay.selectionColor = sidebarFocused && table.window?.isKeyWindow == true
-                ? accent.withAlphaComponent(0.28) : NSColor.labelColor.withAlphaComponent(0.09)
+                ? accent.withAlphaComponent(0.28) : NSColor(name: nil) { appearance in
+                    // Matches the system's neutral source-list selection grey in each appearance.
+                    appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                        ? NSColor.labelColor.withAlphaComponent(0.09) : NSColor.black.withAlphaComponent(0.13)
+                }
             overlay.needsDisplay = true
         }
         func disconnect() {
@@ -122,6 +134,7 @@ struct NeutralSidebarSelection: NSViewRepresentable {
             pointerMonitor = nil
             cancelPointer()
             selectionOverlay?.removeFromSuperview(); selectionOverlay = nil
+            styleObservation = nil
             monitor = nil; observers = []; table = nil
         }
     }

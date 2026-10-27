@@ -165,6 +165,18 @@ final class ChromeWindowView: NSView {
     }
 }
 
+/// Window dragging for bars that host hover controls. The AppKit drag view underneath
+/// makes SwiftUI hover tracking flicker, so newer systems use the native SwiftUI gesture.
+struct WindowDragArea: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.contentShape(Rectangle()).gesture(WindowDragGesture()).allowsWindowActivationEvents(true)
+        } else {
+            content.background(WindowDragRegion())
+        }
+    }
+}
+
 struct WindowDragRegion: NSViewRepresentable {
     func makeNSView(context: Context) -> DragView { DragView() }
     func updateNSView(_ nsView: DragView, context: Context) {}

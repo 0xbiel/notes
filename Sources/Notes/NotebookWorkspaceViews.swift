@@ -409,6 +409,7 @@ struct NotebookComposer: View {
     var large = false
     @State private var showConversation = false
     @State private var choosingAttachments = false
+    @State private var showOptions = false
     @State private var dropTargeted = false
     @AppStorage("notes.alwaysSteer") private var alwaysSteer = false
     @AppStorage("notes.accent") private var accent = ""
@@ -428,6 +429,28 @@ struct NotebookComposer: View {
         VStack(spacing: 8) {
             if !assistant.queued(notebook).isEmpty {
                 NotebookPromptQueue(model: model, assistant: assistant, notebook: notebook)
+            }
+            if !large {
+                HStack {
+                    Spacer()
+                    Button { showConversation.toggle() } label: {
+                        HStack(spacing: 7) {
+                            Image(systemName: "bubble.left.and.bubble.right")
+                            Text("Chat")
+                            Image(systemName: showConversation ? "chevron.down" : "chevron.up")
+                                .font(.system(size: 9, weight: .semibold))
+                        }
+                        .font(.system(size: 12, weight: .medium))
+                        .padding(.horizontal, 13).frame(height: 30)
+                        .contentShape(Capsule())
+                    }
+                    .buttonStyle(NotebookChatPillStyle())
+                    .accessibilityIdentifier("notebook.showChat")
+                    .accessibilityLabel(language == "en" ? "Toggle chat" : "Mostrar u ocultar chat")
+                    .accessibilityValue(language == "en" ? (showConversation ? "Expanded" : "Collapsed") : (showConversation ? "Expandido" : "Contraído"))
+                    .help(language == "en" ? (showConversation ? "Collapse chat" : "Expand chat") : (showConversation ? "Contraer chat" : "Expandir chat"))
+                    Spacer()
+                }.padding(.horizontal, 8)
             }
             if !large && showConversation {
                 NotebookFloatingChat(model: model, assistant: assistant, onClose: { showConversation = false })
@@ -457,40 +480,52 @@ struct NotebookComposer: View {
                     .background(NotebookAttachmentPasteTarget { assistant.pasteAttachments($0, notebook: notebook) })
                     .accessibilityLabel(language == "en" ? "Notebook assistant prompt" : "Mensaje al asistente del cuaderno")
                     .accessibilityIdentifier("notebook.composer")
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    Button { showOptions.toggle() } label: { Image(systemName: "plus").frame(width: 30, height: 30) }
+                        .buttonStyle(NotebookSolidButtonStyle()).foregroundStyle(.secondary)
+                        .accessibilityLabel(language == "en" ? "Message options" : "Opciones del mensaje")
+                        .popover(isPresented: $showOptions, arrowEdge: .bottom) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(language == "en" ? "Message" : "Mensaje")
+                                    .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                                    .padding(.horizontal, 10).padding(.vertical, 6)
+                                Button { showOptions = false; choosingAttachments = true } label: {
+                                    ComposerOptionRow(title: language == "en" ? "Attach files" : "Adjuntar archivos",
+                                                      detail: language == "en" ? "Images, PDFs, and documents" : "Imágenes, PDF y documentos", symbol: "paperclip")
+                                }.disabled(assistant.importingAttachments).accessibilityIdentifier("notebook.attachFiles")
+                                if let ai = model.ai {
+                                    NotebookContextMeter(assistant: assistant, ai: ai, notebook: notebook, webEnabled: model.notebookWebEnabled, expandedLabel: true)
+                                }
+                                Divider().padding(.vertical, 6)
+                                Text(language == "en" ? "Notebook" : "Cuaderno")
+                                    .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                                    .padding(.horizontal, 10).padding(.vertical, 6)
+                                Button { showOptions = false; model.notebookCheckpointSelection = nil; model.showNotebookManagement = true } label: {
+                                    ComposerOptionRow(title: language == "en" ? "Notebook settings" : "Ajustes del cuaderno",
+                                                      detail: language == "en" ? "Sources and instructions" : "Fuentes e instrucciones", symbol: "slider.horizontal.3")
+                                }.accessibilityIdentifier("notebook.manage")
+                            }.buttonStyle(WorkspacePanelButtonStyle())
+                                .padding(8).frame(width: 280)
+                                .onExitCommand { showOptions = false }
+                        }
                     if let ai = model.ai { NotebookModelControls(ai: ai, disabled: running) { model.showPreferences = true } }
                     Spacer(minLength: 4)
-                    if let ai = model.ai {
-                        NotebookContextMeter(assistant: assistant, ai: ai, notebook: notebook, webEnabled: model.notebookWebEnabled)
-                    }
-                    Button { choosingAttachments = true } label: { Image(systemName: "paperclip").frame(width: 28, height: 28) }
-                        .buttonStyle(.plain).foregroundStyle(.secondary)
-                        .disabled(assistant.importingAttachments)
-                        .accessibilityLabel(language == "en" ? "Attach files" : "Adjuntar archivos")
-                        .accessibilityIdentifier("notebook.attachFiles")
-                    ListeningDock(model: model, embedded: true)
-                    if !large {
-                        Button { showConversation.toggle() } label: { Image(systemName: showConversation ? "bubble.left.and.bubble.right.fill" : "bubble.left.and.bubble.right").frame(width: 28, height: 28) }
-                            .buttonStyle(.plain).help(language == "en" ? "Toggle chat" : "Mostrar u ocultar chat").accessibilityLabel(language == "en" ? "Toggle chat" : "Mostrar u ocultar chat")
-                            .foregroundStyle(.secondary)
-                            .accessibilityAddTraits(showConversation ? .isSelected : [])
-                            .accessibilityIdentifier("notebook.showChat")
-                    }
+                    if let media = model.media { MicrophoneButton(model: model, media: media, compact: true) }
                     Button {
                         if showsStop { assistant.stop(notebook: notebook) } else { model.submitNotebookPrompt() }
                     } label: {
                         Image(systemName: showsStop ? "stop.fill" : (running && alwaysSteer ? "arrow.turn.up.right" : "arrow.up"))
                             .font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
-                            .frame(width: 30, height: 30).background(NotebookAccent.color(accent), in: Circle())
-                    }.buttonStyle(.plain)
+                            .frame(width: 34, height: 34)
+                    }.buttonStyle(NotebookSolidButtonStyle(tint: NotebookAccent.color(accent)))
                         .disabled(!showsStop && (model.dictationActive || !hasInput || assistant.importingAttachments))
                         .help(sendLabel)
                         .accessibilityLabel(sendLabel)
                         .accessibilityIdentifier("notebook.send")
                 }
             }.padding(large ? 18 : 12)
-                .modifier(NotebookInputSurface(radius: large ? 22 : 18, floating: !large, opaque: !large, borderOpacity: 0.6))
-                .overlay(RoundedRectangle(cornerRadius: large ? 22 : 18).stroke(dropTargeted ? NotebookAccent.color(accent) : .clear, lineWidth: 2))
+                .modifier(NotebookInputSurface(radius: 26, floating: true, borderOpacity: 0, fillOpacity: 0.5))
+                .overlay(RoundedRectangle(cornerRadius: 26).stroke(dropTargeted ? NotebookAccent.color(accent) : .clear, lineWidth: 2))
                 .dropDestination(for: URL.self) { urls, _ in
                     guard !assistant.importingAttachments, !urls.isEmpty else { return false }
                     assistant.importAttachments(urls, notebook: notebook); return true
@@ -568,7 +603,7 @@ struct NotebookModelControls: View {
     var body: some View {
         ViewThatFits {
             HStack(spacing: 4) { selector; reasoning }
-            selector
+            VStack(alignment: .leading, spacing: 4) { selector; reasoning }
         }.controlSize(.small).disabled(disabled || ai.running)
             .onChange(of: preferences.draft) { _, _ in if preferences.hasChanges { preferences.save() } }
             .onChange(of: ai.providerSettings) { old, new in if preferences.draft == old { preferences.draft = new } }
@@ -740,5 +775,25 @@ private struct ChatDictationStatus: View {
                     .accessibilityLabel(language == "en" ? "Dismiss dictation error" : "Cerrar error de dictado")
             }
         }
+    }
+}
+
+struct ComposerOptionRow: View {
+    let title: String
+    var detail: String? = nil
+    let symbol: String
+    var selected = false
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: symbol).font(.system(size: 14)).foregroundStyle(.secondary)
+                .frame(width: 30, height: 30)
+                .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.system(size: 13))
+                if let detail { Text(detail).font(.system(size: 11)).foregroundStyle(.secondary) }
+            }
+            Spacer(minLength: 4)
+            if selected { Image(systemName: "checkmark").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary) }
+        }.padding(.vertical, 5)
     }
 }
