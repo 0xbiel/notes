@@ -94,6 +94,14 @@ final class ChatRenderingTests: XCTestCase {
         XCTAssertEqual(NotebookAssistantText.display("Consultando BOE · Art. 1", language: "en"), "Looking up BOE · Art. 1")
     }
 
+    func testProviderSetupErrorsFollowEnglishSettingAndPreserveDetails() {
+        XCTAssertEqual(NotebookAssistantText.display("Versión de OpenCode no verificada (1.19.5); comprueba el transporte antes de enviar contenido.", language: "en"), "Unverified OpenCode version (1.19.5); check the transport before sending content.")
+        XCTAssertEqual(NotebookAssistantText.display("OpenCode no ofrece el transporte JSON requerido. Actualiza su instalación en Preferencias.", language: "en"), "OpenCode does not provide the required JSON transport. Update its installation in Preferences.")
+        XCTAssertEqual(NotebookAssistantText.display("Falta el valor sensible de EXAMPLE_TOKEN. Introdúcelo de nuevo en Proveedores.", language: "en"), "Missing sensitive value for EXAMPLE_TOKEN. Enter it again in Providers.")
+        XCTAssertEqual(NotebookAssistantText.display("Prueba cancelada.", language: "en"), "Test cancelled")
+        XCTAssertEqual(NotebookAssistantText.display("Test cancelled", language: "es"), "Prueba cancelada.")
+    }
+
     func testProviderErrorsTranslateBothWaysAndPreserveHTTPStatus() {
         let rejection = "Antigravity intentó usar herramientas; respuesta rechazada."
         let english = "Antigravity tried to use tools; response rejected."

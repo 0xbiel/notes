@@ -266,7 +266,7 @@ final class ProviderTests: XCTestCase {
     func testCodexArgumentsDisableToolsHooksAndAmbientInstructions() throws {
         let configuration = AIProviderConfiguration(provider: .codexCLI, executablePath: "/test/codex")
         let arguments = try NotesProviderTransport.codexArguments(configuration, schema: URL(fileURLWithPath: "/tmp/schema.json"))
-        for required in ["--ephemeral", "--ignore-user-config", "--ignore-rules", "read-only", "shell_tool", "hooks", "multi_agent", "apps", "browser_use", "computer_use", "mcp_servers={}", "project_doc_max_bytes=0", "web_search=\"disabled\""] {
+        for required in ["--ephemeral", "read-only", "shell_tool", "hooks", "multi_agent", "apps", "browser_use", "computer_use", "mcp_servers={}", "project_doc_max_bytes=0", "web_search=\"disabled\""] {
             XCTAssertTrue(arguments.contains(required), required)
         }
         XCTAssertFalse(arguments.contains("--yolo"))

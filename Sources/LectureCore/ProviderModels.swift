@@ -126,6 +126,7 @@ public enum ProviderModelCatalog {
 extension NotesProviderTransport {
     public func models(_ configuration: AIProviderConfiguration) async throws -> [AIProviderModel] {
         try configuration.validate()
+        try await ProviderRuntime.shared.prepare(configuration)
         if configuration.provider == .openCode {
             _ = try await diagnose(configuration)
             return [.init(id: OpenRouterHarness.model, name: "OpenRouter Free", detail: "Router gratuito configurado en Palladium", isDefault: true)]

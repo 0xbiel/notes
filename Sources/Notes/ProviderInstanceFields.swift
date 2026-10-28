@@ -92,7 +92,7 @@ struct ProviderIdentityFields: View {
     }
 }
 
-/// The options T3 Code offers for each provider, in the same order.
+/// Account paths and launch options for an existing provider installation.
 struct ProviderRuntimeFields: View {
     @ObservedObject var preferences: ProviderPreferencesModel
     @AppStorage("notes.language") private var language = "es"
@@ -120,10 +120,13 @@ struct ProviderRuntimeFields: View {
         VStack(alignment: .leading, spacing: 14) {
             if provider == .antigravity { antigravityAccount }
             ProviderTextField(title: text("Ruta del ejecutable", "Binary path"), detail: binaryDetail, value: path(\.executablePath), identifier: "provider.executable", monospaced: true)
+            if provider != .openCode {
+                ProviderTextField(title: text("Panel de CLIProxyAPI (opcional)", "CLIProxyAPI dashboard (optional)"), detail: text("Para consultar los límites de las cuentas del proxy. Déjalo vacío para detectar el panel local predeterminado.", "Reads the proxy's account limits. Leave empty to detect the default local dashboard."), placeholder: "http://127.0.0.1:8318", value: preferences.option(\.proxyUsageURL), identifier: "provider.proxy-usage-url", monospaced: true)
+            }
             switch provider {
             case .codexCLI:
                 ProviderTextField(title: text("Ruta de CODEX_HOME", "CODEX_HOME path"), detail: text("Carpeta de configuración e inicio de sesión de Codex.", "Custom Codex home and config directory."), placeholder: "~/.codex", value: path(\.homePath), identifier: "provider.profile", monospaced: true)
-                ProviderTextField(title: text("Ruta de la cuenta (shadow home)", "Shadow home path"), detail: text("Carpeta de Codex propia de una cuenta. Mantiene su auth.json separado de CODEX_HOME.", "Account-specific Codex home. Keeps auth.json separate from CODEX_HOME."), placeholder: "~/.codex-t3/personal", value: shadowHome, identifier: "provider.shadow-home", monospaced: true)
+                ProviderTextField(title: text("Ruta de la cuenta (shadow home)", "Shadow home path"), detail: text("Carpeta de Codex propia de una cuenta. Mantiene su auth.json separado de CODEX_HOME.", "Account-specific Codex home. Keeps auth.json separate from CODEX_HOME."), placeholder: "~/.codex-personal", value: shadowHome, identifier: "provider.shadow-home", monospaced: true)
                 launchArguments(placeholder: "--config model_verbosity=\"low\"", detail: text("Opciones --config, --enable y --disable adicionales. Las opciones de aislamiento de Palladium tienen prioridad.", "Extra --config, --enable and --disable options. Palladium's isolation options take precedence."))
             case .claudeCode:
                 ProviderTextField(title: text("Ruta de CLAUDE_CONFIG_DIR", "CLAUDE_CONFIG_DIR path"), detail: text("Carpeta de configuración de otra cuenta de Claude. Déjala vacía para usar la predeterminada.", "Custom Claude config directory for another account. Leave empty to use Claude Code's default."), placeholder: "~/.claude", value: path(\.homePath), identifier: "provider.profile", monospaced: true)
@@ -139,8 +142,19 @@ struct ProviderRuntimeFields: View {
                     .font(.callout).padding(.horizontal, 10).frame(height: 32)
                     .modifier(NotebookInputSurface(radius: 8))
             }.buttonStyle(.plain)
-            Text(text("Utiliza una instalación existente. Palladium no instala programas ni copia credenciales.", "Uses an existing installation. Palladium does not install software or copy credentials."))
-                .font(.caption).foregroundStyle(.secondary)
+            Button { preferences.chooseExecutable() } label: {
+                Label(text("Elegir ejecutable…", "Choose executable…"), systemImage: "folder")
+                    .font(.callout).padding(.horizontal, 10).frame(height: 32)
+                    .modifier(NotebookInputSurface(radius: 8))
+            }.buttonStyle(.plain).accessibilityIdentifier("provider.executable.choose")
+            if ProviderRuntime.supportsInstallation(provider), !ProviderRuntime.isManaged(preferences.draft.selected) {
+                Button { preferences.startRuntimeInstallation() } label: {
+                    Label(text("Configurar instalación en Palladium", "Set up an installation in Palladium"), systemImage: "arrow.down.circle")
+                        .font(.callout).foregroundStyle(.tint)
+                }.buttonStyle(.plain).accessibilityIdentifier("provider.runtime.use-managed")
+                Text(text("Descarga una instalación independiente y úsala para este proveedor.", "Download a separate installation and use it for this provider."))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }.font(.callout.weight(.regular))
     }
 

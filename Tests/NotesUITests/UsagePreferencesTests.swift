@@ -55,6 +55,12 @@ final class UsagePreferencesTests: XCTestCase {
             case .claudeCode:
                 value.plan = "pro"
                 value.windows = [.init(id: "five_hour", kind: .session, usedPercent: 28, resetsAt: Date().addingTimeInterval(22 * 60)), .init(id: "seven_day", kind: .weekly, usedPercent: 23, resetsAt: Date().addingTimeInterval(3 * day + 4 * 3_600))]
+            case .codexCLI:
+                value.source = "CLIProxyAPI"
+                value.accounts = [
+                    .init(id: "proxy-paid", name: "p•••@example.com", plan: "Prolite", windows: [.init(id: "proxy-paid-week", kind: .weekly, usedPercent: 14, resetsAt: Date().addingTimeInterval(6 * day))], checked: Date()),
+                    .init(id: "proxy-free", name: "Personal", plan: "Free", windows: [.init(id: "proxy-free-month", kind: .monthly, usedPercent: 0)], checked: Date().addingTimeInterval(-900), message: "Los límites guardados pueden estar desactualizados.")
+                ]
             case .antigravity:
                 value.windows = [.init(id: "gemini-5h", kind: .session, scope: "Gemini", usedPercent: 0, resetsAt: Date().addingTimeInterval(5 * 3_600)), .init(id: "3p-weekly", kind: .weekly, scope: "Claude & GPT", usedPercent: 97, resetsAt: Date().addingTimeInterval(6 * day))]
             default: value.message = "Este proveedor no publica límites para esta cuenta."

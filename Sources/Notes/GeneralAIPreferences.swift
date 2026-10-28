@@ -84,10 +84,10 @@ struct GeneralAIPreferences: View {
                 Label([text("Conexión verificada", "Connection verified"), result.model, String(format: "%.1f s", result.elapsedSeconds)].joined(separator: " · "), systemImage: "checkmark.circle.fill")
                     .font(.caption).foregroundStyle(.green).accessibilityIdentifier("general.ai.test.success")
             } else if preferences.connectionResultIsCurrent, let error = preferences.connectionError {
-                Label(error, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+                Label(NotebookAssistantText.display(error, language: language), systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange).textSelection(.enabled)
                     .accessibilityIdentifier("general.ai.test.error")
             }
-            if let error = preferences.error { Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
+            if let error = preferences.error { Text(NotebookAssistantText.display(error, language: language)).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
         }
         .onChange(of: preferences.draft) { _, _ in
             if preferences.hasChanges { preferences.save() }

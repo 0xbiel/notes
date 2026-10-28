@@ -11,46 +11,58 @@ struct LibraryPDFView: View {
             ContentUnavailableView(text("Unable to open PDF", "No se puede abrir el PDF"), systemImage: "doc.richtext")
         } else {
             VStack(spacing: 0) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 10) {
-                        Button { controller.zoom(by: 1 / 1.2) } label: { Image(systemName: "minus.magnifyingglass") }
-                            .accessibilityLabel(text("Zoom out", "Alejar"))
-                        TextField(text("Zoom percentage", "Porcentaje de zoom"), text: $controller.zoomText)
-                            .textFieldStyle(.plain).multilineTextAlignment(.trailing).frame(width: 48)
-                            .onSubmit { controller.commitZoom() }.accessibilityIdentifier("pdf.zoom")
-                        Text("%")
-                        Button { controller.zoom(by: 1.2) } label: { Image(systemName: "plus.magnifyingglass") }
-                            .accessibilityLabel(text("Zoom in", "Acercar"))
-                        Menu {
-                            ForEach([25, 50, 75, 100, 125, 150, 200, 400], id: \.self) { percent in
-                                Button("\(percent)%") { controller.setPercentage(Double(percent)) }
-                            }
-                        } label: { Image(systemName: "chevron.down") }.menuStyle(.borderlessButton).fixedSize()
-                            .accessibilityLabel(text("Zoom presets", "Opciones de zoom"))
-                        Button(text("Fit width", "Ajustar al ancho")) { controller.setFit(.width) }
-                            .foregroundStyle(controller.fit == .width ? .primary : .secondary).accessibilityIdentifier("pdf.fitWidth")
-                        Button(text("Fit height", "Ajustar al alto")) { controller.setFit(.height) }
-                            .foregroundStyle(controller.fit == .height ? .primary : .secondary).accessibilityIdentifier("pdf.fitHeight")
-                        Divider().frame(height: 18)
-                        Button { controller.go(to: controller.page - 1) } label: { Image(systemName: "chevron.left") }
-                            .disabled(controller.page <= 1).accessibilityLabel(text("Previous page", "Página anterior"))
-                        TextField(text("Page", "Página"), text: $controller.pageText)
-                            .textFieldStyle(.plain).multilineTextAlignment(.trailing).frame(width: 36)
-                            .onSubmit { controller.commitPage() }.accessibilityIdentifier("pdf.page")
-                        Text("/ \(controller.pageCount)").foregroundStyle(.secondary)
-                        Button { controller.go(to: controller.page + 1) } label: { Image(systemName: "chevron.right") }
-                            .disabled(controller.page >= controller.pageCount).accessibilityLabel(text("Next page", "Página siguiente"))
-                        Divider().frame(height: 18)
-                        Toggle(isOn: Binding(get: { controller.twoPages }, set: { controller.setTwoPages($0) })) {
-                            Label(text("Two pages", "Dos páginas"), systemImage: "book.pages")
-                        }.toggleStyle(.button).modifier(NotebookToggleAccent()).accessibilityIdentifier("pdf.twoPages")
-                    }.buttonStyle(.plain).font(.caption).padding(.horizontal, 12).padding(.vertical, 9)
-                }
+                HStack(spacing: 10) {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) { zoomControls }
+                    }
+                    Divider().frame(height: 18)
+                    pageControls.fixedSize()
+                }.buttonStyle(.plain).font(.caption).padding(.horizontal, 12).padding(.vertical, 9)
                 Divider().opacity(0.4)
                 LibraryPDFCanvas(controller: controller)
             }
         }
     }
+
+    private var pageControls: some View {
+        HStack(spacing: 10) {
+            Button { controller.go(to: controller.page - 1) } label: { Image(systemName: "chevron.left") }
+                .disabled(controller.page <= 1).accessibilityLabel(text("Previous page", "Página anterior"))
+                .help(text("Previous page (←)", "Página anterior (←)")).accessibilityIdentifier("pdf.previousPage")
+            TextField(text("Page", "Página"), text: $controller.pageText)
+                .textFieldStyle(.plain).multilineTextAlignment(.trailing).frame(width: 36)
+                .onSubmit { controller.commitPage() }.accessibilityIdentifier("pdf.page")
+            Text("/ \(controller.pageCount)").foregroundStyle(.secondary)
+            Button { controller.go(to: controller.page + 1) } label: { Image(systemName: "chevron.right") }
+                .disabled(controller.page >= controller.pageCount).accessibilityLabel(text("Next page", "Página siguiente"))
+                .help(text("Next page (→)", "Página siguiente (→)")).accessibilityIdentifier("pdf.nextPage")
+        }
+    }
+
+    @ViewBuilder private var zoomControls: some View {
+        Button { controller.zoom(by: 1 / 1.2) } label: { Image(systemName: "minus.magnifyingglass") }
+            .accessibilityLabel(text("Zoom out", "Alejar"))
+        TextField(text("Zoom percentage", "Porcentaje de zoom"), text: $controller.zoomText)
+            .textFieldStyle(.plain).multilineTextAlignment(.trailing).frame(width: 48)
+            .onSubmit { controller.commitZoom() }.accessibilityIdentifier("pdf.zoom")
+        Text("%")
+        Button { controller.zoom(by: 1.2) } label: { Image(systemName: "plus.magnifyingglass") }
+            .accessibilityLabel(text("Zoom in", "Acercar"))
+        Menu {
+            ForEach([25, 50, 75, 100, 125, 150, 200, 400], id: \.self) { percent in
+                Button("\(percent)%") { controller.setPercentage(Double(percent)) }
+            }
+        } label: { Image(systemName: "chevron.down") }.menuStyle(.borderlessButton).fixedSize()
+            .accessibilityLabel(text("Zoom presets", "Opciones de zoom"))
+        Button(text("Fit width", "Ajustar al ancho")) { controller.setFit(.width) }
+            .foregroundStyle(controller.fit == .width ? .primary : .secondary).accessibilityIdentifier("pdf.fitWidth")
+        Button(text("Fit height", "Ajustar al alto")) { controller.setFit(.height) }
+            .foregroundStyle(controller.fit == .height ? .primary : .secondary).accessibilityIdentifier("pdf.fitHeight")
+        Toggle(isOn: Binding(get: { controller.twoPages }, set: { controller.setTwoPages($0) })) {
+            Label(text("Two pages", "Dos páginas"), systemImage: "book.pages")
+        }.toggleStyle(.button).modifier(NotebookToggleAccent()).accessibilityIdentifier("pdf.twoPages")
+    }
+
 }
 
 @MainActor final class LibraryPDFController: NSObject, ObservableObject {
@@ -147,12 +159,50 @@ private struct LibraryPDFCanvas: NSViewRepresentable {
         view.controller = controller; controller.attach(view); return view
     }
     func updateNSView(_ view: LibraryPDFNativeView, context: Context) {}
+    static func dismantleNSView(_ view: LibraryPDFNativeView, coordinator: ()) { view.stopKeyMonitor() }
 }
 
 final class LibraryPDFNativeView: PDFView {
     weak var controller: LibraryPDFController?
     private var fittedSize = CGSize.zero
     private var initializedViewport = false
+    private var keyMonitor: Any?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        stopKeyMonitor()
+        guard window != nil else { return }
+        // PDFKit's inner document view can consume arrows before PDFView sees
+        // them, so intercept only events belonging to this focused preview.
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            let handled = MainActor.assumeIsolated { self?.handleNavigationEvent(event) ?? false }
+            return handled ? nil : event
+        }
+    }
+
+    func stopKeyMonitor() {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        keyMonitor = nil
+    }
+
+    func handleNavigationEvent(_ event: NSEvent) -> Bool {
+        guard let window, window.isKeyWindow, window.attachedSheet == nil, event.window === window,
+              let focused = window.firstResponder as? NSView, focused === self || focused.isDescendant(of: self) else { return false }
+        if let editor = focused as? NSTextView, editor.isEditable { return false }
+        return handlePageKey(event)
+    }
+
+    @discardableResult func handlePageKey(_ event: NSEvent) -> Bool {
+        guard event.type == .keyDown, event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
+              let controller, controller.pageCount > 0 else { return false }
+        switch event.keyCode {
+        case 123: controller.go(to: controller.page - 1)
+        case 124: controller.go(to: controller.page + 1)
+        default: return false
+        }
+        return true
+    }
+
     override func layout() {
         super.layout()
         if bounds.size != fittedSize {

@@ -6,6 +6,7 @@ struct ProviderModelList: View {
     @State private var query = ""
     @State private var customID = ""
     @State private var showCustom = false
+    @State private var refreshTask: Task<Void, Never>?
     @AppStorage("notes.language") private var language = "es"
     @AppStorage("notes.accent") private var accent = ""
     private func text(_ spanish: String, _ english: String) -> String { language == "en" ? english : spanish }
@@ -19,7 +20,13 @@ struct ProviderModelList: View {
                 Text(text("Modelos", "Models")).font(.headline)
                 Text("\(preferences.models.count)").font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                if preferences.checking { ProgressView().controlSize(.small) }
+                Button { refreshTask = Task { await preferences.checkInstallation() } } label: {
+                    if preferences.checkingProvider == preferences.draft.selectedProvider { ProgressView().controlSize(.small) }
+                    else { Image(systemName: "arrow.clockwise").foregroundStyle(.secondary) }
+                }.buttonStyle(.plain).frame(width: 28, height: 28).modifier(ControlHoverBackground())
+                    .disabled(preferences.checking || !ProviderRuntime.isInstalled(preferences.draft.selected) || !preferences.draft.selected.accountSendingAllowed)
+                    .help(text("Actualizar modelos", "Refresh models")).accessibilityLabel(text("Actualizar modelos", "Refresh models"))
+                    .accessibilityIdentifier("provider.check")
             }
             if preferences.draft.selectedProvider != .openCode {
                 Button { preferences.selectModel("default") } label: {
@@ -51,7 +58,7 @@ struct ProviderModelList: View {
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 .modifier(NotebookInputSurface(radius: 10, borderOpacity: 0.18))
             } else if !preferences.checking {
-                Text(text("Actualiza para cargar los modelos disponibles.", "Refresh to load available models.")).font(.callout).foregroundStyle(.secondary)
+                Text(ProviderRuntime.isInstalled(preferences.draft.selected) ? text("Actualiza para cargar los modelos disponibles.", "Refresh to load available models.") : text("Configura el proveedor para cargar sus modelos.", "Set up the provider to load its models.")).font(.callout).foregroundStyle(.secondary)
             }
             if preferences.draft.selectedProvider.supportsCustomModels {
                 DisclosureGroup(text("Añadir modelo personalizado", "Add custom model"), isExpanded: $showCustom) {
@@ -73,6 +80,7 @@ struct ProviderModelList: View {
             Text(text("Marca favoritos, oculta modelos o cambia su orden.", "Favorite, hide, or reorder models."))
                 .font(.caption).foregroundStyle(.secondary)
         }
+        .onDisappear { refreshTask?.cancel() }
         .onChange(of: preferences.draft.selectedProvider) { _, _ in query = ""; customID = ""; showCustom = false }
     }
 

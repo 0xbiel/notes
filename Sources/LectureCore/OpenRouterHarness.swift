@@ -27,11 +27,12 @@ final class NotesProcess: @unchecked Sendable {
     private var timedOut = false
     let timeoutInterval: TimeInterval
     var outputLimit: Int? = 2_000_000
+    var captureStandardError = false
     init(timeoutInterval: TimeInterval = ProviderRequestLimits.generation) { self.timeoutInterval = timeoutInterval }
     private func expire() { lock.lock(); timedOut = true; cancelled = true; process.stopProviderHelper(); lock.unlock() }
     func cancel() { lock.lock(); cancelled = true; process.stopProviderHelper(); lock.unlock() }
     func run(onLine: (@Sendable (Data) -> Void)? = nil) throws -> Data {
-        let output = Pipe(); process.standardOutput = output; process.standardError = FileHandle.nullDevice
+        let output = Pipe(); process.standardOutput = output; process.standardError = captureStandardError ? output : FileHandle.nullDevice
         lock.lock()
         if cancelled { lock.unlock(); throw CancellationError() }
         do { try process.run() } catch { lock.unlock(); throw error }
@@ -81,7 +82,6 @@ public struct OpenRouterHarness: Sendable {
     public let executablePath: String
     public let notebookEditing: Bool
     public let allowRetention: Bool
-    public static let supportedVersions = ["1.3.13", "1.18.35", "1.19.0"]
     /// The provider instance whose environment variables reach the CLI.
     var instance: AIProviderConfiguration? = nil
     init(store: LocalMediaStore, configuration: AIProviderConfiguration, notebookEditing: Bool = false) {
@@ -101,8 +101,11 @@ public struct OpenRouterHarness: Sendable {
         // permissions still remove tools, and a normal text reply ends at one.
         var agents: [String: Any] = [agent: ["mode": "primary", "model": model, "description": "Propuestas de apuntes sin herramientas", "permission": ["*": "deny"], "steps": 2, "prompt": notebookEditing ? NotebookAssistantProtocol.instructions : systemPrompt]]
         for name in auxiliaries { agents[name] = ["model": model, "permission": ["*": "deny"], "disable": true] }
-        let modelLimits = notebookEditing ? [:] : ["context": 200_000, "output": syntheticDemo ? 4096 : 1536]
-        return ["model": model, "small_model": model, "enabled_providers": ["openrouter"], "default_agent": agent, "share": "disabled", "permission": ["*": "deny"], "agent": agents, "mcp": [:], "provider": ["openrouter": ["whitelist": ["openrouter/free"], "models": ["openrouter/free": ["limit": modelLimits, "options": syntheticDemo ? ["provider": syntheticDemoPolicy, "reasoning": ["effort": "minimal", "exclude": true]] : ["provider": allowRetention && notebookEditing ? syntheticDemoPolicy : policy]]]]]]
+        var router: [String: Any] = ["options": syntheticDemo ? ["provider": syntheticDemoPolicy, "reasoning": ["effort": "minimal", "exclude": true]] : ["provider": allowRetention && notebookEditing ? syntheticDemoPolicy : policy]]
+        // A supplied limit requires both fields in current OpenCode releases.
+        // Notebook chat uses the model's default limits instead of an empty object.
+        if !notebookEditing { router["limit"] = ["context": 200_000, "output": syntheticDemo ? 4096 : 1536] }
+        return ["model": model, "small_model": model, "enabled_providers": ["openrouter"], "default_agent": agent, "share": "disabled", "permission": ["*": "deny"], "agent": agents, "mcp": [:], "provider": ["openrouter": ["whitelist": ["openrouter/free"], "models": ["openrouter/free": router]]]]
     }
     public static func verifyConfig(_ data: Data, syntheticDemo: Bool = false, notebookEditing: Bool = false, allowRetention: Bool = false) throws {
         guard let config = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -121,7 +124,7 @@ public struct OpenRouterHarness: Sendable {
               let providers = config["provider"] as? [String: [String: Any]], let provider = providers["openrouter"],
               provider["whitelist"] as? [String] == ["openrouter/free"],
               let models = provider["models"] as? [String: [String: Any]], let router = models["openrouter/free"],
-              let limit = router["limit"] as? [String: Int], (notebookEditing || limit["output"] == (syntheticDemo ? 4096 : 1536)),
+              (notebookEditing || (router["limit"] as? [String: Int])?["output"] == (syntheticDemo ? 4096 : 1536)),
               let options = router["options"] as? [String: Any], let actual = options["provider"] as? [String: Any],
               NSDictionary(dictionary: actual).isEqual(to: (syntheticDemo || (allowRetention && notebookEditing)) ? syntheticDemoPolicy : policy) else { throw MediaError.invalid("La ruta efectiva no conserva privacidad/precio cero; no se ha enviado contenido.") }
         // A managed configuration cannot silently substitute another endpoint,
@@ -161,9 +164,10 @@ public struct OpenRouterHarness: Sendable {
         env["OPENCODE_CONFIG_CONTENT"] = String(decoding: try JSONSerialization.data(withJSONObject: Self.config(syntheticDemo: syntheticDemo, notebookEditing: notebookEditing, allowRetention: allowRetention), options: [.sortedKeys]), as: UTF8.self)
         return (directory, env)
     }
-    private func invoke(_ args: [String], input: URL? = nil, syntheticDemo: Bool = false, progress: (@Sendable (NotebookProviderProgress) async -> Void)? = nil) async throws -> Data {
+    private func invoke(_ args: [String], input: URL? = nil, syntheticDemo: Bool = false, captureStandardError: Bool = false, progress: (@Sendable (NotebookProviderProgress) async -> Void)? = nil) async throws -> Data {
         let context = try environment(syntheticDemo: syntheticDemo); let command = NotesProcess(timeoutInterval: input == nil ? ProviderRequestLimits.diagnostic : ProviderRequestLimits.generation)
         if input != nil { command.outputLimit = nil }
+        command.captureStandardError = captureStandardError
         command.process.executableURL = URL(fileURLWithPath: executablePath)
         command.process.arguments = ["--pure"] + args; command.process.environment = context.variables
         command.process.currentDirectoryURL = context.directory
@@ -178,8 +182,12 @@ public struct OpenRouterHarness: Sendable {
     }
     public func prepare() async throws { try await prepare(syntheticDemo: false) }
     private func prepare(syntheticDemo: Bool) async throws {
-        let version = String(decoding: try await invoke(["--version"], syntheticDemo: syntheticDemo), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard Self.supportedVersions.contains(version) else { throw MediaError.invalid("Versión de OpenCode no verificada (\(version)); comprueba el transporte antes de enviar contenido.") }
+        // Managed installs follow upstream releases. Check the protocol we use,
+        // rather than rejecting every release absent from a static version list.
+        let help = String(decoding: try await invoke(["run", "--help"], syntheticDemo: syntheticDemo, captureStandardError: true), as: UTF8.self)
+        guard ["--format", "--agent", "--model", "--title"].allSatisfy(help.contains) else {
+            throw MediaError.invalid("OpenCode no ofrece el transporte JSON requerido. Actualiza su instalación en Preferencias.")
+        }
         let data = try await invoke(["debug", "config"], syntheticDemo: syntheticDemo)
         do { try Self.verifyConfig(data, syntheticDemo: syntheticDemo, notebookEditing: notebookEditing, allowRetention: allowRetention) }
         catch let error as MediaError { throw error }

@@ -11,6 +11,7 @@ public enum ProviderConnectionTest {
 
     public static func run(_ configuration: AIProviderConfiguration) async throws -> ProviderConnectionTestResult {
         try configuration.validate()
+        try await ProviderRuntime.shared.prepare(configuration)
         let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cache/notes-provider-tests/Connection-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root.appendingPathComponent("copied-course"), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: root) }
