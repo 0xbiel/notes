@@ -246,6 +246,7 @@ public enum NotebookAssistantProtocol {
 extension NotesProviderTransport {
     public func sendNotebook(_ request: NotebookTextRequest, configuration: AIProviderConfiguration, images: [NotebookInputImage] = [], progress: @escaping @Sendable (NotebookProviderProgress) async -> Void = { _ in }) async throws -> NotebookAssistantResponse {
         try configuration.validateSending()
+        try await ProviderRuntime.shared.prepare(configuration)
         let session = try request.chatID.flatMap { chatID in
             NotebookNativeSession.supports(configuration.provider)
                 ? try NotebookNativeSession(store: store, notebookID: request.notebook.id, chatID: chatID, configuration: configuration, webEnabled: request.webEnabled, language: request.language) : nil

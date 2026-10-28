@@ -2,6 +2,7 @@ import SwiftUI
 import LectureCore
 
 struct AISendControls: View {
+    @AppStorage("notes.language") private var language = "es"
     @ObservedObject var ai: AIController
     let job: MediaJob
     @Binding var selected: Set<String>
@@ -28,12 +29,13 @@ struct AISendControls: View {
                 .modifier(NotebookToggleAccent())
                 .font(.caption).disabled(job.syntheticFixture || job.asrQualityWarning != nil || (job.transcript.isEmpty && job.stage != .transcribing && job.stage != .recording))
             Text("Prepara propuestas aproximadamente cada 5 minutos, al terminar una frase. Adelanta el envío si hay mucho texto y espera hasta 7,5 minutos si hay poco. Incluye hasta dos fragmentos previos de contexto. Recibe la transcripción durante la grabación o desde archivos importados. Se desactiva al cerrar, ante un error o si Whisper repite frases.").font(.caption2).foregroundStyle(.secondary)
-            if let error = ai.error { Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
+            if let error = ai.error { Text(NotebookAssistantText.display(error, language: language)).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
         }.padding(12).modifier(NotebookInputSurface(radius: 12))
     }
 }
 
 struct AIReviewInspector: View {
+    @AppStorage("notes.language") private var language = "es"
     @ObservedObject var ai: AIController
     @ObservedObject var model: Workbench
     private var batches: [AIBatch] { ai.batches.filter { $0.syntheticDemoProvenance == nil && $0.notebookID == model.selectedNotebookID } }
@@ -53,7 +55,7 @@ struct AIReviewInspector: View {
                         Text("\(batch.providerConfiguration?.provider.title ?? NotesAIProvider.openCode.title) · \(batch.model)").font(.caption).foregroundStyle(.secondary)
                         if batch.syntheticDemoProvenance != nil { Text((batch.providerConfiguration.map { $0.provider != .openCode } ?? false) ? "Datos inventados · condiciones de la cuenta externa" : "Datos inventados · retención permitida · entrenamiento prohibido").font(.caption).foregroundStyle(.orange) }
                         Text("\(timestamp(batch.segments.first?.start ?? 0)) · \(batch.createdAt.formatted(date: .abbreviated, time: .shortened))").font(.caption2).foregroundStyle(.secondary)
-                        if let error = batch.error { Text(error).font(.caption).foregroundStyle(.orange) }
+                        if let error = batch.error { Text(NotebookAssistantText.display(error, language: language)).font(.caption).foregroundStyle(.orange) }
                         if [.failed, .interrupted, .cancelled].contains(batch.stage) { Button("Reintentar este lote") { ai.retry(batch.id) }.disabled(ai.running || batch.invalidatedByNotebook == true) }
                         ForEach(batch.decisions.filter { $0.resolution == nil }) { decision in AIProposalCard(ai: ai, model: model, batch: batch, decision: decision) }
                         let resolved = batch.decisions.filter { $0.resolution != nil }
@@ -70,6 +72,7 @@ struct AIReviewInspector: View {
 }
 
 struct AIProposalCard: View {
+    @AppStorage("notes.language") private var language = "es"
     @ObservedObject var ai: AIController
     @ObservedObject var model: Workbench
     let batch: AIBatch

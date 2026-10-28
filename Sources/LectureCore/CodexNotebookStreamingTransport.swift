@@ -16,6 +16,7 @@ struct CodexNotebookStreamingTransport {
             try Data(contentsOf: auth).write(to: target, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
         }
+        try CodexConnectionConfiguration.copy(configuration, to: home)
         return home
     }
 

@@ -310,40 +310,61 @@ struct UsagePreferences: View {
                     ProviderLogo(provider: provider.provider, size: 18)
                     Text(provider.name).font(.headline)
                     if let plan = provider.plan, !plan.isEmpty { Text(plan.capitalized).font(.caption).foregroundStyle(.secondary) }
+                    if let source = provider.source { Text(source).font(.caption).foregroundStyle(.secondary) }
                 }
-                if provider.windows.isEmpty {
-                    Text(NotebookAssistantText.display(provider.message ?? "", language: language)).font(.callout).foregroundStyle(.secondary)
+                if let message = provider.message {
+                    Text(NotebookAssistantText.display(message, language: language)).font(.callout).foregroundStyle(.secondary)
                         .padding(16).frame(maxWidth: .infinity, alignment: .leading).modifier(NotebookInputSurface(radius: 14, borderOpacity: 0.22))
                 }
-                ForEach(provider.windows) { window in
-                    HStack(spacing: 16) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(label(window)).font(.callout)
-                            HStack(alignment: .firstTextBaseline, spacing: 5) {
-                                Text("\(Int(window.leftPercent.rounded()))%").font(.system(size: 26, weight: .semibold)).monospacedDigit()
-                                Text(text("restante", "left")).font(.callout).foregroundStyle(.secondary)
-                            }
-                        }.frame(width: 170, alignment: .leading)
-                        VStack(alignment: .trailing, spacing: 6) {
-                            GeometryReader { geometry in
-                                ZStack(alignment: .leading) {
-                                    Capsule().fill(.primary.opacity(0.07))
-                                    Capsule().fill(color(provider.id)).frame(width: max(window.leftPercent > 0 ? 4 : 0, geometry.size.width * CGFloat(window.leftPercent / 100)))
-                                }
-                            }.frame(height: 8).accessibilityHidden(true)
-                            if let reset = window.resetsAt {
-                                Label(text("Se renueva en ", "Resets in ") + UsageFormat.countdown(to: reset), systemImage: "arrow.clockwise")
-                                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                                    .help(reset.formatted(.dateTime.weekday(.wide).month(.abbreviated).day().hour().minute().locale(Locale(identifier: language))))
-                            }
+                ForEach(provider.windows) { window in limitRow(window, providerID: provider.id) }
+                ForEach(provider.accounts) { account in
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "person.crop.circle").foregroundStyle(.secondary)
+                            Text(account.name).font(.callout.weight(.medium)).lineLimit(1).truncationMode(.middle)
+                            if let plan = account.plan { Text(plan.capitalized).font(.caption).foregroundStyle(.secondary) }
+                            Spacer(minLength: 0)
                         }
-                    }.padding(16).modifier(NotebookInputSurface(radius: 14, borderOpacity: 0.22))
-                        .accessibilityElement(children: .combine).accessibilityIdentifier("usage.limit." + provider.id + "." + window.id)
+                        if let message = account.message {
+                            Text(NotebookAssistantText.display(message, language: language)).font(.caption).foregroundStyle(.secondary)
+                        }
+                        ForEach(account.windows) { window in limitRow(window, providerID: provider.id) }
+                        if let checked = account.checked {
+                            Text(text("Comprobado: ", "Checked: ") + checked.formatted(.dateTime.month(.abbreviated).day().hour().minute().locale(Locale(identifier: language))))
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }.padding(.top, 6).accessibilityIdentifier("usage.account." + provider.id + "." + account.id)
                 }
             }
         }
-        Text(text("Son los límites de tu cuenta, tal como los publica cada proveedor: incluyen el uso fuera de Palladium. Claude Code y Codex responden desde su propia CLI sin enviar ninguna petición al modelo; Antigravity se consulta con la sesión de Google de su perfil.", "These are your account's limits as each provider reports them, so they include usage outside Palladium. Claude Code and Codex answer from their own CLI without a model request; Antigravity is asked with its profile's Google session."))
+        Text(text("Son los límites de tu cuenta, tal como los publica cada proveedor: incluyen el uso fuera de Palladium. Las conexiones de CLIProxyAPI muestran cada cuenta por separado, sin sumar porcentajes. Las conexiones directas de Claude Code y Codex consultan su CLI sin peticiones al modelo; Antigravity usa la sesión de Google de su perfil.", "These are your account's limits as each provider reports them, so they include usage outside Palladium. CLIProxyAPI connections show each account separately, without adding percentages. Direct Claude Code and Codex connections query their CLI without model requests; Antigravity uses its profile's Google session."))
             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func limitRow(_ window: ProviderLimitWindow, providerID: String) -> some View {
+        HStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label(window)).font(.callout)
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Text("\(Int(window.leftPercent.rounded()))%").font(.system(size: 26, weight: .semibold)).monospacedDigit()
+                    Text(text("restante", "left")).font(.callout).foregroundStyle(.secondary)
+                }
+            }.frame(width: 170, alignment: .leading)
+            VStack(alignment: .trailing, spacing: 6) {
+                GeometryReader { geometry in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(.primary.opacity(0.07))
+                        Capsule().fill(color(providerID)).frame(width: max(window.leftPercent > 0 ? 4 : 0, geometry.size.width * CGFloat(window.leftPercent / 100)))
+                    }
+                }.frame(height: 8).accessibilityHidden(true)
+                if let reset = window.resetsAt {
+                    Label(text("Se renueva en ", "Resets in ") + UsageFormat.countdown(to: reset), systemImage: "arrow.clockwise")
+                        .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                        .help(reset.formatted(.dateTime.weekday(.wide).month(.abbreviated).day().hour().minute().locale(Locale(identifier: language))))
+                }
+            }
+        }.padding(16).modifier(NotebookInputSurface(radius: 14, borderOpacity: 0.22))
+            .accessibilityElement(children: .combine).accessibilityIdentifier("usage.limit." + providerID + "." + window.id)
     }
 
     private func tokenTypes(_ summary: ProviderUsageSummary) -> some View {

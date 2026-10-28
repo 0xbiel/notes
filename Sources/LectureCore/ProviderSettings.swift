@@ -64,6 +64,8 @@ public struct AIProviderConfiguration: Codable, Equatable, Sendable {
     public var authMethod: String? = nil
     public var gcpProject: String? = nil
     public var gcpLocation: String? = nil
+    /// Optional CLIProxyAPI dashboard URL, for account-pool quota reporting.
+    public var proxyUsageURL: String? = nil
 
     public init(provider: NotesAIProvider, executablePath: String, model: String = "default", homePath: String = "", harnessPath: String = "", accountSendingAllowed: Bool = true) {
         self.provider = provider; self.executablePath = executablePath; self.model = model
@@ -107,6 +109,11 @@ public struct AIProviderConfiguration: Codable, Equatable, Sendable {
                 throw MediaError.invalid("Proyecto o región de Google Cloud inválidos.")
             }
         }
+        if let proxyUsageURL, !proxyUsageURL.isEmpty {
+            guard provider != .openCode, CLIProxyAccountLimits.dashboardURL(proxyUsageURL) != nil else {
+                throw MediaError.invalid("Usa una URL HTTPS o una URL HTTP local para el panel de CLIProxyAPI, sin credenciales ni parámetros.")
+            }
+        }
         try ProviderEnvironment.validate(environment ?? [])
         _ = try ProviderLaunchArguments.resolve(self)
     }
@@ -140,17 +147,11 @@ public struct AIProviderSettings: Codable, Equatable, Sendable {
     public var modelPreferences: [String: AIProviderModelPreferences]? = nil
 
     public init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
-        let tools = home.appendingPathComponent(".t3/tools")
-        let codex = Self.latestExecutable(in: tools.appendingPathComponent("codex"), suffix: "bin/codex") ?? "/opt/homebrew/bin/codex"
-        let gravityRoot = tools.appendingPathComponent("antigravity-acp/darwin-arm64/versions")
-        let gravity = Self.latestExecutable(in: gravityRoot, suffix: "agy_acp_server.par") ?? "/opt/homebrew/bin/antigravity-acp"
-        let profileRoot = home.appendingPathComponent(".t3/userdata/providers/antigravity")
-        let profiles = (try? FileManager.default.contentsOfDirectory(at: profileRoot, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
-        let profile = profiles.count == 1 ? profiles[0].path : ""
-        let claudeCandidates = [home.appendingPathComponent(".local/bin/claude").path, "/opt/homebrew/bin/claude", "/usr/local/bin/claude"]
-        let claude = claudeCandidates.first { FileManager.default.isExecutableFile(atPath: $0) } ?? claudeCandidates[0]
-        openCode = .init(provider: .openCode, executablePath: "/opt/homebrew/bin/opencode", model: OpenRouterHarness.model)
-        codexCLI = .init(provider: .codexCLI, executablePath: codex, homePath: home.appendingPathComponent(".codex").path)
+        openCode = .init(provider: .openCode, executablePath: ProviderRuntime.executable(.openCode, home: home), model: OpenRouterHarness.model)
+        codexCLI = .init(provider: .codexCLI, executablePath: ProviderRuntime.executable(.codexCLI, home: home), homePath: home.appendingPathComponent(".codex").path)
+        let claude = ProviderRuntime.executable(.claudeCode, home: home)
+        let gravity = ProviderRuntime.executable(.antigravity, home: home)
+        let profile = home.appendingPathComponent(".gemini").path
         // An empty config directory keeps Claude Code's own default and login.
         claudeCode = .init(provider: .claudeCode, executablePath: claude)
         antigravity = .init(provider: .antigravity, executablePath: gravity, homePath: profile, harnessPath: URL(fileURLWithPath: gravity).deletingLastPathComponent().appendingPathComponent("localharness_external").path)
@@ -166,6 +167,12 @@ public struct AIProviderSettings: Codable, Equatable, Sendable {
         codexCLI = try values.decode(AIProviderConfiguration.self, forKey: .codexCLI)
         claudeCode = try values.decodeIfPresent(AIProviderConfiguration.self, forKey: .claudeCode) ?? defaults.claudeCode
         antigravity = try values.decode(AIProviderConfiguration.self, forKey: .antigravity)
+        // Older detection assigned a managed path even though ACP installation
+        // is manual. Repair only that generated path using the chosen harness.
+        if ProviderRuntime.isManaged(antigravity), !ProviderRuntime.isInstalled(antigravity),
+           !antigravity.harnessPath.isEmpty, let binary = ProviderRuntime.detectedExecutable(for: antigravity) {
+            antigravity.executablePath = binary
+        }
         modelPreferences = try values.decodeIfPresent([String: AIProviderModelPreferences].self, forKey: .modelPreferences)
         // Antigravity models used to be listed once per thinking level; they are now one model with levels.
         if let variant = ProviderModelCatalog.antigravityVariant(antigravity.model) {
@@ -182,12 +189,6 @@ public struct AIProviderSettings: Codable, Equatable, Sendable {
             options.hidden.removeAll { ProviderModelCatalog.antigravityVariant($0) != nil }
             modelPreferences?[NotesAIProvider.antigravity.rawValue] = options
         }
-    }
-
-    private static func latestExecutable(in root: URL, suffix: String) -> String? {
-        let folders = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
-        return folders.sorted { $0.lastPathComponent.compare($1.lastPathComponent, options: .numeric) == .orderedDescending }
-            .map { $0.appendingPathComponent(suffix).path }.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
     public var selected: AIProviderConfiguration {

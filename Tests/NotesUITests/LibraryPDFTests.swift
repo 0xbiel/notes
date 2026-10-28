@@ -1,6 +1,7 @@
 import XCTest
 import AppKit
 import PDFKit
+import SwiftUI
 @testable import Notes
 
 final class LibraryPDFTests: XCTestCase {
@@ -43,9 +44,72 @@ final class LibraryPDFTests: XCTestCase {
         XCTAssertEqual(view.scaleFactor, (700 - 24) / size.height, accuracy: 0.001)
         controller.setTwoPages(false); XCTAssertEqual(view.displayMode, .singlePageContinuous)
     }
+    @MainActor func testArrowKeysTurnFocusedPDFPagesAndLeaveTextEditingAlone() throws {
+        _ = NSApplication.shared
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".pdf")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let document = PDFDocument()
+        for _ in 0..<3 {
+            let image = NSImage(size: CGSize(width: 300, height: 400), flipped: false) { rect in NSColor.white.setFill(); rect.fill(); return true }
+            document.insert(try XCTUnwrap(PDFPage(image: image)), at: document.pageCount)
+        }
+        XCTAssertTrue(document.write(to: url))
+        if let output = ProcessInfo.processInfo.environment["NOTES_PDF_TOOLBAR_SCREENSHOT"] {
+            let host = NSHostingView(rootView: LibraryPDFView(url: url).frame(width: 420, height: 500))
+            host.frame = NSRect(x: 0, y: 0, width: 420, height: 500)
+            host.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: output))
+        }
+        let controller = LibraryPDFController(url: url)
+        let view = LibraryPDFNativeView(frame: NSRect(x: 0, y: 0, width: 600, height: 500))
+        view.controller = controller; controller.attach(view)
+        let window = PDFKeyboardTestWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        container.addSubview(view); window.contentView = container
+        defer { view.stopKeyMonitor(); window.close() }
+        view.layoutSubtreeIfNeeded()
+        XCTAssertTrue(window.makeFirstResponder(view))
+        func key(_ code: UInt16, modifiers: NSEvent.ModifierFlags = []) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: code))
+        }
+        XCTAssertTrue(view.handleNavigationEvent(try key(124)))
+        XCTAssertEqual(controller.page, 2)
+        XCTAssertTrue(view.handleNavigationEvent(try key(124)))
+        XCTAssertEqual(controller.page, 3)
+        XCTAssertTrue(view.handleNavigationEvent(try key(124)))
+        XCTAssertEqual(controller.page, 3)
+        XCTAssertTrue(view.handleNavigationEvent(try key(123)))
+        XCTAssertEqual(controller.page, 2)
+        for modifier: NSEvent.ModifierFlags in [.shift, .command, .option, .control] {
+            XCTAssertFalse(view.handleNavigationEvent(try key(123, modifiers: modifier)))
+            XCTAssertEqual(controller.page, 2)
+        }
+        let editor = NSTextView(frame: NSRect(x: 0, y: 510, width: 600, height: 50))
+        container.addSubview(editor)
+        XCTAssertTrue(window.makeFirstResponder(editor))
+        XCTAssertFalse(view.handleNavigationEvent(try key(124)))
+        XCTAssertEqual(controller.page, 2)
+        // Editable PDF annotations also retain caret movement.
+        view.addSubview(editor)
+        XCTAssertTrue(window.makeFirstResponder(editor))
+        XCTAssertFalse(view.handleNavigationEvent(try key(124)))
+        XCTAssertEqual(controller.page, 2)
+        XCTAssertTrue(window.makeFirstResponder(view))
+        controller.go(to: 1)
+        XCTAssertTrue(view.handleNavigationEvent(try key(123)))
+        XCTAssertEqual(controller.page, 1)
+    }
+
     @MainActor func testInvalidPDFHasNoPages() {
         let controller = LibraryPDFController(url: URL(fileURLWithPath: "/nonexistent/palladium.pdf"))
         XCTAssertEqual(controller.pageCount, 0)
         controller.commitZoom(); controller.go(to: 1); controller.setFit(.height)
     }
+}
+
+@MainActor private final class PDFKeyboardTestWindow: NSWindow {
+    override var isKeyWindow: Bool { true }
 }

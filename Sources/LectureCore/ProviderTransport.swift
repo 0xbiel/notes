@@ -6,7 +6,8 @@ public struct NotesProviderTransport: Sendable {
 
     public func diagnose(_ configuration: AIProviderConfiguration) async throws -> AIProviderDiagnostic {
         try configuration.validate()
-        guard FileManager.default.isExecutableFile(atPath: configuration.executablePath) else { throw MediaError.invalid("No se encuentra el ejecutable. Selecciona una instalación existente; Palladium no instala proveedores.") }
+        try await ProviderRuntime.shared.prepare(configuration)
+        guard FileManager.default.isExecutableFile(atPath: configuration.executablePath) else { throw MediaError.invalid("No se encuentra el ejecutable. Prepara el proveedor en Preferencias.") }
         switch configuration.provider {
         case .openCode:
             let harness = OpenRouterHarness(store: store, configuration: configuration)
@@ -15,7 +16,7 @@ public struct NotesProviderTransport: Sendable {
         case .codexCLI:
             let version = String(decoding: try await invoke(configuration, arguments: ["--version"]), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             let help = String(decoding: try await invoke(configuration, arguments: ["exec", "--help"]), as: UTF8.self)
-            guard help.contains("--ignore-user-config"), help.contains("--ignore-rules"), help.contains("--ephemeral"), help.contains("--output-schema"), help.contains("--json") else { throw MediaError.invalid("Codex CLI no ofrece el transporte aislado requerido. Actualiza su instalación fuera de Palladium.") }
+            guard help.contains("--ephemeral"), help.contains("--output-schema"), help.contains("--json") else { throw MediaError.invalid("Codex CLI no ofrece el transporte aislado requerido. Actualiza su instalación en Preferencias.") }
             return .init(message: version + " · exec JSON disponible · no comprueba login ni envía texto", version: version.split(separator: " ").last.map(String.init))
         case .claudeCode:
             return try await ClaudeTextTransport(store: store, configuration: configuration).diagnose()
@@ -26,6 +27,7 @@ public struct NotesProviderTransport: Sendable {
 
     public func send(_ batch: AIBatch, configuration: AIProviderConfiguration, checked: @escaping @Sendable () async -> Void = {}) async throws -> AIBatch {
         try configuration.validateSending()
+        try await ProviderRuntime.shared.prepare(configuration)
         if configuration.provider == .openCode {
             let harness = OpenRouterHarness(store: store, configuration: configuration)
             if batch.syntheticDemoProvenance == SyntheticAIFixture.version { return try await harness.sendSyntheticDemo(batch, checked: checked) }
@@ -63,7 +65,12 @@ public struct NotesProviderTransport: Sendable {
         command.process.executableURL = URL(fileURLWithPath: configuration.executablePath)
         command.process.arguments = arguments
         command.process.currentDirectoryURL = directory ?? store.root
-        command.process.environment = try Self.codexEnvironment(configuration)
+        if configuration.provider == .codexCLI, input != nil, let directory {
+            let home = try CodexNotebookStreamingTransport.accountHome(configuration, in: directory)
+            command.process.environment = try Self.codexEnvironment(configuration, home: home.path)
+        } else {
+            command.process.environment = try Self.codexEnvironment(configuration)
+        }
         let reader = try input.map { try FileHandle(forReadingFrom: $0) }
         command.process.standardInput = reader ?? FileHandle.nullDevice
         defer { try? reader?.close() }
@@ -88,7 +95,7 @@ public struct NotesProviderTransport: Sendable {
 
     /// Launch arguments come first so the isolation options below prevail.
     public static func codexArguments(_ configuration: AIProviderConfiguration, schema: URL, instructions: String = OpenRouterHarness.systemPrompt, allowWebSearch: Bool = false) throws -> [String] {
-        var arguments = ["exec"] + (try ProviderLaunchArguments.resolve(configuration)) + ["--ephemeral", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check", "--sandbox", "read-only", "--json", "--color", "never", "--output-schema", schema.path,
+        var arguments = ["exec"] + (try ProviderLaunchArguments.resolve(configuration)) + ["--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "--json", "--color", "never", "--output-schema", schema.path,
                          "--config", "approval_policy=\"never\"", "--config", allowWebSearch ? "web_search=\"live\"" : "web_search=\"disabled\"", "--config", "mcp_servers={}",
                          "--config", "project_doc_max_bytes=0", "--config", "skills.bundled.enabled=false", "--config", "skills.include_instructions=false",
                          "--config", "developer_instructions=" + tomlString(instructions)]

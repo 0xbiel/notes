@@ -28,14 +28,14 @@ Claude Code and the per-provider options were reviewed against commit `8c777fbfa
 - Optional fields follow T3 Code's provider settings and are absent until set: `displayName`, `accentColor`, `environment`, `launchArguments`, `shadowHomePath` (Codex), `autoCompactWindow` (Claude), and `authMethod`, `gcpProject`, `gcpLocation` (Antigravity).
 - `AIController.providerSettings` exposes the local settings. Save through `saveProviderSettings(_:)`, which validates and refuses changes during a running request. Persistence is workspace-local `session-storage/ai-provider-settings.json` with no credential fields.
 - `AIController.modelCatalogs` shares catalogs across selectors and preferences. Last successful metadata persists in `session-storage/ai-model-catalogs.json` and appears immediately after reopening or relaunching. Catalogs refresh after one hour; concurrent requests share a fetch, failures retain the last catalog with a five-minute retry delay, and the installation check forces a refresh. Provider executable, home and harness paths identify matching catalogs; changing the model or reasoning does not invalidate them. Disabled providers are not fetched.
-- `NotesProviderTransport.diagnose(_:)` is asynchronous and read-only: effective-config verification for OpenCode, version/help for Codex, ACP initialize for Antigravity. It does not authenticate, send a prompt, install, or open a browser. A passing diagnostic does not prove login, quota, model availability, or generation.
+- `NotesProviderTransport.diagnose(_:)` is asynchronous and prepares missing managed runtimes before checking: effective-config verification for OpenCode, version/help for Codex, ACP initialize for Antigravity. It does not authenticate, send a prompt, or open a browser. A passing diagnostic does not prove login, quota, model availability, or generation.
 - All providers default to enabled in new settings and can be disabled individually in Providers. Existing saved opt-outs are preserved. `accountSendingAllowed` gates every provider, including OpenCode; current settings are checked before queued sends. Account providers retain their own pricing and retention terms.
 - Each queued batch persists its configuration and model. Later settings changes cannot redirect it; old batches without a configuration still use the OpenCode route. Review/apply/undo remains unchanged.
-- Default discovery locates existing T3-managed binaries and a single existing Antigravity profile if unambiguous. This is convenience discovery, not a promise that the discovered version works. No runtime is installed and no token is read or copied.
+- Default discovery checks Palladium-managed binaries and standard executable paths, excluding T3 paths. Missing managed runtimes are installed automatically; manually configured paths remain unchanged. See Standalone provider setup below.
 
 ## Transport boundaries
 
-OpenCode accepts the specifically verified CLI versions 1.3.13, 1.18.35 and 1.19.0 and checks its effective model, permissions, MCP, plugins, auxiliary agents, and privacy/price policy before sending. Real-note requests require no training, ZDR, and zero prices; only the exact invented demo permits retention. No policy is relaxed to make a request pass.
+OpenCode checks the required JSON run flags and its effective model, permissions, MCP, plugins, auxiliary agents, and privacy/price policy before sending. Managed updates are checked by their capabilities rather than an exact-version allowlist. Real-note requests require no training, ZDR, and zero prices; only the exact invented demo permits retention. No policy is relaxed to make a request pass.
 
 Claude Code runs `claude -p --safe-mode` in a private empty directory with stream-JSON output and the request's JSON schema. Customizations, hooks, skills, slash commands, MCP servers and session persistence are disabled, and no file or command tools are offered; notebook requests with web access add only Claude's web search. The session's first event must list no other tool and no MCP server, or nothing is accepted. Any other tool call, an error result, or a missing structured result rejects the response. The account is whatever Claude Code is signed in to, in the configured `CLAUDE_CONFIG_DIR` when one is set. Image attachments are sent as stream-JSON input.
 
@@ -49,7 +49,7 @@ Selected spans plus bounded note context are sent; audio and full local note sna
 
 ## Provider options
 
-Providers lists one row per provider, with its version, status and switch, above the editor for the selected one. The editor follows T3 Code's provider settings:
+Providers keeps the provider list on the left and independently scrolling settings on the right. The selected provider's header shows its version, status and enable switch. Narrow panes use an icon rail with provider names in tooltips. Switching providers returns the settings pane to its top. The editor follows T3 Code's provider settings:
 
 | Provider | Options |
 | --- | --- |
@@ -96,3 +96,62 @@ Codex and Claude receive the notebook JSON output schema. Antigravity uses its e
 Notebook response validation reports the exact rejected field/count or incompatible action combination instead of a generic invalid-response message. Notebook responses, edits, reads, generated files and quiz content have no application-imposed count or text-size caps. Action sequencing, valid JSON and filesystem safety remain enforced; providers still have their own context and generation constraints. JSON and protocol-validation failures permit one automatic corrective generation with the same provider/model and the precise violation; no rejected edits are applied. A second failure displays its local diagnostic ID, or explicitly reports that the diagnostic could not be saved.
 
 Rejected responses record metadata only in the workspace's `session-storage/diagnostics/notebook-responses.json`: timestamp, provider, notebook/request IDs, attempt, rejection code, byte count, SHA-256 digest, action counts, violated limits and JSON decoding field path. The log does **not** store prompts, response text, filenames, replacement content, credentials, environment values or provider stderr, and is not sent to providers. It retains at most 100 records and 128 KiB, with owner-only directory/file permissions (0700/0600) and normal workspace link/containment checks. The directory may be deleted locally to clear diagnostics; diagnostics failures never allow an invalid response to pass validation. Usage accounting remains separate and includes rejected generations and retries.
+
+## Standalone provider setup
+
+Palladium discovers normal PATH, `~/.local/bin`, Homebrew, and its own managed
+installations. It does not discover T3 tools or profiles. A manually entered
+absolute path may still point to a T3 binary.
+
+Missing managed Codex, Claude Code, and OpenCode installations are prepared on
+first use, under `~/Library/Application Support/Palladium/Providers`. Palladium
+downloads a private Node LTS runtime from nodejs.org, verifies its SHA-256 against
+the published checksum list, and installs the provider's published npm package.
+Provider sign-in is still required; automatic setup does not create accounts.
+Antigravity ACP currently requires a manually supplied executable and profile.
+
+Preferences → Providers → Runtime offers **Check for updates** and
+**Install / Update**. Updates use a staged installation and atomically switch the
+managed executable after version validation. Existing releases stay available
+for processes already running. Manual binaries are never modified; **Use
+Palladium installation** explicitly switches to a separate managed installation.
+
+Codex helpers import only model and connection configuration from CODEX_HOME's
+`config.toml`, including `model_provider`, `model_providers.*`, and proxy base
+URLs. This preserves CLIProxy connections while excluding tools, hooks and user
+instructions. Account authentication comes from the selected account home;
+proxy environment keys can be entered as sensitive provider environment values
+in Preferences (stored in Keychain). Connection settings follow the official
+[Codex advanced configuration](https://developers.openai.com/codex/config-advanced/).
+
+The Providers page keeps setup in a visible installation panel above models.
+It distinguishes managed and custom installations, shows installed/latest versions,
+and reports download bytes, installation and verification stages. Setup and update
+checks can be cancelled; failures keep a retry action. Operations and results stay
+with their provider when browsing another provider, and changing the executable
+clears stale version results. Existing account paths survive installation detection.
+Account paths, environment variables, and name/color customization are expandable.
+Opening this page does not silently download missing providers; use Download &
+install, or let first use of the provider prepare its managed runtime.
+
+## CLIProxyAPI account limits
+
+Usage → Limits recognizes the standard local CLIProxyAPI connection and reads
+`http://127.0.0.1:8318/api/state` instead of the native subscription-usage RPC.
+Custom dashboards can be set under Providers → Account & advanced settings →
+CLIProxyAPI dashboard. Root URLs resolve to `/api/state`; full endpoint URLs are
+also accepted. HTTP is limited to loopback hosts; remote dashboards require HTTPS.
+
+Each account keeps its own plan, remaining percentages, reset times and quota
+check time. Duration determines whether a window is session, weekly or monthly;
+percentages from different accounts are never added together. Paused, unavailable,
+missing and stale snapshots are identified. Cached data older than ten minutes,
+quota-probe failures, and disconnected dashboards are marked as potentially stale.
+Email addresses are masked in the account labels. This is a read-only dashboard
+request: Palladium does not read proxy credentials or change routing priorities.
+
+Antigravity detection uses an existing executable or the ACP server next to an
+explicitly configured `localharness_external`. It preserves the selected profile
+and does not scan T3 directories. Older settings with a nonexistent Palladium
+managed ACP path are repaired from that configured harness on load. Detection
+never replaces an executable with a nonexistent default path.

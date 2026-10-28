@@ -1,5 +1,6 @@
 import XCTest
 import SwiftUI
+import Combine
 import LectureCore
 @testable import Notes
 
@@ -86,6 +87,106 @@ final class ProviderOptionsTests: XCTestCase {
         XCTAssertNil(preferences.draft.antigravity.gcpProject)
     }
 
+    @MainActor func testUpdateChecksStayWithTheirProviderAndInvalidateWhenBinaryChanges() async throws {
+        let (model, root) = try environment()
+        defer { model.media?.shutdown(); model.ai?.stop(); try? FileManager.default.removeItem(at: root) }
+        let preferences = ProviderPreferencesModel(ai: try XCTUnwrap(model.ai))
+        preferences.draft.selectedProvider = .codexCLI
+        preferences.draft.codexCLI.executablePath = "/manual/codex"
+        preferences.versions[.codexCLI] = "1.0.0"
+        preferences.fetchLatestVersion = { [weak preferences] provider in
+            XCTAssertEqual(provider, .codexCLI)
+            preferences?.draft.selectedProvider = .claudeCode
+            return "2.0.0"
+        }
+        await preferences.checkForUpdates()
+        XCTAssertEqual(preferences.runtimeState(for: .codexCLI).latestVersion, "2.0.0")
+        XCTAssertTrue(preferences.updateAvailable(for: .codexCLI))
+        XCTAssertNil(preferences.runtimeState(for: .claudeCode).latestVersion)
+        XCTAssertFalse(preferences.runtimeBusy)
+        preferences.draft.codexCLI.executablePath = "/another/codex"
+        XCTAssertNil(preferences.runtimeState(for: .codexCLI).latestVersion)
+        XCTAssertNil(preferences.installedVersion(for: .codexCLI))
+    }
+
+    @MainActor func testDownloadProgressAndCancellationPreserveTheExistingPath() async throws {
+        let (model, root) = try environment()
+        defer { model.media?.shutdown(); model.ai?.stop(); try? FileManager.default.removeItem(at: root) }
+        let preferences = ProviderPreferencesModel(ai: try XCTUnwrap(model.ai))
+        preferences.draft.selectedProvider = .codexCLI
+        preferences.draft.codexCLI.executablePath = "/manual/codex"
+        let published = AsyncStream<ProviderRuntimeState.Operation>.makeStream()
+        let timeout = Task {
+            try? await Task.sleep(for: .seconds(3))
+            published.continuation.finish()
+        }
+        defer { timeout.cancel(); published.continuation.finish() }
+        let progress = DownloadProgress(received: 12_000_000, total: 40_000_000)
+        let subscription = preferences.$runtimeStates.sink { states in
+            if let operation = states[.codexCLI]?.operation { published.continuation.yield(operation) }
+        }
+        defer { subscription.cancel() }
+        preferences.performRuntimeInstall = { _, report in
+            report(.downloadingRuntime(progress))
+            try await Task.sleep(for: .seconds(30))
+            return "/unused/codex"
+        }
+        preferences.startRuntimeInstallation()
+        let task = try XCTUnwrap(preferences.runtimeTask)
+        var receivedProgress = false
+        for await operation in published.stream {
+            if operation == .installing(.downloadingRuntime(progress)) { receivedProgress = true; break }
+        }
+        XCTAssertTrue(receivedProgress)
+        // Browsing another provider must keep the first one's operation intact.
+        preferences.draft.selectedProvider = .claudeCode
+        XCTAssertNil(preferences.runtimeState(for: .claudeCode).operation)
+        preferences.cancelRuntimeOperation()
+        await task.value
+        XCTAssertEqual(preferences.draft.codexCLI.executablePath, "/manual/codex")
+        XCTAssertEqual(preferences.runtimeState(for: .codexCLI).outcome, .cancelled)
+        XCTAssertNil(preferences.runtimeState(for: .codexCLI).error)
+        XCTAssertNil(preferences.runtimeState(for: .codexCLI).operation)
+        XCTAssertFalse(preferences.runtimeBusy)
+    }
+
+    @MainActor func testFailedInstallationCanRetryWithoutChangingAnotherProvider() async throws {
+        let (model, root) = try environment()
+        defer { model.media?.shutdown(); model.ai?.stop(); try? FileManager.default.removeItem(at: root) }
+        let ai = try XCTUnwrap(model.ai)
+        let preferences = ProviderPreferencesModel(ai: ai)
+        preferences.draft.selectedProvider = .codexCLI
+        preferences.draft.codexCLI.executablePath = "/manual/codex"
+        preferences.performRuntimeInstall = { _, _ in throw MediaError.invalid("Download unavailable") }
+        await preferences.installRuntime()
+        XCTAssertNotNil(preferences.runtimeState(for: .codexCLI).error)
+        XCTAssertFalse(preferences.runtimeBusy)
+        XCTAssertEqual(preferences.draft.codexCLI.executablePath, "/manual/codex")
+        preferences.performRuntimeInstall = { [weak preferences] _, report in
+            report(.verifyingInstallation(version: "2.0.0"))
+            preferences?.draft.selectedProvider = .claudeCode
+            return "/managed/codex"
+        }
+        await preferences.installRuntime()
+        XCTAssertEqual(preferences.draft.selectedProvider, .claudeCode)
+        XCTAssertEqual(ai.providerSettings.codexCLI.executablePath, "/managed/codex")
+        XCTAssertEqual(preferences.runtimeState(for: .codexCLI).outcome, .installed)
+        XCTAssertNil(preferences.runtimeState(for: .codexCLI).error)
+        XCTAssertFalse(preferences.runtimeBusy)
+    }
+
+    @MainActor func testOpeningMissingProviderDoesNotStartAnInvisibleDownload() async throws {
+        let (model, root) = try environment()
+        defer { model.media?.shutdown(); model.ai?.stop(); try? FileManager.default.removeItem(at: root) }
+        let ai = try AIController(workspace: XCTUnwrap(model.workspace), editor: XCTUnwrap(model.editor),
+                                  catalogFetch: { _ in XCTFail("Setup must use the visible download action"); return [] })
+        let preferences = ProviderPreferencesModel(ai: ai)
+        preferences.draft.codexCLI.executablePath = "/missing/codex"
+        preferences.draft.selectedProvider = .codexCLI
+        await preferences.refreshCatalogPeriodically()
+        XCTAssertFalse(preferences.runtimeBusy)
+    }
+
     /// Set NOTES_DICTATION_SCREENSHOT to a PNG path to keep the render.
     @MainActor func testDictationPreferencesShowDownloadProgressAndOptions() throws {
         let (model, root) = try environment()
@@ -121,8 +222,8 @@ final class ProviderOptionsTests: XCTestCase {
         settings.antigravity.accountSendingAllowed = false
         try ai.saveProviderSettings(settings)
         let output = ProcessInfo.processInfo.environment["NOTES_PROVIDERS_SCREENSHOT"].map { URL(fileURLWithPath: $0) }
-        func render(_ name: String, dark: Bool, @ViewBuilder _ content: () -> some View) throws -> CGSize {
-            let host = NSHostingView(rootView: content().frame(width: 680).padding(24)
+        func render(_ name: String, dark: Bool, width: CGFloat = 680, @ViewBuilder _ content: () -> some View) throws -> CGSize {
+            let host = NSHostingView(rootView: content().frame(width: width).padding(24)
                 .background(Color(nsColor: .textBackgroundColor)).environment(\.colorScheme, dark ? .dark : .light))
             host.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
             host.frame = NSRect(origin: .zero, size: host.fittingSize)
@@ -134,9 +235,48 @@ final class ProviderOptionsTests: XCTestCase {
             return host.fittingSize
         }
         for dark in [false, true] {
-            let screen = try render("providers", dark: dark) { ProviderPreferences(ai: ai) }
-            // One 56-point row per provider, then the editor.
-            XCTAssertGreaterThan(screen.height, CGFloat(NotesAIProvider.allCases.count) * 56 + 200)
+            let screen = try render("providers", dark: dark, width: 1020) { ProviderPreferences(ai: ai).frame(height: 740) }
+            XCTAssertEqual(screen.width, 1068, accuracy: 1)
+            XCTAssertEqual(screen.height, 788, accuracy: 1)
+            _ = try render("providers-medium", dark: dark, width: 720) { ProviderPreferences(ai: ai).frame(height: 740) }
+            _ = try render("providers-compact", dark: dark, width: 540) { ProviderPreferences(ai: ai).frame(height: 740) }
+            let runtime = ProviderPreferencesModel(ai: ai)
+            runtime.draft.selectedProvider = .codexCLI
+            runtime.draft.codexCLI.executablePath = "/missing/codex"
+            let path = runtime.draft.codexCLI.executablePath
+            let states: [(String, ProviderRuntimeState)] = [
+                ("setup", .init(executablePath: path)),
+                ("checking", .init(executablePath: path, operation: .checkingUpdates)),
+                ("downloading", .init(executablePath: path, operation: .installing(.downloadingRuntime(.init(received: 12_000_000, total: 40_000_000))))),
+                ("installing", .init(executablePath: path, operation: .installing(.installingPackage(version: "2.0.0")))),
+                ("verifying", .init(executablePath: path, operation: .installing(.verifyingInstallation(version: "2.0.0")))),
+                ("cancelled", .init(executablePath: path, outcome: .cancelled)),
+                ("failed", .init(executablePath: path, error: "The download could not be completed. Check your connection and try again."))
+            ]
+            for (name, state) in states {
+                runtime.runtimeStates[.codexCLI] = state
+                let size = try render("installation-" + name, dark: dark) {
+                    ProviderInstallationView(preferences: runtime, showAdvanced: {})
+                }
+                XCTAssertGreaterThan(size.height, 100)
+                XCTAssertLessThan(size.height, 350)
+                let narrow = try render("installation-" + name + "-narrow", dark: dark, width: 420) {
+                    ProviderInstallationView(preferences: runtime, showAdvanced: {})
+                }
+                XCTAssertEqual(narrow.width, 468, accuracy: 1)
+                XCTAssertLessThan(narrow.height, 450)
+            }
+            let binary = root.appendingPathComponent("mock-codex")
+            try Data("#!/bin/sh\n".utf8).write(to: binary)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: binary.path)
+            runtime.draft.codexCLI.executablePath = binary.path
+            runtime.versions[.codexCLI] = "1.0.0"
+            for latest in ["1.0.0", "2.0.0"] {
+                runtime.runtimeStates[.codexCLI] = .init(executablePath: binary.path, latestVersion: latest)
+                _ = try render(latest == "1.0.0" ? "installation-current" : "installation-update", dark: dark) {
+                    ProviderInstallationView(preferences: runtime, showAdvanced: {})
+                }
+            }
             for provider in NotesAIProvider.allCases {
                 let preferences = ProviderPreferencesModel(ai: ai)
                 preferences.readSecret = { _, _ in "stored" }

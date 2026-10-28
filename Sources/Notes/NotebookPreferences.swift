@@ -125,6 +125,13 @@ struct NotebookPreferences: View {
             }.padding(.horizontal, 18).frame(height: 58).background(WindowDragRegion())
             Divider().opacity(0.4)
             GeometryReader { geometry in
+                if section == .providers {
+                    if let ai = model.ai {
+                        ProviderPreferences(ai: ai).id(ai.outbox.workspace.root.path)
+                    } else {
+                        Text("Abre un espacio local para configurar los proveedores.").foregroundStyle(.secondary).padding(24)
+                    }
+                } else {
                 let inset: CGFloat = geometry.size.width < 700 ? 24 : 40
                 ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
@@ -138,13 +145,6 @@ struct NotebookPreferences: View {
                             UsagePreferences(workspace: ai.outbox.workspace).id(ai.outbox.workspace.root.path)
                         } else {
                             Text("Abre un espacio local para ver el uso.").foregroundStyle(.secondary)
-                        }
-                    } else if section == .providers {
-                        if let ai = model.ai {
-                            ProviderPreferences(ai: ai, contentWidth: max(0, min(680, geometry.size.width - inset * 2)))
-                                .id(ai.outbox.workspace.root.path)
-                        } else {
-                            Text("Abre un espacio local para configurar los proveedores.").foregroundStyle(.secondary)
                         }
                     } else {
                         VStack(alignment: .leading, spacing: 10) {
@@ -198,6 +198,7 @@ struct NotebookPreferences: View {
                     }
                 }.frame(width: max(0, min(680, geometry.size.width - inset * 2)), alignment: .leading)
                     .padding(inset).frame(maxWidth: .infinity, alignment: .topLeading)
+                }
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }.frame(maxWidth: .infinity, maxHeight: .infinity)

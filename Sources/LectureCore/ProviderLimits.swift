@@ -17,11 +17,26 @@ public struct ProviderLimitWindow: Sendable, Equatable, Identifiable {
     public var leftPercent: Double { 100 - usedPercent }
 }
 
+/// Each proxy account retains its own allowance; percentages are never pooled.
+public struct ProviderAccountLimits: Sendable, Equatable, Identifiable {
+    public var id: String
+    public var name: String
+    public var plan: String?
+    public var windows: [ProviderLimitWindow]
+    public var checked: Date?
+    public var message: String?
+    public init(id: String, name: String, plan: String? = nil, windows: [ProviderLimitWindow] = [], checked: Date? = nil, message: String? = nil) {
+        self.id = id; self.name = name; self.plan = plan; self.windows = windows; self.checked = checked; self.message = message
+    }
+}
+
 public struct ProviderLimits: Sendable, Equatable, Identifiable {
     public var provider: NotesAIProvider
     public var name: String
     public var plan: String?
     public var windows: [ProviderLimitWindow] = []
+    public var accounts: [ProviderAccountLimits] = []
+    public var source: String?
     /// Why there are no windows.
     public var message: String?
     public var checked = Date()
@@ -121,6 +136,19 @@ public enum ProviderLimitsProbe {
     /// Never throws: a provider that cannot answer says why instead.
     public static func read(_ configuration: AIProviderConfiguration, store: LocalMediaStore) async -> ProviderLimits {
         var limits = ProviderLimits(provider: configuration.provider, name: configuration.name)
+        if let endpoint = CLIProxyAccountLimits.endpoint(configuration) {
+            do { return try await CLIProxyAccountLimits.read(configuration, endpoint: endpoint) }
+            catch {
+                limits.source = "CLIProxyAPI"
+                limits.message = "No se pudieron leer los límites de CLIProxyAPI. Comprueba que su panel esté activo y revisa la URL en los ajustes del proveedor."
+                return limits
+            }
+        }
+        if CLIProxyAccountLimits.isProxy(configuration) {
+            limits.source = "CLIProxyAPI"
+            limits.message = "Configura la URL del panel de CLIProxyAPI en los ajustes avanzados del proveedor para consultar sus cuentas."
+            return limits
+        }
         do {
             switch configuration.provider {
             case .claudeCode: (limits.plan, limits.windows) = claude(try await ClaudeTextTransport(store: store, configuration: configuration).usage())
@@ -186,7 +214,7 @@ extension CodexNotebookStreamingTransport {
     /// Asks the app server for the account's limits; no thread is started.
     func rateLimits() throws -> [String: Any] {
         try configuration.validate()
-        guard FileManager.default.isExecutableFile(atPath: configuration.executablePath) else { throw MediaError.invalid("No se encuentra el ejecutable. Selecciona una instalación existente; Palladium no instala proveedores.") }
+        guard FileManager.default.isExecutableFile(atPath: configuration.executablePath) else { throw MediaError.invalid("No se encuentra el ejecutable. Prepara el proveedor en Preferencias.") }
         let directory = try NotesProviderTransport(store: store).temporaryDirectory()
         let home = try Self.accountHome(configuration, in: directory)
         let connection = ProviderRPCConnection(configuration: configuration, directory: directory, environment: try NotesProviderTransport.codexEnvironment(configuration, home: home.path),
