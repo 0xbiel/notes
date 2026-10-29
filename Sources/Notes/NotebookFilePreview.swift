@@ -9,12 +9,13 @@ struct NotebookFilePreview: View {
     var bottomInset: CGFloat = 0
     var imageRoot: URL? = nil
     var onFooterHeight: ((CGFloat) -> Void)? = nil
+    var gradeAnswers: NotebookPracticeGrader? = nil
     @AppStorage("notes.language") private var language = "es"
     var body: some View {
         if let url = try? workspace.fileURL(path) {
             Group {
                 if NotebookPracticeTest.isPracticeTest(path) {
-                    NotebookPracticeTestView(workspace: workspace, path: path, imageRoot: imageRoot, bottomInset: bottomInset, onFooterHeight: onFooterHeight)
+                    NotebookPracticeTestView(workspace: workspace, path: path, imageRoot: imageRoot, bottomInset: bottomInset, onFooterHeight: onFooterHeight, gradeAnswers: gradeAnswers)
                 } else if url.pathExtension.lowercased() == "pdf" {
                     LibraryPDFView(url: url).accessibilityIdentifier("notebook.pdfPreview")
                 } else {

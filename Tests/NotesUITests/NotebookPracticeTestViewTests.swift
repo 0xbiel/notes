@@ -28,6 +28,45 @@ final class NotebookPracticeTestViewTests: XCTestCase {
         NotebookPracticeTestController(workspace: workspace, path: path, generator: SequenceGenerator(state: seed))
     }
 
+    @MainActor func testWrittenGradingFailurePreservesDraftAndRetrySavesFeedback() async throws {
+        let workspace = try workspace()
+        let test = NotebookPracticeTest(title: "Written quiz", instructions: "Explain your answer", questions: [
+            .init(id: "q", prompt: "Explain the result", options: [], correctOptionID: "", explanation: "Expected reasoning", answerType: "text")
+        ])
+        try workspace.createAsset("Unit.quiz.json", data: test.encoded())
+        let model = controller(workspace)
+        model.select(" ", for: "q")
+        XCTAssertFalse(model.canSubmit)
+        model.select("My reasoning", for: "q")
+        XCTAssertTrue(model.canSubmit)
+        let failed = await model.submitWritten { _, _ in throw MediaError.invalid("Provider offline") }
+        XCTAssertFalse(failed)
+        XCTAssertEqual(model.gradingError, "Provider offline")
+        XCTAssertEqual(controller(workspace).attempt?.answers["q"], "My reasoning")
+        XCTAssertFalse(model.isSubmitted)
+        let grade = NotebookWrittenGrade(score: 7, feedback: "Mostly right", mistakes: "None", omissions: "Explain the final step")
+        let submitted = await model.submitWritten { quiz, answers in
+            XCTAssertTrue(model.isGrading)
+            XCTAssertFalse(model.canSubmit)
+            model.select("Change during grading", for: "q")
+            XCTAssertEqual(model.attempt?.answers["q"], "My reasoning")
+            XCTAssertEqual(quiz, test)
+            XCTAssertEqual(answers["q"], "My reasoning")
+            return (["q": grade], "chosen-model")
+        }
+        XCTAssertTrue(submitted)
+        XCTAssertEqual(model.result?.score, 7)
+        XCTAssertEqual(model.displays.first?.writtenGrade, grade)
+        XCTAssertNil(model.gradingError)
+        let reopened = controller(workspace)
+        XCTAssertTrue(reopened.isSubmitted)
+        XCTAssertEqual(reopened.result?.score, 7)
+        XCTAssertEqual(reopened.attempt?.gradingModel, "chosen-model")
+        reopened.retake()
+        XCTAssertFalse(reopened.isSubmitted)
+        XCTAssertNil(reopened.displays.first?.writtenGrade)
+    }
+
     @MainActor func testUnfinishedAttemptExposesNoAnswerKeyAndRequiresEveryAnswer() throws {
         let workspace = try workspace()
         try workspace.createAsset("Unit.quiz.json", data: quiz().encoded())

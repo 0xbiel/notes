@@ -123,10 +123,9 @@ public enum NotebookMarkdown {
         func flush() {
             if !paragraph.isEmpty { add(paragraph.joined(separator: "\n"), .paragraph); paragraph = [] }
         }
-        for line in markdown.components(separatedBy: "\n") {
+        for line in MarkdownComments.removing(from: markdown).components(separatedBy: "\n") {
             if line.hasPrefix("```") { flush(); if inCode { add(code.joined(separator: "\n"), .code); code = [] }; inCode.toggle(); continue }
             if inCode { code.append(line); continue }
-            if line.hasPrefix("<!--") && line.hasSuffix("-->") { continue }
             if line.trimmingCharacters(in: .whitespaces).isEmpty { flush(); continue }
             let hashes = line.prefix { $0 == "#" }.count
             if hashes > 0 && hashes <= 6 && line.dropFirst(hashes).hasPrefix(" ") {

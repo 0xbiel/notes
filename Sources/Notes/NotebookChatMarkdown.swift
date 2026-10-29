@@ -24,7 +24,8 @@ struct NotebookChatMarkdown: View {
         parsed.setObject(Parsed(blocks), forKey: text as NSString)
         return blocks
     }
-    static func blocks(_ text: String) -> [Block] {
+    static func blocks(_ markdown: String) -> [Block] {
+        let text = MarkdownComments.removing(from: markdown)
         var result: [Block] = [], paragraph: [String] = [], code: [String] = []
         let tables = MarkdownTables.blocks(in: text)
         let source = text as NSString

@@ -64,10 +64,13 @@ public struct NotebookPracticeTest: Codable, Sendable, Equatable {
         public var correctOptionID: String
         public var explanation: String
         public var images: [ReferenceImage]?
-        public init(id: String, prompt: String, options: [Option], correctOptionID: String, explanation: String, images: [ReferenceImage]? = nil) {
+        /// Missing on older quizzes means multiple choice.
+        public var answerType: String?
+        public var isWritten: Bool { answerType == "text" }
+        public init(id: String, prompt: String, options: [Option], correctOptionID: String, explanation: String, images: [ReferenceImage]? = nil, answerType: String? = nil) {
             self.id = id; self.prompt = prompt; self.options = options
             self.correctOptionID = correctOptionID; self.explanation = explanation
-            self.images = images
+            self.images = images; self.answerType = answerType
         }
         public var correctOption: Option? { options.first { $0.id == correctOptionID } }
         public func option(_ id: String) -> Option? { options.first { $0.id == id } }
@@ -103,6 +106,15 @@ public struct NotebookPracticeTest: Codable, Sendable, Equatable {
             guard questionIDs.insert(question.id).inserted else { throw NotebookPracticeTestError.duplicateQuestionID(question.id) }
             try Self.check(question.prompt, "question \(question.id) prompt")
             try Self.check(question.explanation, "question \(question.id) explanation")
+            guard question.answerType == nil || ["text", "multipleChoice"].contains(question.answerType!) else {
+                throw NotebookPracticeTestError.unreadable("Unknown answer type.")
+            }
+            if question.isWritten {
+                guard question.options.isEmpty, question.correctOptionID.isEmpty else {
+                    throw NotebookPracticeTestError.unreadable("Written questions must have no options or correctOptionID; use explanation as the reference answer and rubric.")
+                }
+                continue
+            }
             guard question.options.count >= 2 else {
                 throw NotebookPracticeTestError.optionCount(question: question.id, count: question.options.count)
             }
@@ -194,11 +206,18 @@ public struct NotebookPracticeTest: Codable, Sendable, Equatable {
         return result
     }
 
-    public func grade(_ answers: [String: String]) throws -> NotebookPracticeResult {
+    public func grade(_ answers: [String: String], writtenGrades: [String: NotebookWrittenGrade] = [:]) throws -> NotebookPracticeResult {
         var items: [NotebookPracticeResult.Item] = []
         var missing = 0
         for question in questions {
             guard let selected = answers[question.id] else { missing += 1; continue }
+            if question.isWritten {
+                guard !selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { missing += 1; continue }
+                guard let grade = writtenGrades[question.id] else { throw NotebookPracticeTestError.unreadable("Written answers need AI grading before submission.") }
+                try grade.validate()
+                items.append(.init(questionID: question.id, selectedOptionID: selected, correctOptionID: "", isCorrect: grade.score == 10, score: grade.score))
+                continue
+            }
             guard question.option(selected) != nil else { throw NotebookPracticeTestError.unknownOption(question: question.id, option: selected) }
             items.append(.init(questionID: question.id, selectedOptionID: selected, correctOptionID: question.correctOptionID, isCorrect: selected == question.correctOptionID))
         }
@@ -213,16 +232,18 @@ public struct NotebookPracticeResult: Sendable, Equatable {
         public let selectedOptionID: String
         public let correctOptionID: String
         public let isCorrect: Bool
-        public init(questionID: String, selectedOptionID: String, correctOptionID: String, isCorrect: Bool) {
+        public let score: Double
+        public init(questionID: String, selectedOptionID: String, correctOptionID: String, isCorrect: Bool, score: Double? = nil) {
             self.questionID = questionID; self.selectedOptionID = selectedOptionID
-            self.correctOptionID = correctOptionID; self.isCorrect = isCorrect
+            self.correctOptionID = correctOptionID; self.isCorrect = isCorrect; self.score = score ?? (isCorrect ? 10 : 0)
         }
     }
     public let items: [Item]
     public init(items: [Item]) { self.items = items }
     public var total: Int { items.count }
     public var correct: Int { items.filter(\.isCorrect).count }
-    public var percent: Int { total == 0 ? 0 : Int((Double(correct) / Double(total) * 100).rounded()) }
+    public var score: Double { total == 0 ? 0 : items.reduce(0) { $0 + $1.score } / Double(total) }
+    public var percent: Int { Int((score * 10).rounded()) }
     public func item(_ questionID: String) -> Item? { items.first { $0.questionID == questionID } }
 }
 
@@ -232,6 +253,8 @@ public struct NotebookPracticeAttempt: Codable, Sendable, Equatable, Identifiabl
     public var submittedAt: Date?
     public var optionOrder: [String: [String]]
     public var answers: [String: String]
+    public var writtenGrades: [String: NotebookWrittenGrade]?
+    public var gradingModel: String?
     public var correct: Int?
     public var total: Int
     public init(id: String = UUID().uuidString, startedAt: Date = Date(), submittedAt: Date? = nil, optionOrder: [String: [String]], answers: [String: String] = [:], correct: Int? = nil, total: Int) {
@@ -266,15 +289,17 @@ public struct NotebookPracticeHistory: Codable, Sendable, Equatable {
         guard let last = attempts.indices.last else { throw NotebookPracticeTestError.noAttempt }
         guard !attempts[last].isSubmitted else { throw NotebookPracticeTestError.alreadySubmitted }
         guard let question = test.question(questionID) else { throw NotebookPracticeTestError.unknownQuestion(questionID) }
-        guard question.option(optionID) != nil else { throw NotebookPracticeTestError.unknownOption(question: questionID, option: optionID) }
+        guard question.isWritten || question.option(optionID) != nil else { throw NotebookPracticeTestError.unknownOption(question: questionID, option: optionID) }
         attempts[last].answers[questionID] = optionID
     }
 
     @discardableResult
-    public mutating func submit(test: NotebookPracticeTest, now: Date = Date()) throws -> NotebookPracticeResult {
+    public mutating func submit(test: NotebookPracticeTest, now: Date = Date(), writtenGrades: [String: NotebookWrittenGrade] = [:], gradingModel: String? = nil) throws -> NotebookPracticeResult {
         guard let last = attempts.indices.last else { throw NotebookPracticeTestError.noAttempt }
         guard !attempts[last].isSubmitted else { throw NotebookPracticeTestError.alreadySubmitted }
-        let result = try test.grade(attempts[last].answers)
+        let result = try test.grade(attempts[last].answers, writtenGrades: writtenGrades)
+        attempts[last].writtenGrades = writtenGrades.isEmpty ? nil : writtenGrades
+        attempts[last].gradingModel = gradingModel
         attempts[last].submittedAt = now; attempts[last].correct = result.correct; attempts[last].total = result.total
         return result
     }
@@ -285,12 +310,18 @@ public struct NotebookPracticeHistory: Codable, Sendable, Equatable {
         copy.attempts = attempts.compactMap { attempt in
             guard attempt.total == test.questions.count else { return nil }
             var cleaned = attempt
-            cleaned.answers = attempt.answers.filter { test.question($0.key)?.option($0.value) != nil }
+            cleaned.answers = attempt.answers.filter { entry in
+                guard let question = test.question(entry.key) else { return false }
+                return question.isWritten ? !entry.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty : question.option(entry.value) != nil
+            }
             cleaned.optionOrder = attempt.optionOrder.filter { entry in
                 guard let question = test.question(entry.key) else { return false }
                 return entry.value.count == question.options.count && Set(entry.value) == Set(question.options.map(\.id))
             }
-            if cleaned.isSubmitted, cleaned.answers.count != test.questions.count { return nil }
+            if cleaned.isSubmitted {
+                guard let result = try? test.grade(cleaned.answers, writtenGrades: cleaned.writtenGrades ?? [:]) else { return nil }
+                cleaned.correct = result.correct
+            }
             return cleaned
         }
         return copy
