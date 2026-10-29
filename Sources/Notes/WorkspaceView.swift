@@ -620,7 +620,22 @@ struct NoteWorkspace: View {
                     LaTeXEditor(controller: controller, bottomInset: showsComposer ? composerHeight : 0).id(file)
                 } else {
                     NotebookFilePreview(workspace: workspace, path: file, bottomInset: showsComposer ? composerHeight : 0,
-                        imageRoot: workspace.courseRoot.appendingPathComponent(model.currentNotebook.rootPrefix), onFooterHeight: { quizFooterHeight = $0 })
+                        imageRoot: workspace.courseRoot.appendingPathComponent(model.currentNotebook.rootPrefix), onFooterHeight: { quizFooterHeight = $0 }, gradeAnswers: { test, answers in
+                            guard let assistant = model.assistant, let ai = model.ai else { throw MediaError.invalid("AI grading is unavailable.") }
+                            let configuration = ai.providerSettings.selected
+                            let directory = try workspace.fileURL(file).deletingLastPathComponent()
+                            let root = workspace.courseRoot.appendingPathComponent(model.currentNotebook.rootPrefix)
+                            let images = try test.questions.filter(\.isWritten).flatMap { question in
+                                try (question.images ?? []).map { image in
+                                    let url = try NotebookPracticeTest.referenceImageURL(image, directory: directory, root: root)
+                                    return NotebookInputImage(name: question.id + ": " + image.alt, data: try Data(contentsOf: url))
+                                }
+                            }
+                            let grades = try await assistant.transport.gradePracticeTest(test, answers: answers, images: images,
+                                notebook: model.currentNotebook, configuration: configuration,
+                                language: UserDefaults.standard.string(forKey: "notes.language") ?? "es")
+                            return (grades, configuration.model)
+                        })
                 }
             } else if let note = model.selectedNote {
                 LiveMarkdownEditor(documentID: note, text: model.draftText, editing: model.layout == "edit", heading: model.previewHeading,

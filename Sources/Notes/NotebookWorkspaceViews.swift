@@ -448,9 +448,6 @@ struct NotebookComposer: View {
     }
     var body: some View {
         VStack(spacing: 8) {
-            if !assistant.queued(notebook).isEmpty {
-                NotebookPromptQueue(model: model, assistant: assistant, notebook: notebook)
-            }
             if !large {
                 HStack {
                     Spacer()
@@ -476,6 +473,9 @@ struct NotebookComposer: View {
             if !large && showConversation {
                 NotebookFloatingChat(model: model, assistant: assistant, onClose: { showConversation = false })
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+            if !assistant.queued(notebook).isEmpty {
+                NotebookPromptQueue(model: model, assistant: assistant, notebook: notebook)
             }
             if let approval = assistant.approval(for: notebook) {
                 VStack(alignment: .leading, spacing: 10) {

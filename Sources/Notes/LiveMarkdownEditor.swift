@@ -902,11 +902,13 @@ struct LiveMarkdownEditor: NSViewRepresentable {
             return CodeBlock(id: base + "\u{0}" + String(ordinal), range: range, opening: opening,
                              body: body, closing: closing, language: language)
         }
+        let commentRanges = MarkdownComments.ranges(in: string)
         var opening: (offset: Int, length: Int, language: String)?
         var offset = 0
         for line in string.components(separatedBy: "\n") {
             let count = line.utf16.count
             let fence = line.trimmingCharacters(in: .whitespaces)
+            if commentRanges.contains(where: { offset >= $0.location && offset < NSMaxRange($0) }) { offset += count + 1; continue }
             if let start = opening, fence.hasPrefix("```"), String(fence.dropFirst(3)).trimmingCharacters(in: .whitespaces).isEmpty {
                 blocks.append(codeBlock(range: NSRange(location: start.offset, length: offset + count - start.offset),
                                         opening: NSRange(location: start.offset, length: start.length),
@@ -934,8 +936,8 @@ struct LiveMarkdownEditor: NSViewRepresentable {
                 }
             }
         }
-        var codeRanges = blocks.map(\.range)
-        tableBlocks = MarkdownTables.blocks(in: string)
+        var codeRanges = blocks.map(\.range) + commentRanges
+        tableBlocks = MarkdownTables.blocks(in: string).filter { block in !commentRanges.contains { NSIntersectionRange($0, block.range).length > 0 } }
         renderedTables = []
         for block in tableBlocks {
             let firstLine = NSIntersectionRange(source.lineRange(for: NSRange(location: block.range.location, length: 0)), block.range)
@@ -1132,7 +1134,7 @@ struct LiveMarkdownEditor: NSViewRepresentable {
                 storage.addAttribute(.paragraphStyle, value: style, range: source.lineRange(for: span.range))
             }
         }
-        renderedImages = MarkdownImageRenderer.render(source: string, directory: imageDirectory, root: imageRoot, width: textContainer?.containerSize.width ?? 680).filter { !inCode($0.range) }
+        renderedImages = MarkdownImageRenderer.render(source: string, directory: imageDirectory, root: imageRoot, width: textContainer?.containerSize.width ?? 680).filter { !inCode(NSRange(location: $0.range.location, length: 1)) }
         for image in renderedImages {
             storage.addAttribute(.foregroundColor, value: NSColor.clear, range: image.range)
             let style = NSMutableParagraphStyle(); style.minimumLineHeight = image.size.height + 16; style.paragraphSpacing = 8
@@ -1154,6 +1156,15 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         }
         previousImageViews.filter { !retainedImageViews.contains(ObjectIdentifier($0)) }.forEach { $0.removeFromSuperview() }
         (layoutManager as? FoldingLayoutManager)?.math = Dictionary(uniqueKeysWithValues: renderedMath.map { ($0.span.range.location, $0) })
+        for range in commentRanges where !visible(range) {
+            hide(range, context: range)
+            let lines = source.paragraphRange(for: range)
+            if source.substring(with: lines).trimmingCharacters(in: .whitespacesAndNewlines) == source.substring(with: range).trimmingCharacters(in: .whitespacesAndNewlines) {
+                let hidden = NSMutableParagraphStyle()
+                hidden.minimumLineHeight = 0.01; hidden.maximumLineHeight = 0.01
+                storage.addAttribute(.paragraphStyle, value: hidden, range: range)
+            }
+        }
         storage.endEditing()
         var changed: [NSRange] = []
         target.beginEditing()

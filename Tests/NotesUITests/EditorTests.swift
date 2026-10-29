@@ -5,6 +5,29 @@ import LectureCore
 @testable import Notes
 
 final class EditorTests: XCTestCase {
+    @MainActor func testHTMLCommentsHideInPreviewAndRevealForEditing() throws {
+        _ = NSApplication.shared
+        let view = MarkdownTextView(frame: NSRect(x: 0, y: 0, width: 700, height: 400))
+        let comment = "<!-- PENDIENTE: ampliar con las diapositivas 26 a 53 del PDF -->"
+        let source = "Visible\n\n" + comment + "\n\n<!-- multiline\n**hidden** $x$\n-->\n\n`<!-- literal -->`\n"
+        view.string = source; view.liveEditing = false; view.renderMarkdown()
+        let storage = try XCTUnwrap(view.textStorage)
+        let range = (source as NSString).range(of: comment)
+        let hiddenFont = try XCTUnwrap(storage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont)
+        XCTAssertLessThan(hiddenFont.pointSize, 1)
+        XCTAssertTrue(view.renderedMath.isEmpty)
+        let literal = (source as NSString).range(of: "<!-- literal -->")
+        let literalFont = try XCTUnwrap(storage.attribute(.font, at: literal.location, effectiveRange: nil) as? NSFont)
+        XCTAssertGreaterThan(literalFont.pointSize, 1)
+        XCTAssertEqual(view.string, source)
+        XCTAssertFalse(NotebookChatMarkdown.blocks(source).contains { $0.text.contains("PENDIENTE") || $0.text.contains("hidden") })
+        XCTAssertTrue(NotebookChatMarkdown.blocks(source).contains { $0.text.contains("<!-- literal -->") })
+        view.liveEditing = true; view.setSelectedRange(NSRange(location: range.location + 5, length: 0)); view.renderMarkdown()
+        let editingFont = try XCTUnwrap(storage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont)
+        XCTAssertGreaterThan(editingFont.pointSize, 1)
+        XCTAssertEqual(view.string, source)
+    }
+
     @MainActor func testEscapedMarkdownPunctuationRendersWithoutChangingSource() throws {
         _ = NSApplication.shared
         let view = MarkdownTextView(frame: NSRect(x: 0, y: 0, width: 700, height: 400))

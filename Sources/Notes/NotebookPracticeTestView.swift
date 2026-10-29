@@ -104,6 +104,9 @@ struct NotebookPracticeQuestionDisplay: Equatable {
     let selectedID: String?
     let review: Review?
     var images: [NotebookPracticeTest.ReferenceImage] = []
+    var isWritten = false
+    var writtenGrade: NotebookWrittenGrade? = nil
+    var isSubmitted = false
 }
 
 @MainActor final class NotebookPracticeTestController: ObservableObject {
@@ -114,6 +117,8 @@ struct NotebookPracticeQuestionDisplay: Equatable {
     @Published private(set) var loadError: Error?
     @Published private(set) var saveFailed = false
     @Published private(set) var questionIndex = 0
+    @Published private(set) var isGrading = false
+    @Published private(set) var gradingError: String?
     private var store: NotebookPracticeStore?
     private var digest: String?
     private var generator: any RandomNumberGenerator
@@ -155,10 +160,10 @@ struct NotebookPracticeQuestionDisplay: Equatable {
 
     var attempt: NotebookPracticeAttempt? { history.latest }
     var isSubmitted: Bool { attempt?.isSubmitted == true }
-    var answeredCount: Int { test.map { test in test.questions.filter { attempt?.answers[$0.id] != nil }.count } ?? 0 }
+    var answeredCount: Int { test.map { test in test.questions.filter { !(attempt?.answers[$0.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count } ?? 0 }
     var totalCount: Int { test?.questions.count ?? 0 }
     var remainingCount: Int { totalCount - answeredCount }
-    var canSubmit: Bool { test != nil && !isSubmitted && remainingCount == 0 }
+    var canSubmit: Bool { test != nil && !isSubmitted && !isGrading && remainingCount == 0 }
     var currentDisplay: NotebookPracticeQuestionDisplay? { displays.indices.contains(questionIndex) ? displays[questionIndex] : nil }
     var isLastQuestion: Bool { totalCount > 0 && questionIndex == totalCount - 1 }
     var canContinue: Bool { !isLastQuestion && currentDisplay != nil }
@@ -173,7 +178,7 @@ struct NotebookPracticeQuestionDisplay: Equatable {
     }
 
     func resumeFlow() {
-        questionIndex = isSubmitted ? 0 : displays.firstIndex(where: { $0.selectedID == nil }) ?? max(totalCount - 1, 0)
+        questionIndex = isSubmitted ? 0 : displays.firstIndex(where: { ($0.selectedID ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) ?? max(totalCount - 1, 0)
     }
 
     func previousQuestion() {
@@ -188,7 +193,7 @@ struct NotebookPracticeQuestionDisplay: Equatable {
 
     var result: NotebookPracticeResult? {
         guard let test, let attempt, attempt.isSubmitted else { return nil }
-        return try? test.grade(attempt.answers)
+        return try? test.grade(attempt.answers, writtenGrades: attempt.writtenGrades ?? [:])
     }
 
     var earlierAttempts: [NotebookPracticeAttempt] {
@@ -205,12 +210,12 @@ struct NotebookPracticeQuestionDisplay: Equatable {
             if result != nil, let selected, let chosen = question.option(selected), let correct = question.correctOption {
                 review = .init(selectedID: selected, correctID: correct.id, selectedExplanation: chosen.explanation, correctExplanation: correct.explanation, explanation: question.explanation)
             }
-            return .init(id: question.id, number: index + 1, prompt: question.prompt, options: options, selectedID: selected, review: review, images: question.images ?? [])
+            return .init(id: question.id, number: index + 1, prompt: question.prompt, options: options, selectedID: selected, review: review, images: question.images ?? [], isWritten: question.isWritten, writtenGrade: attempt.writtenGrades?[question.id], isSubmitted: attempt.isSubmitted)
         }
     }
 
     func select(_ optionID: String, for questionID: String) {
-        guard let test, !isSubmitted else { return }
+        guard let test, !isSubmitted, !isGrading else { return }
         do { try history.select(optionID, for: questionID, in: test); persist() } catch {}
     }
 
@@ -220,13 +225,39 @@ struct NotebookPracticeQuestionDisplay: Equatable {
         do { try history.submit(test: test, now: now()); persist(); return true } catch { return false }
     }
 
+    func submitWritten(using grade: NotebookPracticeGrader?) async -> Bool {
+        guard let test, let attempt, canSubmit else { return false }
+        guard test.questions.contains(where: \.isWritten) else { return submit() }
+        guard let grade else {
+            gradingError = "AI grading is unavailable. Open this quiz in a notebook with a configured model."
+            return false
+        }
+        isGrading = true; gradingError = nil
+        defer { isGrading = false }
+        do {
+            let response = try await grade(test, attempt.answers)
+            try Task.checkCancellation()
+            // A reload may replace the quiz while a provider request is in flight.
+            guard self.attempt?.id == attempt.id, self.test == test else { return false }
+            try history.submit(test: test, now: now(), writtenGrades: response.grades, gradingModel: response.model)
+            persist()
+            return true
+        } catch {
+            gradingError = error.localizedDescription
+            return false
+        }
+    }
+
     func retake() {
         guard isSubmitted else { return }
         startAttempt()
     }
 }
 
+typealias NotebookPracticeGrader = @MainActor (NotebookPracticeTest, [String: String]) async throws -> (grades: [String: NotebookWrittenGrade], model: String)
+
 struct NotebookPracticeTestView: View {
+    let gradeAnswers: NotebookPracticeGrader?
     let imageDirectory: URL?
     let imageRoot: URL?
     let bottomInset: CGFloat
@@ -239,11 +270,11 @@ struct NotebookPracticeTestView: View {
     @State private var viewportHeight: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init(workspace: SafeWorkspace, path: String, imageRoot: URL? = nil, bottomInset: CGFloat = 0, onFooterHeight: ((CGFloat) -> Void)? = nil) {
+    init(workspace: SafeWorkspace, path: String, imageRoot: URL? = nil, bottomInset: CGFloat = 0, onFooterHeight: ((CGFloat) -> Void)? = nil, gradeAnswers: NotebookPracticeGrader? = nil) {
         _controller = StateObject(wrappedValue: NotebookPracticeTestController(workspace: workspace, path: path))
         imageDirectory = try? workspace.fileURL(path).deletingLastPathComponent()
         self.imageRoot = imageRoot ?? workspace.courseRoot
-        self.bottomInset = bottomInset; self.onFooterHeight = onFooterHeight
+        self.bottomInset = bottomInset; self.onFooterHeight = onFooterHeight; self.gradeAnswers = gradeAnswers
     }
 
     private var text: NotebookPracticeText { .init(language: language) }
@@ -283,6 +314,7 @@ struct NotebookPracticeTestView: View {
                     ForEach(controller.visibleDisplays(layout: layout), id: \.id) { display in
                         NotebookPracticeQuestionCard(display: display, text: text, tint: tint, imageDirectory: imageDirectory, imageRoot: imageRoot) { controller.select($0, for: display.id) }
                             .equatable()
+                            .disabled(controller.isGrading)
                             .id(display.id)
                             .background {
                                 GeometryReader { geometry in
@@ -291,6 +323,8 @@ struct NotebookPracticeTestView: View {
                                 }
                             }
                     }
+                    if controller.isGrading { ProgressView(language == "en" ? "Grading answers…" : "Evaluando respuestas…") }
+                    if let error = controller.gradingError { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
                     if controller.saveFailed { Label(text.saveFailed, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange) }
                 }
                 .frame(maxWidth: 760, alignment: .leading).frame(maxWidth: .infinity)
@@ -336,22 +370,28 @@ struct NotebookPracticeTestView: View {
             Text(test.title).font(.system(size: 26, weight: .semibold)).textSelection(.enabled).accessibilityAddTraits(.isHeader)
             NotebookChatMarkdown(text: test.instructions, bodyFontSize: 14).foregroundStyle(.secondary)
             HStack(spacing: 12) {
-                Text(text.shuffled)
+                Text(test.questions.contains(where: \.isWritten) ? (language == "en" ? "Written answers are graded by your selected AI model" : "El modelo de IA seleccionado evalúa las respuestas escritas") : text.shuffled)
                 if !controller.isSubmitted, let last = controller.earlierAttempts.last, let correct = last.correct {
-                    Text(text.lastScore(correct, last.total)).accessibilityIdentifier("practice.lastScore")
+                    Text(test.questions.contains(where: \.isWritten) ? (controller.test.flatMap { try? $0.grade(last.answers, writtenGrades: last.writtenGrades ?? [:]) }.map { scoreSummary($0) } ?? "") : text.lastScore(correct, last.total)).accessibilityIdentifier("practice.lastScore")
                 }
             }.font(.callout).foregroundStyle(.tertiary)
         }
     }
 
+    private func scoreSummary(_ result: NotebookPracticeResult) -> String {
+        controller.test?.questions.contains(where: \.isWritten) == true
+            ? String(format: "%.1f/10", result.score) : text.scoreLine(result.correct, result.total)
+    }
+
     private func scoreCard(_ result: NotebookPracticeResult) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text("\(result.correct)/\(result.total)").font(.system(size: 34, weight: .semibold)).monospacedDigit()
+                Text(controller.test?.questions.contains(where: \.isWritten) == true ? String(format: "%.1f/10", result.score) : "\(result.correct)/\(result.total)").font(.system(size: 34, weight: .semibold)).monospacedDigit()
                 Text("\(result.percent)%").font(.title3).foregroundStyle(.secondary).monospacedDigit()
             }
-            ProgressView(value: Double(result.correct), total: Double(max(result.total, 1))).tint(tint)
-            Text(text.scoreLine(result.correct, result.total)).foregroundStyle(.secondary)
+            ProgressView(value: result.score, total: 10).tint(tint)
+            if let model = controller.attempt?.gradingModel { Text(model).font(.callout).foregroundStyle(.secondary) }
+            Text(scoreSummary(result)).foregroundStyle(.secondary)
             if !controller.earlierAttempts.isEmpty {
                 Divider()
                 Text(text.previousAttempts).font(.callout.weight(.medium))
@@ -359,7 +399,7 @@ struct NotebookPracticeTestView: View {
                     HStack {
                         Text(text.attempt(index + 1))
                         Spacer()
-                        Text("\(attempt.correct ?? 0)/\(attempt.total)").monospacedDigit()
+                        Text(controller.test.flatMap { try? $0.grade(attempt.answers, writtenGrades: attempt.writtenGrades ?? [:]) }.map { scoreSummary($0) } ?? "").monospacedDigit()
                     }.font(.callout).foregroundStyle(.secondary)
                 }
             }
@@ -368,7 +408,7 @@ struct NotebookPracticeTestView: View {
         .background(tint.opacity(0.09), in: RoundedRectangle(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(tint.opacity(0.35)))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(text.score + ": " + text.scoreLine(result.correct, result.total))
+        .accessibilityLabel(text.score + ": " + scoreSummary(result))
         .accessibilityIdentifier("practice.score")
     }
 
@@ -380,7 +420,7 @@ struct NotebookPracticeTestView: View {
                     .accessibilityIdentifier("practice.back")
             }
             if controller.isSubmitted {
-                Text(controller.result.map { text.scoreLine($0.correct, $0.total) } ?? "").foregroundStyle(.secondary)
+                Text(controller.result.map { scoreSummary($0) } ?? "").foregroundStyle(.secondary)
                 Spacer()
                 if layout == .flow && !controller.isLastQuestion {
                     Button { controller.nextQuestion() } label: { Label(text.next, systemImage: "chevron.right") }
@@ -398,8 +438,10 @@ struct NotebookPracticeTestView: View {
                         .accessibilityIdentifier("practice.continue")
                 } else {
                     Button {
-                        if controller.submit() { controller.resumeFlow(); proxy.scrollTo("practice.top", anchor: .top) }
-                    } label: { Label(text.submit, systemImage: "checkmark.circle") }
+                        Task {
+                            if await controller.submitWritten(using: gradeAnswers) { controller.resumeFlow(); proxy.scrollTo("practice.top", anchor: .top) }
+                        }
+                    } label: { Label(controller.isGrading ? (language == "en" ? "Grading…" : "Evaluando…") : (controller.test?.questions.contains(where: \.isWritten) == true ? (language == "en" ? "Grade answers" : "Evaluar respuestas") : text.submit), systemImage: "checkmark.circle") }
                         .buttonStyle(.borderedProminent).controlSize(.large).disabled(!controller.canSubmit).accessibilityIdentifier("practice.submit")
                 }
             }
@@ -430,6 +472,21 @@ struct NotebookPracticeQuestionCard: View, Equatable {
             ForEach(Array(display.images.enumerated()), id: \.offset) { index, image in
                 NotebookPracticeReferenceImage(image: image, directory: imageDirectory, root: imageRoot, text: text)
                     .accessibilityIdentifier("practice.image.\(display.id).\(index)")
+            }
+            if display.isWritten {
+                Text(text.language == "en" ? "Your answer" : "Tu respuesta").font(.callout.weight(.medium))
+                TextEditor(text: Binding(get: { display.selectedID ?? "" }, set: { onSelect($0) }))
+                    .font(.body).frame(minHeight: 150).padding(8)
+                    .background(.background, in: RoundedRectangle(cornerRadius: 8))
+                    .disabled(display.isSubmitted)
+                    .accessibilityLabel(text.language == "en" ? "Written answer" : "Respuesta escrita")
+                    .accessibilityIdentifier("practice.answer.\(display.id)")
+                if let grade = display.writtenGrade {
+                    Text(String(format: "%.1f/10", grade.score)).font(.title2.weight(.semibold))
+                    section(text.language == "en" ? "Feedback" : "Comentarios", grade.feedback)
+                    section(text.language == "en" ? "Mistakes and why" : "Errores y por qué", grade.mistakes)
+                    section(text.language == "en" ? "Missing points and why they matter" : "Puntos que faltan y por qué importan", grade.omissions)
+                }
             }
             VStack(spacing: 8) {
                 ForEach(display.options, id: \.id) { option in row(option) }
