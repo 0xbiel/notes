@@ -290,6 +290,15 @@ final class ProviderTests: XCTestCase {
         XCTAssertFalse(AIEditAutonomy.edits.allows(.uncertain))
         XCTAssertFalse(AIEditAutonomy.additions.allows(.retract))
         XCTAssertTrue(AIEditAutonomy.edits.allows(.retract))
+        for policy in AIEditAutonomy.allCases {
+            settings.editAutonomy = policy
+            XCTAssertEqual(try JSONDecoder().decode(AIProviderSettings.self, from: JSONEncoder().encode(settings)).editAutonomy, policy)
+            XCTAssertFalse(policy.allows(.uncertain))
+        }
+        XCTAssertTrue(AIEditAutonomy.automatic.allows(.add))
+        XCTAssertFalse(AIEditAutonomy.automatic.allows(.correct))
+        XCTAssertTrue(AIEditAutonomy.fullAccess.allows(.correct))
+        XCTAssertTrue(AIEditAutonomy.fullAccess.allows(.retract))
     }
 
     func testConnectionProbeIsTinyAndRejectsUnexpectedReplies() throws {

@@ -1036,12 +1036,25 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         }
         let mathSpans = MarkdownMath.spans(in: string, excluding: codeRanges)
         mathRanges = mathSpans.map(\.range)
+        // CommonMark escapes are presentation syntax, not visible backslashes.
+        // Consume pairs so a literal escaped backslash cannot escape the next mark.
+        let punctuation = Set("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~".utf16)
+        var escapes: [NSRange] = []
+        var escapeIndex = 0
+        while escapeIndex + 1 < source.length {
+            let pair = NSRange(location: escapeIndex, length: 2)
+            if source.character(at: escapeIndex) == 92, punctuation.contains(source.character(at: escapeIndex + 1)), !inCode(pair) {
+                escapes.append(pair)
+                escapeIndex += 2
+            } else { escapeIndex += 1 }
+        }
         let formatSource = NSMutableString(string: string)
         for span in mathSpans {
             let masked = source.substring(with: span.range).utf16.map { $0 == 10 ? "\n" : " " }.joined()
             formatSource.replaceCharacters(in: span.range, with: masked)
         }
         for range in inlineCodeRanges { formatSource.replaceCharacters(in: range, with: String(repeating: " ", count: range.length)) }
+        for escape in escapes { formatSource.replaceCharacters(in: escape, with: "  ") }
         func formatMatches(_ pattern: String) -> [NSTextCheckingResult] {
             (try? NSRegularExpression(pattern: pattern, options: [.anchorsMatchLines]))?.matches(in: formatSource as String, range: full) ?? []
         }
@@ -1096,6 +1109,9 @@ struct LiveMarkdownEditor: NSViewRepresentable {
             if let link = url.url { storage.addAttributes([.link: link, .foregroundColor: taskAccent], range: label) }
             hide(NSRange(location: match.range.location, length: labelStart - match.range.location), context: match.range)
             hide(NSRange(location: NSMaxRange(label), length: 2), context: match.range)
+        }
+        for escape in escapes {
+            hide(NSRange(location: escape.location, length: 1), context: escape)
         }
         renderedMath = []
         for span in mathSpans where !visible(span.range) {

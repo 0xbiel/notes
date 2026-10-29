@@ -28,6 +28,7 @@ final class NotesProcess: @unchecked Sendable {
     let timeoutInterval: TimeInterval
     var outputLimit: Int? = 2_000_000
     var captureStandardError = false
+    var acceptsNonzeroExit = false
     init(timeoutInterval: TimeInterval = ProviderRequestLimits.generation) { self.timeoutInterval = timeoutInterval }
     private func expire() { lock.lock(); timedOut = true; cancelled = true; process.stopProviderHelper(); lock.unlock() }
     func cancel() { lock.lock(); cancelled = true; process.stopProviderHelper(); lock.unlock() }
@@ -69,7 +70,7 @@ final class NotesProcess: @unchecked Sendable {
         lock.lock(); let stopped = cancelled, expired = timedOut; lock.unlock()
         if expired { throw MediaError.invalid("El proveedor agotó el tiempo de espera; la petición sigue guardada. Reintenta explícitamente.") }
         if stopped { throw CancellationError() }
-        guard process.terminationStatus == 0 else { throw MediaError.invalid(OpenRouterHarness.providerFailure(data) ?? "El proveedor no pudo completar la petición. No se ha cambiado la nota.") }
+        guard acceptsNonzeroExit || process.terminationStatus == 0 else { throw MediaError.invalid(OpenRouterHarness.providerFailure(data) ?? "El proveedor no pudo completar la petición. No se ha cambiado la nota.") }
         return data
     }
 }

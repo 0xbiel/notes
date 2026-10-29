@@ -81,9 +81,31 @@ final class NotebookNativeSessionTests: XCTestCase {
             let reply = try await transport.generate("hello", language: "en", images: [], progress: { _ in }, session: session)
             XCTAssertTrue(reply.contains("done"))
         }
-        _ = try await transport.generate("", language: "en", images: [], progress: { _ in }, session: session, compact: true)
+        let oldUser = NotebookMessage(role: "user", text: "OLD_USER_REQUIREMENT")
+        let receipt = NotebookMessage(role: "assistant", text: "OLD_VERBOSE_RECEIPT_" + String(repeating: "details ", count: 2000))
+        try await NotesProviderTransport(store: store).compactNotebook(notebookID: "n", chatID: "c", configuration: config, webEnabled: false, language: "en", messages: [oldUser, receipt], progress: { _ in })
+        var next = NotebookTextRequest(notebook: .copiedCourse, profile: .init(), messages: [oldUser, receipt], currentDocument: nil, texts: [:])
+        next.messages.append(.init(role: "user", text: "CONTINUE_AFTER_COMPACTION"))
+        let delta = try session.prompt(next, images: [], correction: "").0
+        XCTAssertFalse(delta.contains("OLD_USER_REQUIREMENT"))
+        XCTAssertFalse(delta.contains("OLD_VERBOSE_RECEIPT"))
+        XCTAssertTrue(delta.contains("CONTINUE_AFTER_COMPACTION"))
         XCTAssertEqual(try session.load().context?.usedTokens, 100)
         XCTAssertEqual(try session.load().context?.compacted, true)
+    }
+
+    func testNativeBootstrapIncludesFullHistoryRatherThanBudgetProjection() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent(".test-workspaces/native-full-history-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("copied-course"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = LocalMediaStore(workspace: try SafeWorkspace(root: root, originalRoot: root.appendingPathComponent("original")))
+        let config = AIProviderConfiguration(provider: .claudeCode, executablePath: "/test/claude")
+        let session = try NotebookNativeSession(store: store, notebookID: "n", chatID: "c", configuration: config, webEnabled: false, language: "en")
+        let messages = (0..<60).map { NotebookMessage(role: $0.isMultiple(of: 2) ? "user" : "assistant", text: "HISTORY_\($0)_" + String(repeating: "content ", count: 200)) }
+        let request = NotebookTextRequest(notebook: .copiedCourse, profile: .init(), messages: messages, currentDocument: nil, texts: [:])
+        let prompt = try session.prompt(request, images: [], correction: "").0
+        for message in messages { XCTAssertTrue(prompt.contains(message.text)) }
+        XCTAssertGreaterThan(prompt.utf8.count, NotebookConversationContext.byteBudget)
     }
 
     func testNativeArgumentsAndContextEvents() throws {

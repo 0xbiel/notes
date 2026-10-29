@@ -8,6 +8,8 @@ struct WorkbenchView: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var chrome = CompactChrome()
+    @State private var chatWorkspaceFrame = CGRect.zero
+    @State private var chatExpansionAnchor: UnitPoint?
     @AppStorage("notes.language") private var language = "es"
 
     @State private var preferencesSection: NotebookPreferencesSection = .general
@@ -31,6 +33,7 @@ struct WorkbenchView: View {
                         WorkspaceTitleBar(model: model, leadingInset: titleBarInset)
                     }
                     NoteWorkspace(model: model)
+                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("notebook-workbench")) } action: { chatWorkspaceFrame = $0 }
                     if model.assistant == nil {
                         HStack { Spacer(); ListeningDock(model: model) }.padding(12)
                     } else if model.selectedLibraryPath != nil && model.hideStudyComposer, let media = model.media {
@@ -90,6 +93,21 @@ struct WorkbenchView: View {
         .background(NotebookAccentCaret())
         .background(AppScrollbarAppearance())
         .environment(\.locale, Locale(identifier: language))
+        .coordinateSpace(name: "notebook-workbench")
+        .environment(\.notebookChatExpansionAnchor, chatExpansionAnchor)
+        .environment(\.expandNotebookChat, { source in
+            let page = chatWorkspaceFrame
+            if !reduceMotion, !source.isEmpty, page.width > 0, page.height > 0 {
+                chatExpansionAnchor = UnitPoint(x: (source.midX - page.minX) / page.width, y: (source.midY - page.minY) / page.height)
+            }
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { model.expandNotebookChat() }
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(50))
+                chatExpansionAnchor = nil
+            }
+        })
         .background(NotebookThemeBackground(blendsBehindWindow: true))
         .background(CompactWindowBridge(chrome: chrome, modalPresented: model.showQuickOpen || model.creationKind != nil || model.renamingItem != nil || model.errorText != nil || model.showNotebookManagement))
         .focusedSceneObject(chrome)
@@ -342,66 +360,16 @@ struct DocumentFileActions: View {
     }
 }
 
-/// Custom because AppKit segmented controls don't receive clicks inside the hidden title bar.
-/// Tuned to the macOS 26 segmented control: the glass thumb lifts on press, tracks the pointer, then settles.
 struct NoteModeSelector: View {
     @ObservedObject var model: Workbench
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var dragOffset: CGFloat?
-    @State private var pressed = false
-    private let segment: CGFloat = 56
-    private let modes = [("Editar", "edit"), ("Ver", "preview")]
-    private var restingOffset: CGFloat { model.layout == "preview" ? segment : 0 }
-    private var thumbOffset: CGFloat { dragOffset ?? restingOffset }
-    private var hovered: String { thumbOffset < segment / 2 ? "edit" : "preview" }
 
     var body: some View {
-        ZStack(alignment: .leading) {
-            thumb
-                .frame(width: segment, height: 26)
-                .scaleEffect(pressed ? 1.08 : 1)
-                .offset(x: thumbOffset)
-            HStack(spacing: 0) {
-                ForEach(modes, id: \.1) { title, value in
-                    Text(LocalizedStringKey(title)).font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(hovered == value ? .primary : .secondary)
-                        .frame(width: segment, height: 26)
-                        .accessibilityAddTraits(model.layout == value ? .isSelected : [])
-                }
-            }.allowsHitTesting(false)
-        }
-        .padding(2)
-        .background(.primary.opacity(0.06), in: Capsule())
-        .contentShape(Capsule())
-        .gesture(DragGesture(minimumDistance: 0).onChanged { drag in
-            if !pressed { animate { pressed = true } }
-            // Small moves are treated as a click; the thumb only tracks once the pointer travels.
-            guard abs(drag.translation.width) > 3 else { return }
-            dragOffset = min(max(drag.location.x - 2 - segment / 2, 0), segment)
-        }.onEnded { drag in
-            let target = abs(drag.translation.width) > 3 ? hovered : (drag.location.x < segment + 2 ? "edit" : "preview")
-            animate { model.layout = target; dragOffset = nil; pressed = false }
-        })
-        .accessibilityElement(children: .ignore)
+        NotebookSlidingSelector(selection: $model.layout, options: [
+            .init(id: "edit", title: String(localized: "Editar")),
+            .init(id: "preview", title: String(localized: "Ver"))
+        ], segment: 56)
         .accessibilityLabel("Modo de la nota")
-        .accessibilityValue(model.layout == "edit" ? "Editar" : "Ver")
-        .accessibilityAdjustableAction { _ in animate { model.layout = model.layout == "edit" ? "preview" : "edit" } }
         .help("Editar o ver la nota · ⌘E")
-    }
-
-    @ViewBuilder private var thumb: some View {
-        if #available(macOS 26.0, *), !reduceTransparency {
-            Capsule().fill(.clear).glassEffect(pressed ? .clear.interactive() : .regular.interactive(), in: .capsule)
-                .shadow(color: .black.opacity(pressed ? 0.12 : 0.06), radius: pressed ? 6 : 2, y: 1)
-        } else {
-            Capsule().fill(Color(nsColor: .controlBackgroundColor))
-                .shadow(color: .black.opacity(0.1), radius: 1.5, y: 0.5)
-        }
-    }
-
-    private func animate(_ change: () -> Void) {
-        withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.86), change)
     }
 }
 

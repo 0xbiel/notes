@@ -33,6 +33,14 @@ Claude Code and the per-provider options were reviewed against commit `8c777fbfa
 - Each queued batch persists its configuration and model. Later settings changes cannot redirect it; old batches without a configuration still use the OpenCode route. Review/apply/undo remains unchanged.
 - Default discovery checks Palladium-managed binaries and standard executable paths, excluding T3 paths. Missing managed runtimes are installed automatically; manually configured paths remain unchanged. See Standalone provider setup below.
 
+## Notebook command tools and continued tasks
+
+Notebook chat exposes an app-managed `commands` tool to every text provider. The provider returns structured shell requests; Palladium runs them with `/bin/zsh -f -c` in the notebook directory (or the requested working directory), then returns combined stdout/stderr, exit status and errors in `commandResults`. Nonzero exits are preserved for the assistant to inspect. Commands can access the filesystem and network with the app user's permissions. Provider-native shell tools remain disabled; their transport restrictions below do not disable this app-managed tool.
+
+General preferences apply to notebook actions: **Supervised** asks before commands and file changes, **Auto-accept edits** approves file changes and asks before commands, **Auto** also approves exact routine inspections (`pwd`, `/bin/pwd`, `/bin/ls`, `/bin/ls -la`), and **Full access** runs commands and applies file changes without prompts. Queue entries snapshot their policy and also obey the current policy; raising permissions does not silently escalate queued work. Approval cards show the command, directory or proposed file contents and offer Allow once/Deny. Cancellation dismisses pending approval and stops an active command. Commands have a configurable timeout capped at ten minutes and bounded output; they are noninteractive. Command changes are direct filesystem writes and are not included in note undo checkpoints. Unsaved notebook drafts are checkpointed before launching a command, and newly typed drafts are preserved when command changes reload.
+
+Responses include `pendingTasks`. After applying and recording one batch, the controller updates source snapshots and automatically requests the remaining work in the same run. Multi-topic requests must complete every requested topic without requiring another user prompt. The assistant can alternate reads, commands, web actions, and saved edit batches; commands cannot be combined with other action types in one response. New native sessions use a versioned tool-protocol fingerprint so old tool-less sessions cannot retain stale capability instructions.
+
 ## Transport boundaries
 
 OpenCode checks the required JSON run flags and its effective model, permissions, MCP, plugins, auxiliary agents, and privacy/price policy before sending. Managed updates are checked by their capabilities rather than an exact-version allowlist. Real-note requests require no training, ZDR, and zero prices; only the exact invented demo permits retention. No policy is relaxed to make a request pass.
@@ -155,3 +163,15 @@ explicitly configured `localharness_external`. It preserves the selected profile
 and does not scan T3 directories. Older settings with a nonexistent Palladium
 managed ACP path are repaired from that configured harness on load. Detection
 never replaces an executable with a nonexistent default path.
+
+## Native compaction and persistent boundaries
+
+Compaction behavior was checked against `pingdotgg/t3code` commit `58e60bf5e808fc226d9b769d66d1ea9fec014d23` (October 29, 2026):
+
+- [Codex adapter](https://github.com/pingdotgg/t3code/blob/58e60bf5e808fc226d9b769d66d1ea9fec014d23/apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts#L6868) calls `thread/compact/start` on the existing native thread.
+- [Claude adapter](https://github.com/pingdotgg/t3code/blob/58e60bf5e808fc226d9b769d66d1ea9fec014d23/apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts#L10832) sends `/compact` to the existing session.
+- [OpenCode adapter](https://github.com/pingdotgg/t3code/blob/58e60bf5e808fc226d9b769d66d1ea9fec014d23/packages/provider-opencode/src/server/v2/adapter.ts#L3287) calls its native `session.compact` endpoint; Palladium's current OpenCode CLI adapter does not use this persistent server API.
+
+Palladium uses native compaction for Codex and Claude, with provider confirmation before recording success. Native sessions bootstrap from the complete conversation, not a locally selected history budget, then send only new turns and changed sources. Successful manual compaction marks existing local transcript messages as already represented by the provider's replacement context, preventing verbose app receipts from refilling it. The complete transcript stays available in the UI and through explicit history retrieval.
+
+OpenCode and Antigravity retain the local 8 KB history-budget fallback until their adapters support persistent native compaction. This fallback preserves saved messages and reports local history compaction separately. Successful manual or automatic native compaction and local fallback compaction write a persistent boundary into the chat. Boundaries remain visible after subsequent messages and app restart, while being excluded from model context and turn navigation. Failure/cancellation does not write a success boundary. Queued prompts wait for native compaction to finish.

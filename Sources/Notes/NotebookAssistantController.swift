@@ -12,8 +12,46 @@ final class NotebookAssistantController: ObservableObject {
         var progress = ""
         var activities: [NotebookActivity] = []
         var compacting = false
+        var compactionReceipts: Set<String> = []
     }
     @Published private(set) var runs: [RunKey: RunState] = [:]
+    struct Approval: Identifiable {
+        let id = UUID()
+        let title: String
+        let detail: String
+    }
+    @Published private(set) var approvals: [RunKey: Approval] = [:]
+    private var approvalWaiters: [RunKey: CheckedContinuation<Bool, Never>] = [:]
+    var permissionProvider: () -> AIEditAutonomy = { .review }
+
+    func approval(for notebook: Notebook) -> Approval? {
+        guard let id = chat(notebook)?.id else { return nil }
+        return approvals[RunKey(notebookID: notebook.id, chatID: id)]
+    }
+    func resolveApproval(notebook: Notebook, allowed: Bool) {
+        guard let id = chat(notebook)?.id else { return }
+        resolveApproval(RunKey(notebookID: notebook.id, chatID: id), allowed: allowed)
+    }
+    private func resolveApproval(_ run: RunKey, allowed: Bool) {
+        approvals.removeValue(forKey: run)
+        approvalWaiters.removeValue(forKey: run)?.resume(returning: allowed)
+    }
+    private func approve(_ title: String, detail: String, run: RunKey) async throws -> Bool {
+        try Task.checkCancellation()
+        let allowed = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                approvals[run] = Approval(title: title, detail: detail)
+                approvalWaiters[run] = continuation
+                report("Esperando permiso…", run: run, detail: detail, kind: .tool)
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.resolveApproval(run, allowed: false) }
+        }
+        try Task.checkCancellation()
+        report(allowed ? "Permiso concedido" : "Permiso denegado", run: run, detail: detail, kind: .tool)
+        return allowed
+    }
+
     // Aggregate accessors are used only by workspace-wide status and file-management guards.
     var runningNotebookID: String? { runs.keys.first?.notebookID }
     var runningChatID: String? { runs.keys.first?.chatID }
@@ -42,6 +80,12 @@ final class NotebookAssistantController: ObservableObject {
         guard var state = runs[run] else { return }
         let id = round + "." + update.id
         state.progress = update.title
+        if !state.compacting, update.id == "native-compact", update.title == "Contexto compactado",
+           state.compactionReceipts.insert(round).inserted,
+           let notebook = store.notebooks.first(where: { $0.id == run.notebookID }) {
+            do { try recordCompaction(notebook, chatID: run.chatID, native: true) }
+            catch { self.error = error.localizedDescription }
+        }
         if update.kind == .reasoning, update.detail?.isEmpty == false {
             state.activities.removeAll { $0.id == round + ".provider-start" && $0.detail == nil }
         }
@@ -65,6 +109,7 @@ final class NotebookAssistantController: ObservableObject {
     let store: NotebookProjectStore
     let transport: NotesProviderTransport
     var generate: ((NotebookTextRequest, AIProviderConfiguration) async throws -> NotebookAssistantResponse)?
+    var compactProviderSession: ((Notebook, String, AIProviderConfiguration, Bool) async throws -> Void)?
     var dispatchQueued: ((Notebook, String, NotebookQueuedPrompt) -> Void)?
     /// Files the assistant added to the library outside note edits, such as downloads.
     var onLibraryChange: (([String]) -> Void)?
@@ -85,6 +130,9 @@ final class NotebookAssistantController: ObservableObject {
                 try store.saveState(state, notebookID: notebook.id)
             }
             try save(state, id: notebook.id)
+            for chat in state.chats where chat.messages.contains(where: { $0.contextCompacted == true }) {
+                compactedContexts.insert(RunKey(notebookID: notebook.id, chatID: chat.id))
+            }
             for chat in state.chats where !(chat.queuedPrompts ?? []).isEmpty {
                 heldQueues.insert(RunKey(notebookID: notebook.id, chatID: chat.id))
             }
@@ -316,11 +364,17 @@ final class NotebookAssistantController: ObservableObject {
                 self.advanceQueue(notebook, chatID: chatID)
             }
             do {
-                try await self.transport.compactNotebook(notebookID: notebook.id, chatID: chatID, configuration: configuration, webEnabled: webEnabled, language: language) { [weak self] progress in
-                    await self?.report(progress, run: key, round: "compact")
+                try configuration.validateSending()
+                let messages = self.state(notebook).chats.first { $0.id == chatID }?.messages ?? []
+                if let compact = self.compactProviderSession {
+                    try await compact(notebook, chatID, configuration, webEnabled)
+                } else {
+                    try await self.transport.compactNotebook(notebookID: notebook.id, chatID: chatID, configuration: configuration, webEnabled: webEnabled, language: language, messages: messages) { [weak self] progress in
+                        await self?.report(progress, run: key, round: "compact")
+                    }
                 }
                 try Task.checkCancellation()
-                self.compactedContexts.insert(key)
+                try self.recordCompaction(notebook, chatID: chatID, native: true)
             } catch {
                 self.heldQueues.insert(key)
                 self.error = Task.isCancelled ? "Compactación cancelada." : error.localizedDescription
@@ -342,19 +396,26 @@ final class NotebookAssistantController: ObservableObject {
         guard let chat = chat(notebook), !isRunning(notebook), !importingAttachments else { return }
         if let configuration, NotesProviderTransport.supportsNativeNotebookSession(configuration.provider) {
             compactNative(notebook, chatID: chat.id, configuration: configuration, webEnabled: webEnabled)
-            return
+        } else {
+            do {
+                try recordCompaction(notebook, chatID: chat.id, native: false)
+                contextPanel = RunKey(notebookID: notebook.id, chatID: chat.id)
+                error = nil
+            } catch { self.error = error.localizedDescription }
         }
+    }
+
+    private func recordCompaction(_ notebook: Notebook, chatID: String, native: Bool) throws {
         var value = state(notebook)
-        guard let i = value.chats.firstIndex(where: { $0.id == chat.id }),
-              value.chats[i].messages.contains(where: { $0.contextCommand != true }) else { return }
-        do {
-            value.chats[i].conversationByteBudget = NotebookConversationContext.compactByteBudget
-            try save(value, id: notebook.id)
-            let key = RunKey(notebookID: notebook.id, chatID: chat.id)
-            compactedContexts.insert(key)
-            contextPanel = key
-            error = nil
-        } catch { self.error = error.localizedDescription }
+        guard let index = value.chats.firstIndex(where: { $0.id == chatID }),
+              value.chats[index].messages.contains(where: { $0.contextCommand != true }) else { return }
+        value.chats[index].conversationByteBudget = native ? nil : NotebookConversationContext.compactByteBudget
+        var receipt = NotebookMessage(role: "system", text: native ? "Context compacted" : "Conversation history compacted", appGenerated: true)
+        receipt.contextCommand = true
+        receipt.contextCompacted = true
+        value.chats[index].messages.append(receipt)
+        try save(value, id: notebook.id)
+        compactedContexts.insert(RunKey(notebookID: notebook.id, chatID: chatID))
     }
 
     /// Slash commands are composer actions, never chat messages or provider prompts.
@@ -373,25 +434,27 @@ final class NotebookAssistantController: ObservableObject {
             return true
         }
         do {
-            let hasHistory = value.chats[i].messages.contains { $0.contextCommand != true }
             let native = configuration.map { NotesProviderTransport.supportsNativeNotebookSession($0.provider) } == true
-            if command == .compact && hasHistory && !native { value.chats[i].conversationByteBudget = NotebookConversationContext.compactByteBudget }
+            if command == .compact, native, let configuration { try configuration.validateSending() }
             if let queuedInput { value.chats[i].queuedPrompts?.removeAll { $0.id == queuedInput.id } }
             else { value.chats[i].draft = "" }
             try save(value, id: notebook.id)
-            if command == .compact && hasHistory && !native { compactedContexts.insert(key) }
             if value.activeChatID == key.chatID { contextPanel = key }
             error = nil
             if command == .compact, native, let configuration {
                 compactNative(notebook, chatID: key.chatID, configuration: configuration, webEnabled: queuedInput?.webEnabled ?? webEnabled)
                 return true
             }
+            if command == .compact { try recordCompaction(notebook, chatID: key.chatID, native: false) }
             if queuedInput != nil { advanceQueue(notebook, chatID: key.chatID) }
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            if queuedInput != nil { heldQueues.insert(key) }
+            self.error = error.localizedDescription
+        }
         return true
     }
 
-    func enqueue(_ notebook: Notebook, configuration: AIProviderConfiguration, document: String?, webEnabled: Bool = true, steer: Bool = false) {
+    func enqueue(_ notebook: Notebook, configuration: AIProviderConfiguration, document: String?, webEnabled: Bool = true, permission: AIEditAutonomy = .review, steer: Bool = false) {
         guard let chat = chat(notebook), !importingAttachments else { return }
         let text = chat.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !(chat.attachments ?? []).isEmpty else { return }
@@ -401,7 +464,8 @@ final class NotebookAssistantController: ObservableObject {
             if !localCommand { try configuration.validateSending() }
             var value = state(notebook)
             guard let i = value.chats.firstIndex(where: { $0.id == chat.id }) else { return }
-            let item = NotebookQueuedPrompt(text: text, attachments: chat.attachments ?? [], configuration: configuration, document: document, webEnabled: webEnabled)
+            var item = NotebookQueuedPrompt(text: text, attachments: chat.attachments ?? [], configuration: configuration, document: document, webEnabled: webEnabled)
+            item.permission = permission
             var queue = value.chats[i].queuedPrompts ?? []
             if steer { queue.insert(item, at: 0) } else { queue.append(item) }
             value.chats[i].queuedPrompts = queue
@@ -452,7 +516,8 @@ final class NotebookAssistantController: ObservableObject {
         dispatchQueued?(notebook, chatID, item)
     }
 
-    func send(notebook: Notebook, document: String?, texts: [String: String], configuration: AIProviderConfiguration, chatID: String? = nil, queuedInput: NotebookQueuedPrompt? = nil, webEnabled: Bool = true,
+    func send(notebook: Notebook, document: String?, texts: [String: String], configuration: AIProviderConfiguration, chatID: String? = nil, queuedInput: NotebookQueuedPrompt? = nil, webEnabled: Bool = true, permission: AIEditAutonomy = .review,
+              beforeCommand: @escaping () throws -> Void = {}, afterCommand: @escaping ([String]) throws -> Void = { _ in },
               apply: @escaping ([NotebookFileChange], [String: String], String) throws -> NotebookCheckpoint?) {
         guard !isRunning(notebook, chatID: chatID), !importingAttachments, var chat = state(notebook).chats.first(where: { $0.id == (chatID ?? state(notebook).activeChatID) }) else { return }
         if let queuedInput { chat.draft = queuedInput.text; chat.attachments = queuedInput.attachments }
@@ -478,8 +543,12 @@ final class NotebookAssistantController: ObservableObject {
             let libraryFiles = try store.workspace.fileNames().filter { store.owner(of: $0)?.id == notebook.id }
             let language = UserDefaults.standard.string(forKey: "notes.language") ?? "es"
             var candidate = NotebookTextRequest(notebook: notebook, profile: value.profile, messages: value.chats[i].messages, currentDocument: document, texts: texts, language: language, libraryFiles: libraryFiles)
-            candidate.conversationByteBudget = value.chats[i].conversationByteBudget
+            // Native providers own their replacement context; only stateless
+            // adapters use the local history-budget fallback.
+            candidate.conversationByteBudget = NotesProviderTransport.supportsNativeNotebookSession(configuration.provider) ? nil : value.chats[i].conversationByteBudget
             candidate.chatID = chat.id
+            candidate.permission = queuedInput?.permission ?? permission
+            candidate.workingDirectory = store.workspace.courseRoot.appendingPathComponent(notebook.rootPrefix, isDirectory: true).path
             for attachment in allAttachments where attachment.isImage || attachment.isPDF {
                 candidate.sourceDigests["attachment:" + attachment.id] = NotebookSourceImage.digest(try store.workspace.readStorage(attachment.storagePrefix + "/original"))
             }
@@ -497,6 +566,7 @@ final class NotebookAssistantController: ObservableObject {
             workers[run] = Task { [weak self] in
                 guard let self else { return }
                 defer {
+                    self.resolveApproval(run, allowed: false)
                     self.runs.removeValue(forKey: run); self.workers.removeValue(forKey: run)
                     self.advanceQueue(notebook, chatID: chat.id)
                 }
@@ -505,6 +575,11 @@ final class NotebookAssistantController: ObservableObject {
                     var automaticContinuationSent = false
                     var repairRounds = 0
                     var historyPages: [String] = []
+                    var completedSteps = 0
+                    var emptyContinuationRounds = 0
+                    var updatedTexts = texts
+                    var lastContinuation = ""
+                    var deniedCommands: [NotebookCommand] = []
                     // Loads one source into the request; false when it was already there.
                     @MainActor func load(_ entry: String) throws -> Bool {
                         if entry == NotebookConversationContext.historyPath || entry.hasPrefix(NotebookConversationContext.historyPath + "#") {
@@ -527,7 +602,7 @@ final class NotebookAssistantController: ObservableObject {
                         guard request.catalog[file] != nil else { throw MediaError.invalid("Documento solicitado inexistente: \(file)") }
                         guard request.documents[path] == nil else { return false }
                         self.report("Leyendo · \(path)", run: run, detail: path, kind: .tool)
-                        if selection == nil, let text = texts[path] { request.documents[path] = text }
+                        if selection == nil, let text = updatedTexts[path] { request.documents[path] = text }
                         else {
                             do {
                                 let source = try NotebookLibraryContext.read(file, inside: inside, selection: selection, library: library, notebookID: notebook.id)
@@ -555,6 +630,50 @@ final class NotebookAssistantController: ObservableObject {
                             await self?.report(update, run: run, round: round)
                         }) }
                         try Task.checkCancellation()
+                        if let commands = response.commands, !commands.isEmpty {
+                            guard response.readFiles.isEmpty, response.edits.isEmpty, (response.outputs ?? []).isEmpty, (response.webActions ?? []).isEmpty else {
+                                throw MediaError.invalid("Commands must be requested separately from other actions.")
+                            }
+                            for command in commands {
+                                try Task.checkCancellation()
+                                if deniedCommands.contains(command) {
+                                    request.commandResults.append(.init(command: command, error: "This command was already denied. Do not retry it."))
+                                    continue
+                                }
+                                let automatic = request.permission.approvesCommand(command) && self.permissionProvider().approvesCommand(command)
+                                let allowed = automatic ? true : try await self.approve("Run command?", detail: command.command + "\n\nDirectory: " + (command.workingDirectory.isEmpty ? request.workingDirectory : command.workingDirectory), run: run)
+                                guard allowed else {
+                                    deniedCommands.append(command)
+                                    request.commandResults.append(.init(command: command, error: "User denied this command. Do not retry or bypass this denial."))
+                                    continue
+                                }
+                                self.report("Ejecutando comando…", run: run, detail: command.command, kind: .tool)
+                                let beforeTexts = updatedTexts
+                                try beforeCommand()
+                                do {
+                                    let result = try await NotebookCommandRunner.run(command, defaultDirectory: URL(fileURLWithPath: request.workingDirectory))
+                                    request.commandResults.append(result)
+                                    self.report("Comando finalizado · \(result.exitCode ?? -1)", run: run, detail: command.command + "\n" + result.output, kind: .tool)
+                                } catch {
+                                    request.commandResults.append(.init(command: command, error: error.localizedDescription))
+                                    self.report("Error de comando", run: run, detail: error.localizedDescription, kind: .tool)
+                                }
+                                // Commands write directly. Reload the notebook before another round;
+                                // never let stale in-memory source snapshots overwrite their changes.
+                                updatedTexts = try self.store.texts(notebook.id)
+                                request.documents = [:]
+                                request.sourceDigests = request.sourceDigests.filter { $0.key.hasPrefix("attachment:") }
+                                let paths = try self.store.workspace.fileNames().filter { self.store.owner(of: $0)?.id == notebook.id }
+                                let previousPaths = Set(request.catalog.keys)
+                                request.catalog = Dictionary(uniqueKeysWithValues: paths.map { ($0, "Local file. Read it with readFiles before editing.") })
+                                let changedPaths = Set(beforeTexts.keys).union(updatedTexts.keys).filter { beforeTexts[$0] != updatedTexts[$0] }
+                                try afterCommand(Array(Set(changedPaths).union(Set(paths).symmetricDifference(previousPaths))))
+                                try Task.checkCancellation()
+                            }
+                            if request.commandResults.count > 8 { request.commandResults.removeFirst(request.commandResults.count - 8) }
+                            request.contextUpdate = "Commands finished. Inspect commandResults, verify the actual results, and continue ALL remaining parts of the original request. Read changed files again before editing. Denied actions must not be retried or bypassed."
+                            continue
+                        }
                         if let actions = response.webActions, !actions.isEmpty {
                             guard request.webEnabled else { throw MediaError.invalid("Web access is off for this chat. Turn it on to let the assistant search.") }
                             for action in actions {
@@ -607,7 +726,7 @@ final class NotebookAssistantController: ObservableObject {
                         let changes: [NotebookFileChange]
                         do { changes = try NotebookAssistantProtocol.changes(response, documents: request.documents, allowDeletion: NotebookAssistantProtocol.deletionAllowed(in: request.messages)) }
                         catch let validation as NotebookEditValidationError {
-                            guard repairRounds < 2, let original = texts[validation.path] else { throw validation }
+                            guard repairRounds < 2, let original = updatedTexts[validation.path] else { throw validation }
                             try self.store.validate(validation.path, notebookID: notebook.id)
                             repairRounds += 1
                             request.documents[validation.path] = original
@@ -641,6 +760,15 @@ final class NotebookAssistantController: ObservableObject {
                             self.report("Corrigiendo cambios…", run: run)
                             continue
                         }
+                        if !changes.isEmpty || !requestedOutputs.isEmpty {
+                            if !request.permission.approvesFileChanges || !self.permissionProvider().approvesFileChanges {
+                                let detail = changes.map { "\($0.after == nil ? "Delete" : $0.before == nil ? "Create" : "Edit"): \($0.path)\n" + String(($0.after ?? "[Delete file]").prefix(8_000)) }.joined(separator: "\n\n")
+                                    + requestedOutputs.map { "\nGenerate \($0.format): \($0.path)" }.joined()
+                                guard try await self.approve("Apply file changes?", detail: detail, run: run) else {
+                                    throw MediaError.invalid("File changes denied. No changes from this step were applied.")
+                                }
+                            }
+                        }
                         try NotebookDocumentOutputWriter.publish(imageOutputs, workspace: self.store.workspace)
                         var outputs = imageOutputs
                         let checkpoint: NotebookCheckpoint?
@@ -659,6 +787,24 @@ final class NotebookAssistantController: ObservableObject {
                         let reply = response.reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? (changes.isEmpty ? "Sin cambios." : "Cambios guardados · \(changes.count) archivo(s).") : response.reply
                         let receipt = outputPaths.isEmpty ? reply : reply + "\n\nGenerated files: " + outputPaths.joined(separator: ", ")
                         try self.append(.init(role: "assistant", text: receipt, files: changes.map(\.path) + outputPaths, checkpointID: checkpoint?.id, activities: self.runs[run]?.activities ?? [], appGenerated: response.reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), notebook: notebook, chatID: chat.id)
+                        for change in changes {
+                            updatedTexts[change.path] = change.after
+                            request.documents[change.path] = change.after
+                            request.catalog[change.path] = change.after.map { String($0.prefix(800)) }
+                        }
+                        request.messages = self.state(notebook).chats.first { $0.id == chat.id }?.messages ?? request.messages
+                        let pending = response.pendingTasks ?? []
+                        if !pending.isEmpty {
+                            let continuation = response.reply + pending.joined(separator: "\n")
+                            let madeProgress = !changes.isEmpty || !outputPaths.isEmpty || (!response.reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && continuation != lastContinuation)
+                            lastContinuation = continuation
+                            emptyContinuationRounds = madeProgress ? 0 : emptyContinuationRounds + 1
+                            guard emptyContinuationRounds < 3 else { throw MediaError.invalid("The assistant is not making progress on the remaining tasks.") }
+                            completedSteps += 1
+                            request.contextUpdate = "Step \(completedSteps) saved successfully. Continue the original request without asking the user to send another prompt. Remaining work: " + pending.joined(separator: "; ") + ". Do not repeat completed work. Return pendingTasks=[] only when every requested part is complete or genuinely blocked."
+                            self.report("Continuando la tarea…", run: run, detail: pending.joined(separator: "\n"), kind: .tool)
+                            continue
+                        }
                         return
                     }
                 } catch {
@@ -707,7 +853,7 @@ extension Workbench {
             self?.dispatchNotebookPrompt(notebook: notebook, chatID: chatID, item: item)
         }
         if assistant.isRunning(notebook) {
-            assistant.enqueue(notebook, configuration: ai.providerSettings.selected, document: selectedLibraryPath, webEnabled: notebookWebEnabled, steer: UserDefaults.standard.bool(forKey: "notes.alwaysSteer"))
+            assistant.enqueue(notebook, configuration: ai.providerSettings.selected, document: selectedLibraryPath, webEnabled: notebookWebEnabled, permission: ai.providerSettings.editAutonomy ?? .review, steer: UserDefaults.standard.bool(forKey: "notes.alwaysSteer"))
             return
         }
         dispatchNotebookPrompt(notebook: notebook, chatID: nil, item: nil)
@@ -720,18 +866,28 @@ extension Workbench {
     func steerNotebookPrompt() {
         guard media?.isRecording != true, media?.busy != true else { return }
         guard let assistant, let ai else { return }
-        assistant.enqueue(currentNotebook, configuration: ai.providerSettings.selected, document: selectedLibraryPath, webEnabled: notebookWebEnabled, steer: true)
+        assistant.enqueue(currentNotebook, configuration: ai.providerSettings.selected, document: selectedLibraryPath, webEnabled: notebookWebEnabled, permission: ai.providerSettings.editAutonomy ?? .review, steer: true)
     }
     func dispatchNotebookPrompt(notebook: Notebook, chatID: String?, item: NotebookQueuedPrompt?) {
         guard let assistant, let projects, let ai else { return }
         if assistant.handleContextCommand(notebook, chatID: chatID, queuedInput: item, configuration: item?.configuration ?? ai.providerSettings.selected, webEnabled: item?.webEnabled ?? notebookWebEnabled) { return }
         do {
-            let disk = try projects.texts(notebook.id)
+            assistant.permissionProvider = { [weak ai] in ai?.providerSettings.editAutonomy ?? .review }
+            var disk = try projects.texts(notebook.id)
             var effective = disk
             for (path, text) in drafts where projects.owner(of: path)?.id == notebook.id && hasDraft(for: path) { effective[path] = text }
             for (path, editor) in latexEditors where projects.owner(of: path)?.id == notebook.id && editor.dirty { effective[path] = editor.source }
             let snapshot = effective
-            assistant.send(notebook: notebook, document: item == nil ? selectedLibraryPath : item?.document, texts: snapshot, configuration: item?.configuration ?? ai.providerSettings.selected, chatID: chatID, queuedInput: item, webEnabled: notebookWebEnabled) { [weak self] changes, read, prompt in
+            assistant.send(notebook: notebook, document: item == nil ? selectedLibraryPath : item?.document, texts: snapshot, configuration: item?.configuration ?? ai.providerSettings.selected, chatID: chatID, queuedInput: item, webEnabled: notebookWebEnabled, permission: ai.providerSettings.editAutonomy ?? .review, beforeCommand: { [weak self] in
+                guard let self else { throw CancellationError() }
+                try self.checkpointDrafts(notebook.id)
+                disk = try projects.texts(notebook.id)
+            }, afterCommand: { [weak self] paths in
+                guard let self else { throw CancellationError() }
+                // Preserve any draft the user typed while the command was running.
+                self.refreshProjectFiles(paths.filter { !self.hasDraft(for: $0) && self.latexEditors[$0]?.dirty != true })
+                disk = try projects.texts(notebook.id)
+            }) { [weak self] changes, read, prompt in
                 guard let self else { throw CancellationError() }
                 guard !changes.isEmpty else { return nil }
                 for (path, original) in read where disk[path] != nil {
@@ -747,6 +903,7 @@ extension Workbench {
                 for change in changes { if let editor = self.latexEditors[change.path], editor.dirty { try editor.save() } }
                 let checkpoint = try projects.apply(notebook.id, summary: String(prompt.prefix(160)), changes: changes, invalidatesProposals: true)
                 self.refreshProjectFiles(changes.map(\.path))
+                disk = try projects.texts(notebook.id)
                 return checkpoint
             }
         } catch { errorText = error.localizedDescription }

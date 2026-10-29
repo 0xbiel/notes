@@ -26,33 +26,15 @@ struct GeneralAIPreferences: View {
                     .help(text("Gestionar proveedores y modelos", "Manage providers and models"))
                     .accessibilityLabel(text("Gestionar proveedores", "Manage providers"))
             }
-            VStack(alignment: .leading, spacing: 16) {
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 8) {
-                        modelControl.fixedSize()
-                        thinkingControl.fixedSize()
-                        Spacer(minLength: 0)
-                    }
-                    VStack(alignment: .leading, spacing: 8) {
-                        modelControl
-                        thinkingControl
-                    }
-                }
-                Divider().opacity(0.35)
-                ViewThatFits(in: .horizontal) {
-                    HStack {
-                        Text(text("Permiso de edición", "Editing permission"))
-                            .font(.callout).foregroundStyle(.secondary)
-                        Spacer(minLength: 8)
-                        permissionsControl.fixedSize()
-                    }
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(text("Permiso de edición", "Editing permission"))
-                            .font(.callout).foregroundStyle(.secondary)
-                        permissionsControl
-                    }
-                }
-            }.padding(16).modifier(NotebookInputSurface(radius: 14, borderOpacity: 0.22))
+            HStack(spacing: 8) {
+                modelControl.layoutPriority(1)
+                thinkingControl.fixedSize()
+                Spacer(minLength: 0)
+                permissionsControl.fixedSize()
+            }
+            .padding(12)
+            .modifier(NotebookInputSurface(radius: 26, floating: true, borderOpacity: 0, fillOpacity: 0.5))
+
             HStack {
                 Button {
                     connectionTask = Task { await preferences.testConnection() }
@@ -108,11 +90,10 @@ struct GeneralAIPreferences: View {
         }
     }
     private var permissionsControl: some View {
-        AIOptionSelector(title: text("Permisos", "Permissions"), symbol: "lock.open", options: [
-            .init(id: "review", title: text("Revisar todo", "Review everything")),
-            .init(id: "additions", title: text("Solo añadir", "Add only")),
-            .init(id: "edits", title: text("Editar texto", "Edit text"))
-        ], selection: Binding(get: { (preferences.draft.editAutonomy ?? .review).rawValue }, set: { preferences.draft.editAutonomy = AIEditAutonomy(rawValue: $0) }))
-            .accessibilityIdentifier("general.ai.autonomy")
+        AIPermissionsSelector(selection: Binding(
+            get: { preferences.draft.editAutonomy ?? .review },
+            set: { preferences.draft.editAutonomy = $0 }
+        ))
+        .accessibilityIdentifier("general.ai.autonomy")
     }
 }

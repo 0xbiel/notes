@@ -171,6 +171,98 @@ final class NotebookAssistantTests: XCTestCase {
         XCTAssertTrue(try model.workspace!.readNote("Summary.tex").contains("\\badmacro"))
         XCTAssertTrue(editor.source.contains("\\badmacro"))
     }
+    @MainActor func testAllThreeTopicsCompleteAcrossSavedStepsWithoutAnotherPrompt() async throws {
+        let (model, assistant, _) = try fixture()
+        var rounds = 0
+        assistant.generate = { request, _ in
+            rounds += 1
+            XCTAssertTrue(try request.prompt().contains("complete ALL parts"))
+            if rounds > 1 {
+                XCTAssertEqual(request.documents["Summary.md"], "# Topics\n" + (1..<rounds).map { "\nTopic \($0): summary.\n" }.joined())
+                XCTAssertTrue(request.contextUpdate.contains("Continue the original request"))
+            }
+            let text = "# Topics\n" + (1...rounds).map { "\nTopic \($0): summary.\n" }.joined()
+            return .init(reply: "Finished topic \(rounds).", edits: [
+                .init(path: "Summary.md", replacement: text, create: rounds == 1, replaceEntireFile: rounds > 1)
+            ], pendingTasks: rounds < 3 ? ((rounds + 1)...3).map { "Summarize topic \($0)" } : [])
+        }
+        assistant.setDraft("Summarize topics 1, 2 and 3 in Summary.md.", notebook: model.currentNotebook)
+        model.submitNotebookPrompt()
+        await assistant.waitUntilFinished()
+        XCTAssertNil(assistant.error)
+        XCTAssertEqual(rounds, 3)
+        XCTAssertTrue(try model.workspace!.readNote("Summary.md").contains("Topic 3: summary."))
+        XCTAssertEqual(assistant.chat(model.currentNotebook)?.messages.filter { $0.role == "user" }.count, 1)
+    }
+
+    @MainActor func testFullAccessCommandResultsFeedTheNextRoundAndRefreshFiles() async throws {
+        let (model, assistant, _) = try fixture()
+        model.ai?.providerSettings.editAutonomy = .fullAccess
+        var rounds = 0
+        assistant.generate = { request, _ in
+            rounds += 1
+            if rounds == 1 {
+                return .init(reply: "", commands: [.init(command: "printf '# Command note\\n' > Command.md; printf 'created'")])
+            }
+            if rounds == 2 {
+                XCTAssertEqual(request.commandResults.last?.exitCode, 0)
+                XCTAssertEqual(request.commandResults.last?.output, "created")
+                XCTAssertNotNil(request.catalog["Command.md"])
+                return .init(reply: "", readFiles: ["Command.md"])
+            }
+            XCTAssertEqual(request.documents["Command.md"], "# Command note\n")
+            return .init(reply: "Done.", edits: [.init(path: "Command.md", replacement: "# Command note\n\nVerified.\n", replaceEntireFile: true)])
+        }
+        assistant.setDraft("Create a file with a command, inspect it, then add verification.", notebook: model.currentNotebook)
+        model.submitNotebookPrompt(); await assistant.waitUntilFinished()
+        XCTAssertNil(assistant.error); XCTAssertEqual(rounds, 3)
+        XCTAssertTrue(try model.workspace!.readNote("Command.md").contains("Verified."))
+        XCTAssertTrue(model.libraryFiles.contains("Command.md"))
+    }
+
+    @MainActor func testDeniedCommandNeverRunsAndCancellationReleasesApproval() async throws {
+        let (model, assistant, _) = try fixture()
+        model.ai?.providerSettings.editAutonomy = .edits
+        var rounds = 0
+        assistant.generate = { request, _ in
+            rounds += 1
+            if rounds == 1 { return .init(reply: "", commands: [.init(command: "touch denied-marker")]) }
+            XCTAssertTrue(request.commandResults.last?.error?.contains("denied") == true)
+            return .init(reply: "Command denied.")
+        }
+        assistant.setDraft("Run a command.", notebook: model.currentNotebook)
+        model.submitNotebookPrompt()
+        for _ in 0..<200 where assistant.approval(for: model.currentNotebook) == nil { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertNotNil(assistant.approval(for: model.currentNotebook))
+        assistant.resolveApproval(notebook: model.currentNotebook, allowed: false)
+        await assistant.waitUntilFinished()
+        XCTAssertEqual(rounds, 2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: model.workspace!.courseRoot.appendingPathComponent("denied-marker").path))
+        rounds = 0
+        assistant.setDraft("Run another command.", notebook: model.currentNotebook)
+        model.submitNotebookPrompt()
+        for _ in 0..<200 where assistant.approval(for: model.currentNotebook) == nil { try await Task.sleep(for: .milliseconds(10)) }
+        assistant.stop(notebook: model.currentNotebook)
+        await assistant.waitUntilFinished()
+        XCTAssertNil(assistant.approval(for: model.currentNotebook))
+        XCTAssertFalse(assistant.isRunning(model.currentNotebook))
+    }
+
+    @MainActor func testSupervisedEditsWaitForApprovalAndApplyOnce() async throws {
+        let (model, assistant, _) = try fixture()
+        model.ai?.providerSettings.editAutonomy = .review
+        assistant.generate = { _, _ in .init(reply: "Saved.", edits: [.init(path: "Approved.md", replacement: "# Approved", create: true)]) }
+        assistant.setDraft("Create Approved.md", notebook: model.currentNotebook)
+        model.submitNotebookPrompt()
+        for _ in 0..<200 where assistant.approval(for: model.currentNotebook) == nil { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertNotNil(assistant.approval(for: model.currentNotebook))
+        XCTAssertFalse(model.libraryFiles.contains("Approved.md"))
+        assistant.resolveApproval(notebook: model.currentNotebook, allowed: true)
+        await assistant.waitUntilFinished()
+        XCTAssertNil(assistant.error)
+        XCTAssertEqual(try model.workspace!.readNote("Approved.md"), "# Approved")
+    }
+
     @MainActor private func fixture() throws -> (Workbench, NotebookAssistantController, URL) {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent(".test-workspaces/NotebookAssistant-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root.appendingPathComponent("copied-course"), withIntermediateDirectories: true)
@@ -178,6 +270,7 @@ final class NotebookAssistantTests: XCTestCase {
         try JSONSerialization.data(withJSONObject: ["originalRoot": root.appendingPathComponent("original").path]).write(to: root.appendingPathComponent("original-hashes.json"))
         let model = Workbench(workspaceRoot: root)
         XCTAssertNil(model.errorText)
+        model.ai?.providerSettings.editAutonomy = .edits
         let assistant = try XCTUnwrap(model.assistant)
         model.openNote("Inicio.md")
         addTeardownBlock { @MainActor in model.assistant?.stop(); model.ai?.stop(); model.media?.shutdown(); try? FileManager.default.removeItem(at: root) }
@@ -1105,55 +1198,82 @@ final class NotebookAssistantTests: XCTestCase {
         XCTAssertThrowsError(try model.editor?.undo())
     }
 
-    @MainActor func testCompactCommandPersistsPerChatWithoutCallingDisabledProvider() async throws {
+    @MainActor func testCompactRejectsDisabledNativeProviderAndUsesLocalFallbackForUnsupportedProviders() async throws {
         let (model, assistant, _) = try fixture()
         let notebook = model.currentNotebook
-        assistant.setDraft("/compact", notebook: notebook)
+        assistant.setDraft("Draft", notebook: notebook)
         var state = assistant.state(notebook)
         let original = (0..<50).map { NotebookMessage(role: $0.isMultiple(of: 2) ? "user" : "assistant", text: "Message \($0) " + String(repeating: "word ", count: 200)) }
         state.chats[0].messages = original
         try assistant.installCopiedState(state, notebook: notebook)
-        var disabled = try XCTUnwrap(model.ai?.providerSettings.selected)
+        assistant.setDraft("/compact", notebook: notebook)
+        var disabled = try XCTUnwrap(model.ai?.providerSettings.codexCLI)
         disabled.accountSendingAllowed = false
-        assistant.generate = { _, _ in XCTFail("Local command must not call a provider"); return .init(reply: "Unexpected") }
-        assistant.send(notebook: notebook, document: nil, texts: [:], configuration: disabled) { _, _, _ in XCTFail("Local command must not edit files"); return nil }
-        XCTAssertNil(assistant.error)
-        let compacted = try XCTUnwrap(assistant.chat(notebook))
-        XCTAssertEqual(compacted.conversationByteBudget, 8_000)
-        XCTAssertEqual(compacted.messages, original)
-        XCTAssertEqual(assistant.contextPanel?.chatID, compacted.id)
-        XCTAssertTrue(assistant.compactedContexts.contains(.init(notebookID: notebook.id, chatID: compacted.id)))
-        let reopened = try NotebookAssistantController(store: assistant.store)
-        XCTAssertEqual(reopened.chat(notebook)?.conversationByteBudget, 8_000)
-        assistant.setDraft("/context", notebook: notebook)
-        model.submitNotebookPrompt()
-        XCTAssertEqual(assistant.chat(notebook)?.messages, original)
-        XCTAssertEqual(try assistant.contextMetrics(notebook).budget, 8_000)
-        assistant.generate = { request, _ in
-            XCTAssertEqual(request.conversationByteBudget, 8_000)
-            XCTAssertFalse(try request.prompt().contains("/compact"))
-            return .init(reply: "Continued")
-        }
-        assistant.setDraft("Continue", notebook: notebook)
-        model.submitNotebookPrompt(); await assistant.waitUntilFinished()
-        XCTAssertNil(assistant.error)
-        _ = try assistant.newChat(notebook)
+        assistant.generate = { _, _ in XCTFail("Compaction must not use the generation loop"); return .init(reply: "Unexpected") }
+        assistant.send(notebook: notebook, document: nil, texts: [:], configuration: disabled) { _, _, _ in XCTFail("Compaction must not edit files"); return nil }
+        XCTAssertNotNil(assistant.error)
         XCTAssertNil(assistant.chat(notebook)?.conversationByteBudget)
+        XCTAssertEqual(assistant.chat(notebook)?.messages, original)
+        XCTAssertEqual(assistant.chat(notebook)?.draft, "/compact")
+        assistant.compactContext(notebook, configuration: model.ai!.providerSettings.openCode)
+        XCTAssertNil(assistant.error)
+        XCTAssertEqual(assistant.chat(notebook)?.messages.filter { $0.contextCompacted != true }, original)
+        XCTAssertEqual(assistant.chat(notebook)?.conversationByteBudget, 8_000)
+        XCTAssertEqual(assistant.chat(notebook)?.messages.last?.text, "Conversation history compacted")
+        let reopened = try NotebookAssistantController(store: assistant.store)
+        XCTAssertEqual(reopened.chat(notebook)?.messages.last?.contextCompacted, true)
     }
 
-    @MainActor func testCompactQueuesWithoutSteeringAndFollowingPromptUsesNewBudget() async throws {
+    @MainActor func testNativeCompactReceiptPersistsAndPreservesDraftAndAttachments() async throws {
+        let (model, assistant, _) = try fixture()
+        let notebook = model.currentNotebook
+        assistant.setDraft("Unsent draft", notebook: notebook)
+        var state = assistant.state(notebook)
+        state.chats[0].messages = [.init(role: "user", text: "Keep this requirement"), .init(role: "assistant", text: "Understood")]
+        state.chats[0].conversationByteBudget = 8_000 // legacy fake compaction
+        let original = state.chats[0].messages
+        let attachment = try NotebookAttachmentImport.prepare(data: Data("Original attachment".utf8), name: "draft.txt", notebookID: notebook.id, workspace: assistant.store.workspace)
+        state.chats[0].attachments = [attachment]
+        try assistant.installCopiedState(state, notebook: notebook)
+        var calls = 0
+        assistant.compactProviderSession = { _, id, configuration, _ in
+            calls += 1
+            XCTAssertEqual(id, state.chats[0].id)
+            XCTAssertEqual(configuration.provider, .codexCLI)
+        }
+        assistant.compactContext(notebook, configuration: model.ai!.providerSettings.codexCLI)
+        await assistant.waitUntilFinished()
+        XCTAssertNil(assistant.error); XCTAssertEqual(calls, 1)
+        let compacted = try XCTUnwrap(assistant.chat(notebook))
+        XCTAssertEqual(compacted.messages.filter { $0.contextCompacted != true }, original)
+        XCTAssertEqual(compacted.messages.last?.contextCompacted, true)
+        XCTAssertEqual(compacted.messages.last?.contextCommand, true)
+        XCTAssertNil(compacted.conversationByteBudget)
+        XCTAssertEqual(compacted.draft, "Unsent draft")
+        XCTAssertEqual(compacted.attachments, [attachment])
+        let reopened = try NotebookAssistantController(store: assistant.store)
+        XCTAssertEqual(reopened.chat(notebook)?.messages.last?.contextCompacted, true)
+        XCTAssertEqual(NotebookChatTurn.collect(compacted.messages).count, 1)
+    }
+
+    @MainActor func testCompactQueuesWithoutSteeringAndWaitsForNativeCompletion() async throws {
         let previous = UserDefaults.standard.object(forKey: "notes.alwaysSteer")
         defer { UserDefaults.standard.set(previous, forKey: "notes.alwaysSteer") }
         UserDefaults.standard.set(true, forKey: "notes.alwaysSteer")
         let (model, assistant, _) = try fixture()
+        model.ai?.providerSettings.selectedProvider = .codexCLI
         let notebook = model.currentNotebook
         let gate = NotebookReplyGate()
         var prompts: [String] = []
+        var compacted = false
+        assistant.compactProviderSession = { _, _, _, _ in compacted = true }
         assistant.generate = { request, _ in
             let prompt = request.messages.last!.text
             prompts.append(prompt)
             if prompt == "First" { return .init(reply: try await gate.reply(prompt)) }
-            XCTAssertEqual(request.conversationByteBudget, 8_000)
+            XCTAssertTrue(compacted)
+            XCTAssertNil(request.conversationByteBudget)
+            XCTAssertFalse(try request.prompt().contains("Context compacted"))
             return .init(reply: "Finished")
         }
         assistant.setDraft("First", notebook: notebook); model.submitNotebookPrompt()
@@ -1168,27 +1288,22 @@ final class NotebookAssistantTests: XCTestCase {
         XCTAssertNil(assistant.error)
         XCTAssertEqual(prompts, ["First", "Next"])
         XCTAssertTrue(assistant.queued(notebook).isEmpty)
-        XCTAssertTrue(assistant.chat(notebook)?.messages.contains { $0.text == "Reply to First" } == true)
-        XCTAssertFalse(assistant.chat(notebook)?.messages.contains { $0.text == "/compact" || $0.contextCommand == true } == true)
+        XCTAssertEqual(assistant.chat(notebook)?.messages.filter { $0.contextCompacted == true }.count, 1)
     }
 
-    @MainActor func testContextButtonPreservesDraftAttachmentsAndChatMessages() throws {
+    @MainActor func testFailedNativeCompactDoesNotSaveSuccessMarkerOrChangeHistory() async throws {
         let (model, assistant, _) = try fixture()
         let notebook = model.currentNotebook
-        assistant.setDraft("Unsent draft", notebook: notebook)
+        assistant.setDraft("Draft", notebook: notebook)
         var state = assistant.state(notebook)
-        state.chats[0].messages = [.init(role: "user", text: "Keep this requirement"), .init(role: "assistant", text: "Understood")]
-        let attachment = try NotebookAttachmentImport.prepare(data: Data("Original attachment".utf8), name: "draft.txt", notebookID: notebook.id, workspace: assistant.store.workspace)
-        state.chats[0].attachments = [attachment]
+        state.chats[0].messages = [.init(role: "user", text: "Keep this"), .init(role: "assistant", text: "Kept")]
         try assistant.installCopiedState(state, notebook: notebook)
-        assistant.compactContext(notebook)
+        assistant.compactProviderSession = { _, _, _, _ in throw MediaError.invalid("Provider compaction failed") }
+        assistant.compactContext(notebook, configuration: model.ai!.providerSettings.codexCLI)
+        await assistant.waitUntilFinished()
+        XCTAssertNotNil(assistant.error)
         XCTAssertEqual(assistant.chat(notebook)?.messages, state.chats[0].messages)
-        XCTAssertEqual(assistant.chat(notebook)?.draft, "Unsent draft")
-        XCTAssertEqual(assistant.chat(notebook)?.attachments, [attachment])
-        XCTAssertEqual(assistant.chat(notebook)?.conversationByteBudget, 8_000)
-        var legacy = NotebookMessage(role: "user", text: "/compact")
-        legacy.contextCommand = true
-        XCTAssertEqual(NotebookChatTurn.collect(state.chats[0].messages + [legacy]).count, 1)
+        XCTAssertTrue(assistant.compactedContexts.isEmpty)
     }
 
     @MainActor func testConversationHistoryRetrievalUsesBoundedPagesWithoutChangingSavedChat() async throws {
