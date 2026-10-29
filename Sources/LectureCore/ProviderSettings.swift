@@ -127,12 +127,13 @@ public struct AIProviderConfiguration: Codable, Equatable, Sendable {
 }
 
 public enum AIEditAutonomy: String, Codable, CaseIterable, Sendable {
-    case review, additions, edits
+    // Keep the original raw values so saved settings and queued batches retain their policy.
+    case review, additions, edits, automatic, fullAccess
     public func allows(_ action: AIAction) -> Bool {
         switch self {
         case .review: false
-        case .additions: action == .add || action == .priority
-        case .edits: [.add, .priority, .correct, .retract].contains(action)
+        case .additions, .automatic: action == .add || action == .priority
+        case .edits, .fullAccess: [.add, .priority, .correct, .retract].contains(action)
         }
     }
 }

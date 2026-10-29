@@ -5,6 +5,34 @@ import LectureCore
 @testable import Notes
 
 final class EditorTests: XCTestCase {
+    @MainActor func testEscapedMarkdownPunctuationRendersWithoutChangingSource() throws {
+        _ = NSApplication.shared
+        let view = MarkdownTextView(frame: NSRect(x: 0, y: 0, width: 700, height: 400))
+        let sentence = #"\* Con respecto a un nivel dado de eficacia."#
+        let source = sentence + "\n\n" + #"\*literal* and `\*code` and $\alpha$"# + "\n"
+        view.string = source
+        view.liveEditing = false
+        view.renderMarkdown()
+        let storage = try XCTUnwrap(view.textStorage)
+        func font(at index: Int) throws -> NSFont {
+            try XCTUnwrap(storage.attribute(.font, at: index, effectiveRange: nil) as? NSFont)
+        }
+        XCTAssertLessThan(try font(at: 0).pointSize, 1)
+        XCTAssertGreaterThan(try font(at: 1).pointSize, 1)
+        let literal = (source as NSString).range(of: "literal")
+        XCTAssertFalse(NSFontManager.shared.traits(of: try font(at: literal.location)).contains(.italicFontMask))
+        let code = (source as NSString).range(of: #"\*code"#)
+        XCTAssertGreaterThan(try font(at: code.location).pointSize, 1)
+        XCTAssertEqual(view.renderedMath.count, 1)
+        XCTAssertEqual(view.string, source)
+        XCTAssertEqual(String(NotebookChatMarkdown.inlineAttributed(sentence, accent: .purple).characters), "* Con respecto a un nivel dado de eficacia.")
+
+        view.liveEditing = true
+        view.setSelectedRange(NSRange(location: 0, length: 0))
+        view.renderMarkdown()
+        XCTAssertGreaterThan(try font(at: 0).pointSize, 1)
+        XCTAssertEqual(view.string, source)
+    }
     @MainActor func testStartupUsesOnlyExplicitInventedWorkspaceAndDoesNotStartServices() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent(".test-workspaces/Startup-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root.appendingPathComponent("copied-course"), withIntermediateDirectories: true)

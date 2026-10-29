@@ -29,12 +29,15 @@ struct NotebookHome: View {
                 }
             } else {
                 NotebookConversation(model: model, assistant: assistant, fullPage: true).frame(maxHeight: .infinity)
-            }
+                }
             NotebookComposer(model: model, assistant: assistant, large: true).frame(maxWidth: 740)
                 .padding(.top, empty ? 0 : 4).padding(.horizontal, empty ? 0 : 30)
             if empty { Spacer(minLength: 35) }
         }.padding(.horizontal, empty ? 30 : 0).padding(.bottom, empty ? 18 : 8)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Layout changes land at their final positions; only the expansion cover animates.
+            .transaction { $0.animation = nil; $0.disablesAnimations = true }
+            .modifier(NotebookChatReveal())
 
     }
 }
@@ -264,31 +267,43 @@ struct NotebookConversation: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
-                    ForEach((assistant.chat(model.currentNotebook)?.messages ?? []).filter { $0.contextCommand != true }) { message in
-                        VStack(alignment: .leading, spacing: 9) {
-                            if let activities = message.activities, !activities.isEmpty { NotebookWorkLog(activities: activities, failed: message.role == "error") }
-                            if let attachments = message.attachments, !attachments.isEmpty {
-                                NotebookAttachmentStrip(attachments: attachments, workspace: assistant.store.workspace)
+                    ForEach((assistant.chat(model.currentNotebook)?.messages ?? []).filter { $0.contextCommand != true || $0.contextCompacted == true }) { message in
+                        if message.contextCompacted == true {
+                            HStack {
+                                Rectangle().frame(height: 1)
+                                Label(message.text == "Conversation history compacted" ? (language == "en" ? "Conversation history compacted" : "Historial de conversación compactado") : (language == "en" ? "Context compacted" : "Contexto compactado"), systemImage: "checkmark.circle")
+                                    .fixedSize()
+                                Rectangle().frame(height: 1)
                             }
-                            NotebookChatMarkdown(text: NotebookAssistantText.message(message, language: language))
-                                .foregroundStyle(message.role == "error" ? Color.orange : Color.primary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            if !message.files.isEmpty { NotebookChangedFiles(model: model, assistant: assistant, message: message) }
-                            if message.checkpointID != nil {
-                                Button { model.notebookCheckpointSelection = message.checkpointID; model.showNotebookManagement = true } label: { Label("Ver cambios", systemImage: "clock.arrow.circlepath") }
-                                    .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
-                            }
-                        }.padding(message.role == "user" ? 14 : 4)
-                            .background(.primary.opacity(message.role == "user" ? 0.055 : 0), in: RoundedRectangle(cornerRadius: 14))
-                            .padding(.leading, message.role == "user" ? 50 : 0)
+                            .font(.caption).foregroundStyle(.secondary).padding(.vertical, 8)
                             .id(message.id)
-                            .background {
-                                if fullPage {
-                                    GeometryReader { geometry in
-                                        Color.clear.preference(key: NotebookChatMessageFrames.self, value: [message.id: geometry.frame(in: .named("notebook-conversation"))])
+                            .accessibilityIdentifier("notebook.chatContextCompacted")
+                        } else {
+                            VStack(alignment: .leading, spacing: 9) {
+                                if let activities = message.activities, !activities.isEmpty { NotebookWorkLog(activities: activities, failed: message.role == "error") }
+                                if let attachments = message.attachments, !attachments.isEmpty {
+                                    NotebookAttachmentStrip(attachments: attachments, workspace: assistant.store.workspace)
+                                }
+                                NotebookChatMarkdown(text: NotebookAssistantText.message(message, language: language))
+                                    .foregroundStyle(message.role == "error" ? Color.orange : Color.primary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                if !message.files.isEmpty { NotebookChangedFiles(model: model, assistant: assistant, message: message) }
+                                if message.checkpointID != nil {
+                                    Button { model.notebookCheckpointSelection = message.checkpointID; model.showNotebookManagement = true } label: { Label("Ver cambios", systemImage: "clock.arrow.circlepath") }
+                                        .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }.padding(message.role == "user" ? 14 : 4)
+                                .background(.primary.opacity(message.role == "user" ? 0.055 : 0), in: RoundedRectangle(cornerRadius: 14))
+                                .padding(.leading, message.role == "user" ? 50 : 0)
+                                .id(message.id)
+                                .background {
+                                    if fullPage {
+                                        GeometryReader { geometry in
+                                            Color.clear.preference(key: NotebookChatMessageFrames.self, value: [message.id: geometry.frame(in: .named("notebook-conversation"))])
+                                        }
                                     }
                                 }
-                            }
+                        }
                     }
                     if assistant.isCompacting(model.currentNotebook) {
                         HStack {
@@ -364,6 +379,8 @@ struct NotebookFloatingChat: View {
     @ObservedObject var model: Workbench
     @ObservedObject var assistant: NotebookAssistantController
     let onClose: () -> Void
+    @Environment(\.expandNotebookChat) private var expandChat
+    @State private var expansionFrame = CGRect.zero
     @AppStorage("notes.language") private var language = "es"
     private var empty: Bool { assistant.isEmptyChat(model.currentNotebook) && !assistant.isRunning(model.currentNotebook) }
     var body: some View {
@@ -374,7 +391,10 @@ struct NotebookFloatingChat: View {
                         .labelStyle(.iconOnly)
                         .padding(.horizontal, 34)
                     HStack {
-                        Button { model.expandNotebookChat() } label: { Image(systemName: "arrow.up.left.and.arrow.down.right").frame(width: 26, height: 26) }
+                        Button {
+                            if let expandChat { expandChat(expansionFrame) }
+                            else { model.expandNotebookChat() }
+                        } label: { Image(systemName: "arrow.up.left.and.arrow.down.right").frame(width: 26, height: 26) }
                             .buttonStyle(.plain)
                             .help(language == "en" ? "Open full-page chat" : "Abrir chat a pantalla completa")
                             .accessibilityLabel(language == "en" ? "Open full-page chat" : "Abrir chat a pantalla completa")
@@ -399,6 +419,7 @@ struct NotebookFloatingChat: View {
             }
         }.padding(14).frame(height: empty ? 180 : 280)
             .modifier(NotebookInputSurface(radius: 18, floating: true, opaque: true, borderOpacity: 0.6))
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("notebook-workbench")) } action: { expansionFrame = $0 }
             .accessibilityIdentifier("notebook.floatingChat")
     }
 }
@@ -456,6 +477,24 @@ struct NotebookComposer: View {
                 NotebookFloatingChat(model: model, assistant: assistant, onClose: { showConversation = false })
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
+            if let approval = assistant.approval(for: notebook) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label(approval.title, systemImage: "lock").font(.headline)
+                    ScrollView {
+                        Text(approval.detail).font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                    }.frame(maxHeight: 180)
+                    HStack {
+                        Button(language == "en" ? "Deny" : "Denegar") { assistant.resolveApproval(notebook: notebook, allowed: false) }
+                            .accessibilityIdentifier("notebook.approval.deny")
+                        Spacer()
+                        Button(language == "en" ? "Allow once" : "Permitir una vez") { assistant.resolveApproval(notebook: notebook, allowed: true) }
+                            .accessibilityIdentifier("notebook.approval.allow")
+                    }
+                }
+                .padding(14).modifier(NotebookInputSurface(radius: 18, floating: true))
+                .accessibilityIdentifier("notebook.approval")
+            }
             if !running, !model.chatHistoryVisible, let error = assistant.composerError(notebook) {
                 HStack(spacing: 8) {
                     Text(NotebookAssistantText.display(error, language: language)).font(.caption).foregroundStyle(.orange).lineLimit(3)
@@ -476,6 +515,7 @@ struct NotebookComposer: View {
                 if assistant.importingAttachments { HStack { ProgressView().controlSize(.small); Text(language == "en" ? "Preparing attachments…" : "Preparando archivos…").font(.caption).foregroundStyle(.secondary) } }
                 TextField(language == "en" ? "Ask for changes or start a document…" : "Pide cambios o empieza un documento…", text: draft, axis: .vertical)
                     .textFieldStyle(.plain).font(.system(size: 14)).lineLimit(large ? 3...8 : 1...6)
+                    .transaction { $0.animation = nil }
                     .onSubmit { model.submitNotebookPrompt() }
                     .background(NotebookAttachmentPasteTarget { assistant.pasteAttachments($0, notebook: notebook) })
                     .accessibilityLabel(language == "en" ? "Notebook assistant prompt" : "Mensaje al asistente del cuaderno")
@@ -525,6 +565,8 @@ struct NotebookComposer: View {
                 }
             }.padding(large ? 18 : 12)
                 .modifier(NotebookInputSurface(radius: 26, floating: true, borderOpacity: 0, fillOpacity: 0.5))
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("notebook.composerSurface")
                 .overlay(RoundedRectangle(cornerRadius: 26).stroke(dropTargeted ? NotebookAccent.color(accent) : .clear, lineWidth: 2))
                 .dropDestination(for: URL.self) { urls, _ in
                     guard !assistant.importingAttachments, !urls.isEmpty else { return false }
@@ -601,9 +643,9 @@ struct NotebookModelControls: View {
         _preferences = StateObject(wrappedValue: ProviderPreferencesModel(ai: ai))
     }
     var body: some View {
-        ViewThatFits {
-            HStack(spacing: 4) { selector; reasoning }
-            VStack(alignment: .leading, spacing: 4) { selector; reasoning }
+        HStack(spacing: 4) {
+            selector
+            reasoning.fixedSize()
         }.controlSize(.small).disabled(disabled || ai.running)
             .onChange(of: preferences.draft) { _, _ in if preferences.hasChanges { preferences.save() } }
             .onChange(of: ai.providerSettings) { old, new in if preferences.draft == old { preferences.draft = new } }

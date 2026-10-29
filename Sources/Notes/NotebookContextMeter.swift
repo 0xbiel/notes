@@ -76,7 +76,7 @@ struct NotebookContextMeter: View {
                         Text("\(metrics.bytes.formatted()) / \(metrics.capacity.formatted()) B").monospacedDigit()
                     }.foregroundStyle(.secondary)
                     Text(english ? "\(metrics.selected) of \(metrics.total) messages in context" : "\(metrics.selected) de \(metrics.total) mensajes en contexto").foregroundStyle(.secondary)
-                    Text(english ? "Local history budget. Native compaction is not connected for this provider." : "Presupuesto local del historial. La compactación nativa no está conectada para este proveedor.")
+                    Text(english ? "Local history compaction is used because native compaction is unavailable for this provider." : "Se compacta el historial local porque este proveedor no tiene compactación nativa conectada.")
                         .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 if compacting {

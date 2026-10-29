@@ -35,10 +35,10 @@ final class AutomaticEditingTests: XCTestCase {
     }
 
     @MainActor func testPermissionLevelsAndNoEscalationOfQueuedBatches() throws {
-        for policy in [AIEditAutonomy.review, .additions, .edits] {
+        for policy in [AIEditAutonomy.review, .additions, .edits, .automatic, .fullAccess] {
             let (model, batch, _) = try fixture(policy, .correct)
             try XCTUnwrap(model.ai).applyAutomatic(batch)
-            XCTAssertEqual(model.draftText.contains("Texto nuevo."), policy == .edits)
+            XCTAssertEqual(model.draftText.contains("Texto nuevo."), (policy == .edits || policy == .fullAccess))
         }
         let (legacy, batch, _) = try fixture(nil)
         legacy.ai?.providerSettings.editAutonomy = .edits

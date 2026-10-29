@@ -103,7 +103,7 @@ struct OnboardingView: View {
                 feature("sparkles", text("Un asistente que conoce tu cuaderno", "An assistant that knows your notebook"), text("Chatea con Claude Code, Codex, Antigravity u OpenCode. Puede leer tus documentos, buscar en la web y editar notas.", "Chat with Claude Code, Codex, Antigravity or OpenCode. It can read your documents, search the web and edit notes."))
                 feature("waveform", text("Dictado", "Dictation"), text("Habla en el chat con un modelo Whisper local o con la API de OpenAI.", "Speak into the chat with a local Whisper model or the OpenAI API."))
                 feature("lock", text("Tus datos, en tu Mac", "Your data, on your Mac"), text("Notas y chats se guardan en local. Un proveedor solo recibe lo que necesita cada petición.", "Notes and chats are stored locally. A provider only receives what each request needs."))
-            }.padding(20).modifier(NotebookInputSurface(radius: 16, floating: true, borderOpacity: 0.25))
+            }.padding(20).modifier(NotebookInputSurface(radius: 16, borderOpacity: 0.25))
         }.padding(.horizontal, 24)
     }
 
@@ -115,7 +115,8 @@ struct OnboardingView: View {
                 HStack {
                     Text(text("Apariencia", "Appearance")).font(.system(size: 14, weight: .semibold))
                     Spacer()
-                    NotebookGlassSelector(selection: $appearance, options: [.init(id: "system", title: text("Sistema", "System")), .init(id: "light", title: text("Claro", "Light")), .init(id: "dark", title: text("Oscuro", "Dark"))])
+                    NotebookSlidingSelector(selection: $appearance, options: [.init(id: "system", title: text("Sistema", "System")), .init(id: "light", title: text("Claro", "Light")), .init(id: "dark", title: text("Oscuro", "Dark"))])
+                        .accessibilityLabel(text("Apariencia", "Appearance"))
                 }
                 Divider().opacity(0.4)
                 VStack(alignment: .leading, spacing: 12) {
@@ -133,7 +134,7 @@ struct OnboardingView: View {
                     Text(text("Palladium usa las herramientas que ya tienes instaladas, con tu propia cuenta. No instala nada ni inicia sesión por ti.", "Palladium uses the tools you already have installed, with your own account. It installs nothing and never signs in for you."))
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
-            }.padding(20).modifier(NotebookInputSurface(radius: 16, floating: true, borderOpacity: 0.25))
+            }.padding(20).modifier(NotebookInputSurface(radius: 16, borderOpacity: 0.25))
         }.padding(.horizontal, 24)
     }
 
@@ -147,7 +148,7 @@ struct OnboardingView: View {
                         Image(systemName: "book.closed").foregroundStyle(.secondary)
                         TextField(text("Nombre del cuaderno", "Notebook name"), text: $name).textFieldStyle(.plain).font(.system(size: 15)).focused($naming)
                             .onSubmit(create).accessibilityIdentifier("onboarding.notebookName")
-                    }.padding(13).modifier(NotebookInputSurface(radius: 12, floating: true))
+                    }.padding(13).modifier(NotebookInputSurface(radius: 12))
                     HStack(spacing: 8) {
                         ForEach(suggestions, id: \.self) { suggestion in
                             Button(suggestion) { name = suggestion; naming = true }.buttonStyle(.plain).font(.callout)

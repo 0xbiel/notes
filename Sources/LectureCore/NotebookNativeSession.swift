@@ -38,7 +38,7 @@ struct NotebookNativeSession: Sendable {
 
     init(store: LocalMediaStore, notebookID: String, chatID: String, configuration: AIProviderConfiguration, webEnabled: Bool, language: String) throws {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-        let fingerprint = NotebookProjectStore.digest(String(decoding: try encoder.encode(configuration), as: UTF8.self) + "|native-v1|\(webEnabled)|\(language)")
+        let fingerprint = NotebookProjectStore.digest(String(decoding: try encoder.encode(configuration), as: UTF8.self) + "|native-v2-command-tools|\(webEnabled)|\(language)")
         directory = try store.url("provider-sessions/" + NotebookProjectStore.digest(notebookID + ":" + chatID) + "/" + fingerprint + "/palladium-session.json").deletingLastPathComponent()
     }
     func prepare() throws {
@@ -71,10 +71,9 @@ struct NotebookNativeSession: Sendable {
         var projection = request
         projection.messages = []
         var payload = try JSONSerialization.jsonObject(with: encoder.encode(projection)) as! [String: Any]
-        let indices = try NotebookConversationContext.selectedIndices(request.messages)
         let messages = record.initialized && !previous.messageIDs.isEmpty
             ? request.messages.filter { !previous.messageIDs.contains($0.id) && $0.contextCommand != true }
-            : indices.map { request.messages[$0] }
+            : request.messages.filter { $0.contextCommand != true }
         payload["messages"] = try JSONSerialization.jsonObject(with: encoder.encode(messages.map { NotebookConversationContext.Message($0) }))
         payload["documents"] = request.documents.filter { previous.documents[$0.key] != NotebookProjectStore.digest($0.value) }
         payload["catalog"] = request.catalog.filter { previous.catalog[$0.key] != NotebookProjectStore.digest($0.value) }
@@ -129,7 +128,7 @@ extension NotesProviderTransport {
         let record = try NotebookNativeSession(store: store, notebookID: notebookID, chatID: chatID, configuration: configuration, webEnabled: webEnabled, language: language).load()
         return messages.filter { !record.snapshot.messageIDs.contains($0.id) }.flatMap { $0.attachments ?? [] }
     }
-    public func compactNotebook(notebookID: String, chatID: String, configuration: AIProviderConfiguration, webEnabled: Bool, language: String, progress: @escaping @Sendable (NotebookProviderProgress) async -> Void) async throws {
+    public func compactNotebook(notebookID: String, chatID: String, configuration: AIProviderConfiguration, webEnabled: Bool, language: String, messages: [NotebookMessage] = [], progress: @escaping @Sendable (NotebookProviderProgress) async -> Void) async throws {
         try configuration.validateSending()
         guard NotebookNativeSession.supports(configuration.provider) else { throw MediaError.invalid("This provider does not support native compaction.") }
         let session = try NotebookNativeSession(store: store, notebookID: notebookID, chatID: chatID, configuration: configuration, webEnabled: webEnabled, language: language)
@@ -147,5 +146,10 @@ extension NotesProviderTransport {
         } else {
             _ = try await ClaudeTextTransport(store: store, configuration: configuration).generate("/compact", schema: NotebookAssistantProtocol.schema, instructions: NotebookAssistantProtocol.instructions(language: language) + "\n" + NotebookAssistantProtocol.outputInstructions + "\n" + NotebookAssistantProtocol.webInstructions(enabled: webEnabled, native: true), webSearch: webEnabled, usage: usage, progress: progress, session: session, compact: true)
         }
+        // Provider compaction replaces its native history. The local transcript
+        // remains for display/retrieval, but must not refill that compacted context.
+        var record = try session.load()
+        record.snapshot.messageIDs.formUnion(messages.filter { $0.contextCommand != true }.map(\.id))
+        try session.save(record)
     }
 }

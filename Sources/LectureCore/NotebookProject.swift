@@ -39,6 +39,8 @@ public struct NotebookMessage: Codable, Identifiable, Equatable, Sendable {
     public var usageTracked: Bool?
     /// Legacy local command receipts: excluded from the transcript and model context.
     public var contextCommand: Bool?
+    /// Persistent UI boundary; excluded from provider prompts and chat turns.
+    public var contextCompacted: Bool?
     public init(role: String, text: String, files: [String] = [], checkpointID: String? = nil, activities: [NotebookActivity]? = nil, appGenerated: Bool? = nil) {
         self.role = role; self.text = text; self.files = files; self.checkpointID = checkpointID; self.activities = activities; self.appGenerated = appGenerated
     }
@@ -51,6 +53,7 @@ public struct NotebookQueuedPrompt: Codable, Identifiable, Equatable, Sendable {
     public var configuration: AIProviderConfiguration
     public var document: String?
     public var webEnabled: Bool?
+    public var permission: AIEditAutonomy?
     public init(text: String, attachments: [NotebookAttachment], configuration: AIProviderConfiguration, document: String?, webEnabled: Bool = true) {
         self.text = text; self.attachments = attachments; self.configuration = configuration; self.document = document; self.webEnabled = webEnabled
     }
