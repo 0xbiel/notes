@@ -16,7 +16,8 @@ struct RenderedMarkdownHTML {
     let webView: WKWebView
     private let coordinator = NotebookHTMLSurface.Coordinator()
     private var loadedSource: String?
-    private(set) var contentHeight: CGFloat = 160
+    private(set) var contentHeight: CGFloat = 24
+    private(set) var hasMeasuredContent = false
     var heightChanged: (() -> Void)?
     override var isFlipped: Bool { true }
     init() {
@@ -36,6 +37,7 @@ struct RenderedMarkdownHTML {
         webView.navigationDelegate = coordinator
         webView.setValue(false, forKey: "drawsBackground")
         addSubview(webView)
+        isHidden = true
         setAccessibilityIdentifier("document.embeddedHTML")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -44,6 +46,7 @@ struct RenderedMarkdownHTML {
         coordinator.theme = theme
         if loadedSource != source {
             loadedSource = source
+            hasMeasuredContent = false; isHidden = true
             webView.loadHTMLString(NotebookCustomUI.document(source: source, theme: theme, embedded: true), baseURL: nil)
         } else { coordinator.updateTheme(webView) }
     }
@@ -56,9 +59,13 @@ struct RenderedMarkdownHTML {
         let value = number.doubleValue
         guard value.isFinite, value >= 0 else { return }
         let height = min(10_000, max(24, ceil(value) + 2))
-        guard abs(height - contentHeight) > 1 else { return }
+        guard !hasMeasuredContent || abs(height - contentHeight) > 1 else { return }
         contentHeight = height
+        hasMeasuredContent = true
         heightChanged?()
+        // Apply the measured height to TextKit before exposing the web content.
+        // In particular, the first report must run even when the height is unchanged.
+        isHidden = false
     }
     func stop() {
         heightChanged = nil; webView.stopLoading()

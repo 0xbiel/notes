@@ -32,6 +32,7 @@ extension Workbench {
             guard let index = next.firstIndex(where: { $0.id == notebook.id }) else { return }
             next[index].archivedAt = Date()
             try workspace?.writeStorage("notebooks.json", data: JSONEncoder().encode(next)); notebooks = next
+            documentWorkspace.retainPaths(Set(libraryFiles.filter { projects?.owner(of: $0)?.archivedAt == nil }))
             if engine?.session.notebookID == notebook.id { engine = nil; document = nil; selectedID = nil }
             if selectedNotebookID == notebook.id {
                 selectedNote = nil

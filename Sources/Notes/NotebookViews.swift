@@ -46,6 +46,7 @@ extension Workbench {
             let migrated = try migrateGeneratedImages(draftText, note: name)
             if migrated != draftText { changeDraft(migrated) }
             else { synchronizeDocumentImages(previous: draftText, current: draftText, note: name) }
+            trackWorkspaceDocument(name)
         } catch { errorText = error.localizedDescription }
     }
     func refreshEditorFromDisk() {
@@ -60,8 +61,12 @@ extension Workbench {
     }
     func changeDraft(_ text: String) {
         guard let name = selectedNote else { return }
-        let previous = drafts[name] ?? draftText
-        draftText = text; drafts[name] = text
+        changeDraft(text, for: name)
+    }
+    func changeDraft(_ text: String, for name: String) {
+        let previous = drafts[name] ?? bases[name] ?? ""
+        if selectedNote == name { draftText = text }
+        drafts[name] = text
         synchronizeDocumentImages(previous: previous, current: text, note: name)
         draftVersion += 1
         statusText = ""

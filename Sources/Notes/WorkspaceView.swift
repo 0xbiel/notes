@@ -27,12 +27,14 @@ struct WorkbenchView: View {
                 VStack(spacing: 0) {
                     if model.mapVisible {
                         // The atlas carries its own title bar.
+                    } else if model.selectedLibraryPath != nil {
+                        // Every document pane carries its own title bar.
                     } else if model.selectedNote == nil && model.selectedFile == nil, let assistant = model.assistant {
                         NotebookChatTitleBar(model: model, assistant: assistant, leadingInset: titleBarInset)
                     } else {
                         WorkspaceTitleBar(model: model, leadingInset: titleBarInset)
                     }
-                    NoteWorkspace(model: model)
+                    NoteWorkspace(model: model, titleBarInset: titleBarInset)
                         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("notebook-workbench")) } action: { chatWorkspaceFrame = $0 }
                     if model.assistant == nil {
                         HStack { Spacer(); ListeningDock(model: model) }.padding(12)
@@ -177,7 +179,10 @@ struct NotebookChatTitleBar: View {
 struct WorkspaceTitleBar: View {
     @ObservedObject var model: Workbench
     var leadingInset: CGFloat = 0
-    private var notebookName: String { model.currentNotebook.name }
+    var document: WorkspaceDocument? = nil
+    private var path: String? { document?.path ?? model.selectedLibraryPath }
+    private var notebook: Notebook { document.flatMap { model.projects?.owner(of: $0.path) } ?? model.currentNotebook }
+    private var notebookName: String { notebook.name }
     @State private var actionsPresented = false
     @AppStorage("notes.language") private var language = "es"
     var body: some View {
@@ -185,7 +190,7 @@ struct WorkspaceTitleBar: View {
             HStack(spacing: 4) {
                 noteLocation
                 Spacer(minLength: 8)
-                if model.selectedLibraryPath != nil {
+                if path != nil {
                     Button { model.hideStudyComposer.toggle() } label: {
                         Image(systemName: model.hideStudyComposer ? "bubble.left" : "bubble.left.fill")
                             .font(.system(size: 14, weight: .medium))
@@ -198,7 +203,7 @@ struct WorkspaceTitleBar: View {
                     .accessibilityIdentifier("notebook.toggleAssistant")
                     .help(language == "en" ? (model.hideStudyComposer ? "Show assistant" : "Hide assistant") : (model.hideStudyComposer ? "Mostrar asistente" : "Ocultar asistente"))
                 }
-                Button { actionsPresented.toggle() } label: {
+                Button { activate(); actionsPresented.toggle() } label: {
                     Image(systemName: "ellipsis")
                         .font(.system(size: 14, weight: .medium))
                         .frame(width: 30, height: 30)
@@ -212,7 +217,7 @@ struct WorkspaceTitleBar: View {
                 .accessibilityAddTraits(actionsPresented ? .isSelected : [])
                 .help(language == "en" ? "Show workspace actions" : "Mostrar acciones del espacio de trabajo")
                 .popover(isPresented: $actionsPresented, arrowEdge: .bottom) { actionsPanel }
-                if model.selectedNote != nil { NoteModeSelector(model: model).padding(.leading, 4) }
+                if path?.hasSuffix(".md") == true { NoteModeSelector(model: model, document: document).padding(.leading, 4) }
             }
             .padding(.leading, 12 + leadingInset).padding(.trailing, 14).frame(height: 48)
             .modifier(WindowDragArea())
@@ -228,10 +233,10 @@ struct WorkspaceTitleBar: View {
                 Text(documentBreadcrumb ?? (en ? "Notebook home" : "Inicio del cuaderno"))
                     .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
             }.padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 8)
-            if let path = model.selectedNote ?? model.selectedFile {
+            if let path {
                 panelSection(en ? "Document" : "Documento") {
-                    DocumentFileActions(model: model, path: path, vertical: true)
-                    if model.selectedNote != nil {
+                    DocumentFileActions(model: model, path: path, vertical: true, activate: activate)
+                    if path.hasSuffix(".md") {
                         Menu { NoteOptionsMenuItems(model: model) } label: {
                             Label(en ? "Note options" : "Opciones de la nota", systemImage: "ellipsis.circle")
                         }.menuStyle(.button).menuIndicator(.hidden)
@@ -239,18 +244,23 @@ struct WorkspaceTitleBar: View {
                     }
                 }
             }
-            if let file = model.selectedFile, NotebookPracticeTest.isPracticeTest(file) {
+            if let path, NotebookPracticeTest.isPracticeTest(path) {
                 panelSection(en ? "View" : "Vista") {
                     NotebookPracticeLayoutSelector().padding(.horizontal, 6).padding(.vertical, 4)
                 }
             }
+            if let document {
+                panelSection(en ? "Layout" : "Paneles") {
+                    DocumentPaneMenuItems(model: model, document: document)
+                }
+            }
             panelSection(en ? "Notebook" : "Cuaderno") {
-                Button { model.notebookCheckpointSelection = nil; model.showNotebookManagement = true; actionsPresented = false } label: {
+                Button { activate(); model.notebookCheckpointSelection = nil; model.showNotebookManagement = true; actionsPresented = false } label: {
                     Label(en ? "Manage notebook" : "Gestionar cuaderno", systemImage: "slider.horizontal.3")
                 }
-                NotebookColorMenu(model: model, notebook: model.currentNotebook).menuStyle(.button).menuIndicator(.hidden)
+                NotebookColorMenu(model: model, notebook: notebook).menuStyle(.button).menuIndicator(.hidden)
                 if model.maps != nil {
-                    Button { model.toggleMap(); actionsPresented = false } label: {
+                    Button { activate(); model.toggleMap(); actionsPresented = false } label: {
                         Label(en ? "Notebook map" : "Mapa del cuaderno", systemImage: "circle.hexagongrid")
                     }.accessibilityIdentifier("notebook.openMap")
                 }
@@ -274,8 +284,8 @@ struct WorkspaceTitleBar: View {
     }
 
     private var documentBreadcrumb: String? {
-        guard let path = model.selectedLibraryPath else { return nil }
-        let prefix = model.currentNotebook.rootPrefix.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let path else { return nil }
+        let prefix = notebook.rootPrefix.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let relative = !prefix.isEmpty && path.hasPrefix(prefix + "/")
             ? String(path.dropFirst(prefix.count + 1)) : path
         var components = relative.components(separatedBy: "/").filter { !$0.isEmpty }
@@ -292,12 +302,13 @@ struct WorkspaceTitleBar: View {
     private var noteLocation: some View {
         HStack(spacing: 4) {
             Button {
+                activate()
                 model.expandNotebookChat()
                 model.showMap = false
                 actionsPresented = false
             } label: {
                 HStack(spacing: 6) {
-                    Circle().fill(NotebookColor.color(for: model.currentNotebook) ?? Color.secondary.opacity(0.6))
+                    Circle().fill(NotebookColor.color(for: notebook) ?? Color.secondary.opacity(0.6))
                         .frame(width: 8, height: 8)
                     Text(notebookName)
                         .foregroundStyle(documentBreadcrumb == nil ? .primary : .secondary)
@@ -325,26 +336,29 @@ struct WorkspaceTitleBar: View {
         .help([notebookName, documentBreadcrumb].compactMap { $0 }.joined(separator: " / "))
     }
 
+    private func activate() { if let document { model.selectWorkspaceTab(document.id) } }
+
 }
 
 struct DocumentFileActions: View {
     @ObservedObject var model: Workbench
     let path: String
     var vertical = false
+    var activate: () -> Void = {}
     @AppStorage("notes.language") private var language = "es"
     var body: some View {
         let layout = vertical ? AnyLayout(VStackLayout(alignment: .leading, spacing: 0)) : AnyLayout(HStackLayout(spacing: 14))
         layout {
-            Button { model.printSelectedDocument() } label: {
+            Button { activate(); model.printSelectedDocument() } label: {
                 Label(language == "en" ? "Print" : "Imprimir", systemImage: "printer")
-            }.disabled(!model.canPrintDocument).accessibilityIdentifier("document.print")
+            }.disabled(!DocumentOutput.printableExtensions.contains(URL(fileURLWithPath: path).pathExtension.lowercased())).accessibilityIdentifier("document.print")
             if ["md", "tex"].contains(URL(fileURLWithPath: path).pathExtension.lowercased()) {
-                Button { model.exportSelectedPDF() } label: {
+                Button { activate(); model.exportSelectedPDF() } label: {
                     Label(language == "en" ? "Export PDF" : "Exportar PDF", systemImage: "arrow.down.document")
                 }.accessibilityIdentifier("document.exportPDF")
             }
             Button {
-                if path == model.selectedNote { model.flushAutosave(); guard !model.isDirty else { return } }
+                model.saveDraft(named: path); guard !model.hasDraft(for: path) else { return }
                 if let url = try? model.workspace?.fileURL(path) { NSWorkspace.shared.open(url) }
             } label: {
                 Label(language == "en" ? "Open" : "Abrir", systemImage: "arrow.up.forward.app")
@@ -362,9 +376,13 @@ struct DocumentFileActions: View {
 
 struct NoteModeSelector: View {
     @ObservedObject var model: Workbench
+    var document: WorkspaceDocument? = nil
 
     var body: some View {
-        NotebookSlidingSelector(selection: $model.layout, options: [
+        NotebookSlidingSelector(selection: Binding(get: { document?.mode ?? model.layout }, set: { mode in
+            if let document { model.selectWorkspaceTab(document.id) }
+            model.layout = mode
+        }), options: [
             .init(id: "edit", title: String(localized: "Editar")),
             .init(id: "preview", title: String(localized: "Ver"))
         ], segment: 56)
@@ -586,6 +604,14 @@ struct CourseTreeRow: View {
                     .help(node.name).tag(NotebookSidebarSelection.note(node.path))
                     .contextMenu {
                         Button("Abrir") { model.openLibraryFile(node.path) }
+                        Button(UserDefaults.standard.string(forKey: "notes.language") == "en" ? "Open in split to the right" : "Abrir en panel a la derecha") {
+                            if model.selectedLibraryPath == nil { model.openLibraryFile(node.path) }
+                            else { model.splitWorkspace(.horizontal, path: node.path) }
+                        }
+                        Button(UserDefaults.standard.string(forKey: "notes.language") == "en" ? "Open in split below" : "Abrir en panel debajo") {
+                            if model.selectedLibraryPath == nil { model.openLibraryFile(node.path) }
+                            else { model.splitWorkspace(.vertical, path: node.path) }
+                        }
                         if node.path.hasSuffix(".md") {
                             Button("Editar") { model.openNote(node.path); model.layout = "edit" }
                             Button("Ver") { model.openNote(node.path); model.layout = "preview" }
@@ -607,43 +633,13 @@ struct CourseTreeRow: View {
 
 struct NoteWorkspace: View {
     @ObservedObject var model: Workbench
-    @State private var composerHeight: CGFloat = 130
-    @State private var quizFooterHeight: CGFloat = 64
-    private var showsComposer: Bool { model.showsDocumentComposer }
-    private var isPracticeTest: Bool { model.selectedFile.map(NotebookPracticeTest.isPracticeTest) == true }
+    var titleBarInset: CGFloat = 0
     var body: some View {
         Group {
             if model.activeNotebooks.isEmpty {
                 NotebookEmptyLibrary(model: model)
-            } else if let file = model.selectedFile, let workspace = model.workspace {
-                if LaTeXDocument.isSource(file), let controller = try? model.latexController(file) {
-                    LaTeXEditor(controller: controller, bottomInset: showsComposer ? composerHeight : 0).id(file)
-                } else {
-                    NotebookFilePreview(workspace: workspace, path: file, bottomInset: showsComposer ? composerHeight : 0,
-                        imageRoot: workspace.courseRoot.appendingPathComponent(model.currentNotebook.rootPrefix), notebookColor: model.currentNotebook.color, onFooterHeight: { quizFooterHeight = $0 }, gradeAnswers: { test, answers in
-                            guard let assistant = model.assistant, let ai = model.ai else { throw MediaError.invalid("AI grading is unavailable.") }
-                            let configuration = ai.providerSettings.selected
-                            let directory = try workspace.fileURL(file).deletingLastPathComponent()
-                            let root = workspace.courseRoot.appendingPathComponent(model.currentNotebook.rootPrefix)
-                            let images = try test.questions.filter(\.isWritten).flatMap { question in
-                                try (question.images ?? []).map { image in
-                                    let url = try NotebookPracticeTest.referenceImageURL(image, directory: directory, root: root)
-                                    return NotebookInputImage(name: question.id + ": " + image.alt, data: try Data(contentsOf: url))
-                                }
-                            }
-                            let grades = try await assistant.transport.gradePracticeTest(test, answers: answers, images: images,
-                                notebook: model.currentNotebook, configuration: configuration,
-                                language: UserDefaults.standard.string(forKey: "notes.language") ?? "es")
-                            return (grades, configuration.model)
-                        })
-                }
-            } else if let note = model.selectedNote {
-                LiveMarkdownEditor(documentID: note, text: model.draftText, editing: model.layout == "edit", heading: model.previewHeading,
-                    bottomInset: showsComposer ? composerHeight : 0,
-                    imageDirectory: model.workspace?.courseRoot.appendingPathComponent(note).deletingLastPathComponent(),
-                    imageRoot: model.workspace?.courseRoot.appendingPathComponent(model.currentNotebook.rootPrefix),
-                    importImage: { data, ext in try model.importDocumentImage(data, fileExtension: ext, note: note) },
-                    onChange: { model.changeDraft($0) }, onLink: { _ = model.openWikilink($0) }, onTaskToggle: { _ in if model.layout == "preview" { model.saveDraft() } })
+            } else if model.selectedLibraryPath != nil {
+                DocumentWorkspaceView(model: model, leadingInset: titleBarInset)
             } else if model.mapVisible, let maps = model.maps {
                 NotebookAtlasView(model: model, maps: maps)
             } else {
@@ -652,14 +648,6 @@ struct NoteWorkspace: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .overlay(alignment: .bottom) {
-            if showsComposer, let assistant = model.assistant {
-                NotebookComposer(model: model, assistant: assistant).frame(maxWidth: 740)
-                    .padding(.horizontal, 18).padding(.top, 8).padding(.bottom, 16)
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
-                    .padding(.bottom, isPracticeTest ? quizFooterHeight : 0)
-            }
-        }
         .onAppear { if model.layout == "split" { model.layout = "edit" } }
         .background {
             Button("") { model.layout = model.layout == "edit" ? "preview" : "edit" }

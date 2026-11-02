@@ -936,8 +936,8 @@ extension Workbench {
                 synchronizeDocumentImages(previous: previousTexts[path] ?? "", current: drafts[path] ?? "", note: path)
             }
             persistDrafts()
-            if let selectedNote, !notes.contains(selectedNote) { openNotebook(selectedNotebookID) }
-            if let selectedFile, !libraryFiles.contains(selectedFile) { openNotebook(selectedNotebookID) }
+            documentWorkspace.retainPaths(Set(libraryFiles.filter { projects?.owner(of: $0)?.archivedAt == nil }))
+            if let path = selectedLibraryPath, !libraryFiles.contains(path) { synchronizeWorkspaceSelection() }
             refreshEditorFromDisk()
             for path in paths { latexEditors[path]?.reload() }
             try reconcileProjectHistory()

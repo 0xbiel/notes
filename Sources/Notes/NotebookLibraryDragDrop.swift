@@ -124,6 +124,7 @@ extension NeutralSidebarSelection.SelectionBridge {
     }
 
     func cancelPointer() {
+        model?.documentDropPreview = nil
         pointer.cancel(); press = nil; lastDrag = nil
         dragTimer?.invalidate(); dragTimer = nil
         dragChip?.removeFromSuperview(); dragChip = nil
@@ -199,7 +200,8 @@ extension NeutralSidebarSelection.SelectionBridge {
                 return nil
             }
             if press.items == nil, let item = press.item {
-                guard model.canManageFiles, hypot(point.x - press.origin.x, point.y - press.origin.y) >= 4 else { return nil }
+                let document: Bool = if case .note = item { true } else { false }
+                guard model.canManageFiles || document, hypot(point.x - press.origin.x, point.y - press.origin.y) >= 4 else { return nil }
                 let group = model.librarySelections.filter { if case .notebook = $0 { false } else { true } }
                 press.items = group.contains(item) && (press.wasSelected || press.modifiers.contains(.command)) ? group : [item]
                 self.press = press
@@ -223,11 +225,13 @@ extension NeutralSidebarSelection.SelectionBridge {
             guard let finished = press else { return nil }
             if finished.items != nil { updateDrag(at: event.locationInWindow) }
             let press = self.press ?? finished
+            let paneTarget = model.documentDropPreview
             cancelPointer()
             if press.sweeping { refresh(); return nil }
             guard let item = press.item else { refresh(); return nil }
             if let items = press.items {
-                if let destination = press.destination { model.moveLibraryItems(items, into: destination.directory, notebookID: destination.notebookID) }
+                if let paneTarget { model.openLibraryDocuments(items, at: paneTarget) }
+                else if let destination = press.destination { model.moveLibraryItems(items, into: destination.directory, notebookID: destination.notebookID) }
             } else if press.modifiers.contains(.command) {
                 if press.wasSelected { model.toggleLibrarySelection(item) }
             } else if !press.modifiers.contains(.shift), model.librarySelections != [item] || model.librarySelection != item {
@@ -293,8 +297,13 @@ extension NeutralSidebarSelection.SelectionBridge {
     private func updateDrag(at location: NSPoint) {
         guard let outline = table as? NSOutlineView, let model, var press, let items = press.items else { return }
         let point = outline.convert(location, from: nil)
+        let documentsOnly = items.allSatisfy { if case .note = $0 { true } else { false } }
+        if !outline.visibleRect.intersection(outline.bounds).contains(point), documentsOnly, let window = outline.window {
+            model.previewDocumentDrop(at: location, in: window)
+        } else { model.documentDropPreview = nil }
         let row = outline.visibleRect.contains(point) ? outline.row(at: point) : -1
         var destination = LibraryDropDestination.resolve(row: row, in: outline, model: model)
+        if !model.canManageFiles || model.documentDropPreview != nil { destination = nil }
         if let found = destination, !model.libraryMoveIsUseful(items, into: found.directory) { destination = nil }
         if row != press.hoverRow { press.hoverRow = row; press.hoverStart = Date() }
         press.destination = destination
