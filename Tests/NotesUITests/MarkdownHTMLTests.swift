@@ -4,6 +4,58 @@ import WebKit
 @testable import Notes
 
 final class MarkdownHTMLViewTests: XCTestCase {
+    @MainActor func testScrollingOverTallHTMLMovesTheNoteAndRespectsOverlays() async throws {
+        _ = NSApplication.shared
+        let source = String(repeating: "A paragraph before the interactive entry.\n\n", count: 12) + """
+        <section style="height:1000px">
+        <details><summary>Check this entry</summary><p>Debit and credit agree.</p></details>
+        </section>
+
+        """ + String(repeating: "A paragraph after the interactive entry.\n\n", count: 40)
+        let viewport = NSRect(x: 0, y: 0, width: 700, height: 360)
+        let view = MarkdownTextView(frame: viewport)
+        let scroll = MarkdownScrollView(frame: viewport)
+        scroll.hasVerticalScroller = true; scroll.documentView = view
+        let root = NSView(frame: viewport); root.addSubview(scroll)
+        let window = NSWindow(contentRect: viewport, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = root
+        window.setFrameOrigin(NSPoint(x: -6000, y: -6000)); window.orderFrontRegardless()
+        defer { view.renderedHTML.forEach { $0.view.stop() }; window.close() }
+        view.string = source; view.liveEditing = false; view.isEditable = false
+        view.renderMarkdown(); view.layoutManager?.ensureLayout(for: view.textContainer!); view.sizeToFit()
+        let embedded = try XCTUnwrap(view.renderedHTML.first?.view)
+        try await waitFor { embedded.hasMeasuredContent && !embedded.webView.isLoading }
+        XCTAssertGreaterThan(embedded.contentHeight, scroll.bounds.height)
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: embedded.frame.minY + 80))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        func wheel(_ delta: Int32) throws -> NSEvent {
+            let cg = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: delta, wheel2: 0, wheel3: 0))
+            return try XCTUnwrap(NSEvent(cgEvent: cg))
+        }
+        let point = embedded.convert(NSPoint(x: 150, y: 160), to: nil)
+        let hit = try XCTUnwrap(root.hitTest(point))
+        XCTAssertTrue(hit === embedded.webView || hit.isDescendant(of: embedded.webView))
+        let before = scroll.contentView.bounds.minY
+        XCTAssertTrue(embedded.forwardScrollEvent(try wheel(-100), at: point, in: window))
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertGreaterThan(scroll.contentView.bounds.minY, before, "Scrolling while only HTML is visible must move the note")
+        let down = scroll.contentView.bounds.minY
+        let nextPoint = embedded.convert(NSPoint(x: 150, y: 260), to: nil)
+        XCTAssertTrue(embedded.forwardScrollEvent(try wheel(60), at: nextPoint, in: window))
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertLessThan(scroll.contentView.bounds.minY, down)
+        let overlay = NSButton(frame: NSRect(x: point.x - 10, y: point.y - 10, width: 100, height: 40))
+        root.addSubview(overlay, positioned: .above, relativeTo: nil)
+        let underOverlay = scroll.contentView.bounds.minY
+        XCTAssertFalse(embedded.forwardScrollEvent(try wheel(-100), at: point, in: window))
+        XCTAssertEqual(scroll.contentView.bounds.minY, underOverlay, "A shared composer or other overlay must retain its own scrolling")
+        overlay.removeFromSuperview()
+        XCTAssertFalse(embedded.forwardScrollEvent(try wheel(-100), at: NSPoint(x: -20, y: -20), in: window))
+        let click = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        XCTAssertFalse(embedded.forwardScrollEvent(click, at: point, in: window), "HTML clicks must still reach WebKit")
+    }
+
     @MainActor func testFirstHTMLMeasurementUnhidesEvenWhenHeightIsUnchanged() async throws {
         _ = NSApplication.shared
         let view = MarkdownHTMLView()
