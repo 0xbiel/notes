@@ -21,6 +21,13 @@ import LectureCore
                     guard try store.workspace.readNote(output.sourcePath) == source else { throw ReplayError.conflict }
                 }
                 return (output.path, try DocumentOutput.markdownPDF(source, directory: try store.workspace.fileURL(output.sourcePath).deletingLastPathComponent(), root: store.workspace.courseRoot.appendingPathComponent(notebook.rootPrefix)))
+            case "html":
+                guard NotebookCustomUI.isCustomUI(output.path), output.sourcePath.isEmpty,
+                      output.page == nil, output.crop == nil, output.test == nil else {
+                    throw MediaError.invalid("Custom UI requires HTML source and a new .ui.html destination.")
+                }
+                try NotebookCustomUI.validate(output.source)
+                return (output.path, Data(output.source.utf8))
             case "latex":
                 guard output.page == nil, output.crop == nil, output.test == nil, output.path.hasSuffix(".tex"), output.sourcePath.isEmpty, !output.source.isEmpty else {
                     throw MediaError.invalid("LaTeX output requires complete source and a new .tex destination.")

@@ -687,41 +687,27 @@ struct NotebookManagement: View {
                     .accessibilityLabel(t("Cerrar", "Close")).accessibilityIdentifier("notebook.management.close")
             }
             NotebookGlassSelector(selection: $tab, options: [
-                .init(id: "profile", title: t("Perfil", "Profile")),
+                .init(id: "profile", title: t("Instrucciones", "Instructions")),
+                .init(id: "skills", title: "Skills"),
                 .init(id: "history", title: t("Historial", "History"))
             ]).accessibilityIdentifier("notebook.management.tabs")
-            if tab == "profile" {
+            if tab != "history" {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
-                        Toggle(t("Búsqueda web", "Web search"), isOn: Binding(get: { profile.allowsWebSearch }, set: { profile.webSearchEnabled = $0 }))
-                            .modifier(NotebookToggleAccent(switchStyle: true))
-                            .accessibilityIdentifier("notebook.profile.webSearch")
-                        Text(t("Permite buscar fuentes actuales y descargar imágenes para este cuaderno.", "Allow searching current sources and downloading images for this notebook."))
-                            .font(.caption).foregroundStyle(.secondary)
-                        field(t("Propósito", "Purpose"), text: $profile.purpose)
-                        field(t("Instrucciones del asistente", "Assistant instructions"), text: $profile.instructions, lines: 4)
-                        field(t("Estilo y formato", "Style and formatting"), text: $profile.formatting)
-                        field(t("Reglas de fuentes", "Source rules"), text: $profile.sourceRules)
+                        if tab == "profile" {
+                            Toggle(t("Búsqueda web", "Web search"), isOn: Binding(get: { profile.allowsWebSearch }, set: { profile.webSearchEnabled = $0 }))
+                                .modifier(NotebookToggleAccent(switchStyle: true))
+                                .accessibilityIdentifier("notebook.profile.webSearch")
+                            Text(t("Permite buscar fuentes actuales y descargar imágenes para este cuaderno.", "Allow searching current sources and downloading images for this notebook."))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        NotebookCustomizationManagement(model: model, assistant: assistant, notebook: notebook, skills: tab == "skills")
                     }.padding(2)
                 }
-                HStack { Spacer(); Button { assistant.saveProfile(profile, notebook: notebook) } label: {
-                    Label(t("Guardar perfil", "Save profile"), systemImage: "checkmark")
-                        .font(.callout.weight(.semibold)).foregroundStyle(.white)
-                        .padding(.horizontal, 18).padding(.vertical, 10)
-                        .background(NotebookAccent.color(accent), in: RoundedRectangle(cornerRadius: 10))
-                }.buttonStyle(.plain).accessibilityIdentifier("notebook.saveProfile")
-                    .disabled(profile == assistant.state(notebook).profile)
-                    .opacity(profile == assistant.state(notebook).profile ? 0.45 : 1) }
+                .onChange(of: profile) { _, value in assistant.saveProfile(value, notebook: notebook) }
             } else { history }
             if let error = assistant.error { Text(NotebookAssistantText.display(error, language: language)).foregroundStyle(.orange).font(.caption) }
         }.padding(24).frame(minWidth: 480, idealWidth: 700, maxWidth: 800, minHeight: 460, idealHeight: 620)
-    }
-    private func field(_ title: String, text: Binding<String>, lines: Int = 2) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.callout.weight(.medium))
-            TextField(title, text: text, axis: .vertical).textFieldStyle(.plain).lineLimit(lines...8)
-                .padding(12).modifier(NotebookInputSurface(radius: 12))
-        }
     }
     private var history: some View {
         let checkpoints = assistant.store.timeline(notebook.id).reversed()

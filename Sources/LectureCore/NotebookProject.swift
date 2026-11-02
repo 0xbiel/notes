@@ -88,6 +88,7 @@ public struct NotebookCheckpoint: Codable, Identifiable, Equatable, Sendable {
     public var invalidatesProposals: Bool? = nil
     /// Older checkpoints did not record LaTeX sources, so restoring one must leave them alone.
     public var tracksLaTeX: Bool? = true
+    public var tracksCustomUI: Bool? = true
 }
 
 public struct NotebookFileChange: Codable, Equatable, Sendable {
@@ -262,6 +263,7 @@ public final class NotebookProjectStore {
         guard checkpoints.contains(checkpoint) else { throw MediaError.invalid("Versión desconocida.") }
         var current = try texts(checkpoint.notebookID)
         if checkpoint.tracksLaTeX != true { current = current.filter { !$0.key.hasSuffix(".tex") } }
+        if checkpoint.tracksCustomUI != true { current = current.filter { !NotebookCustomUI.isCustomUI($0.key) } }
         let target = try checkpoint.files.mapValues { try content($0) }
         let changes = Set(current.keys).union(target.keys).sorted().compactMap { path -> NotebookFileChange? in
             current[path] == target[path] ? nil : .init(path: path, before: current[path], after: target[path])
