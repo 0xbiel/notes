@@ -5,6 +5,7 @@ import LectureCore
 @MainActor private final class FoldingLayoutManager: NSLayoutManager, @preconcurrency NSLayoutManagerDelegate {
     var math: [Int: RenderedMarkdownMath] = [:]
     var images: [Int: RenderedMarkdownImage] = [:]
+    var html: [Int: RenderedMarkdownHTML] = [:]
     private var foldedLength = 0
     var foldedRanges: [NSRange] = [] {
         didSet {
@@ -37,11 +38,11 @@ import LectureCore
     }
 
     func layoutManager(_ layoutManager: NSLayoutManager, shouldGenerateGlyphs glyphs: UnsafePointer<CGGlyph>, properties props: UnsafePointer<NSLayoutManager.GlyphProperty>, characterIndexes charIndexes: UnsafePointer<Int>, font aFont: NSFont, forGlyphRange glyphRange: NSRange) -> Int {
-        guard !foldedRanges.isEmpty || !math.isEmpty || !images.isEmpty else { return 0 }
+        guard !foldedRanges.isEmpty || !math.isEmpty || !images.isEmpty || !html.isEmpty else { return 0 }
         var properties = Array(UnsafeBufferPointer(start: props, count: glyphRange.length))
         var changed = false
         for index in properties.indices {
-            if math[charIndexes[index]] != nil || images[charIndexes[index]] != nil { properties[index] = .controlCharacter; changed = true }
+            if math[charIndexes[index]] != nil || images[charIndexes[index]] != nil || html[charIndexes[index]] != nil { properties[index] = .controlCharacter; changed = true }
             else if foldedRanges.contains(where: { NSLocationInRange(charIndexes[index], $0) }) { properties[index].insert(.null); changed = true }
         }
         guard changed else { return 0 }
@@ -51,9 +52,10 @@ import LectureCore
         return glyphRange.length
     }
     func layoutManager(_ layoutManager: NSLayoutManager, shouldUse action: NSLayoutManager.ControlCharacterAction, forControlCharacterAt charIndex: Int) -> NSLayoutManager.ControlCharacterAction {
-        math[charIndex] == nil && images[charIndex] == nil ? action : .whitespace
+        math[charIndex] == nil && images[charIndex] == nil && html[charIndex] == nil ? action : .whitespace
     }
     func layoutManager(_ layoutManager: NSLayoutManager, boundingBoxForControlGlyphAt glyphIndex: Int, for textContainer: NSTextContainer, proposedLineFragment proposedRect: NSRect, glyphPosition: NSPoint, characterIndex charIndex: Int) -> NSRect {
+        if let block = html[charIndex] { return NSRect(origin: .zero, size: block.size) }
         if let image = images[charIndex] { return NSRect(origin: .zero, size: image.size) }
         guard let render = math[charIndex] else { return .zero }
         return NSRect(x: 0, y: -render.descent, width: render.size.width + 2, height: render.size.height)
@@ -350,6 +352,7 @@ struct LiveMarkdownEditor: NSViewRepresentable {
     }
     var didToggleTask: (() -> Void)?
     var liveEditing = true
+    var rendersEmbeddedHTML = true
     var savedScroll = NSPoint.zero
     var openLink: ((URL) -> Void)?
     private var styling = false
@@ -366,6 +369,8 @@ struct LiveMarkdownEditor: NSViewRepresentable {
     var imageDirectory: URL? { didSet { if imageDirectory != oldValue { renderedSource = nil } } }
     var imageRoot: URL? { didSet { if imageRoot != oldValue { renderedSource = nil } } }
     private(set) var renderedImages: [RenderedMarkdownImage] = []
+    private(set) var renderedHTML: [RenderedMarkdownHTML] = []
+    private var htmlSupportRanges: [NSRange] = []
     var selectedImageLocation: Int?
     var importImage: ((Data, String) throws -> URL)?
     private var imageViews: [MarkdownImageView] = []
@@ -456,7 +461,7 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         renderMarkdown()
         (layoutManager as? FoldingLayoutManager)?.foldedRanges = codeBlocks.compactMap {
             collapsedBlocks.contains($0.id) ? foldedRange(for: $0) : nil
-        } + renderedTables.compactMap(\.foldedRange) + renderedMath.map(\.foldedRange) + renderedImages.map(\.foldedRange)
+        } + renderedTables.compactMap(\.foldedRange) + renderedMath.map(\.foldedRange) + renderedImages.map(\.foldedRange) + renderedHTML.map(\.foldedRange) + htmlSupportRanges
         needsDisplay = true
         window?.invalidateCursorRects(for: self)
     }
@@ -577,6 +582,7 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         }
         super.draw(dirtyRect)
         positionImageViews()
+        positionHTMLViews()
         for range in renderedRules {
             guard let rect = thematicRuleRect(range), rect.intersects(dirtyRect) else { continue }
             NSColor.separatorColor.setFill()
@@ -902,13 +908,16 @@ struct LiveMarkdownEditor: NSViewRepresentable {
             return CodeBlock(id: base + "\u{0}" + String(ordinal), range: range, opening: opening,
                              body: body, closing: closing, language: language)
         }
+        let htmlDocument = MarkdownHTML.parse(string)
+        let htmlRanges = htmlDocument.blocks.map(\.range) + htmlDocument.supportRanges
+        let showHTML = !liveEditing && rendersEmbeddedHTML
         let commentRanges = MarkdownComments.ranges(in: string)
         var opening: (offset: Int, length: Int, language: String)?
         var offset = 0
         for line in string.components(separatedBy: "\n") {
             let count = line.utf16.count
             let fence = line.trimmingCharacters(in: .whitespaces)
-            if commentRanges.contains(where: { offset >= $0.location && offset < NSMaxRange($0) }) { offset += count + 1; continue }
+            if (commentRanges + (showHTML ? htmlRanges : [])).contains(where: { offset >= $0.location && offset < NSMaxRange($0) }) { offset += count + 1; continue }
             if let start = opening, fence.hasPrefix("```"), String(fence.dropFirst(3)).trimmingCharacters(in: .whitespaces).isEmpty {
                 blocks.append(codeBlock(range: NSRange(location: start.offset, length: offset + count - start.offset),
                                         opening: NSRange(location: start.offset, length: start.length),
@@ -936,8 +945,8 @@ struct LiveMarkdownEditor: NSViewRepresentable {
                 }
             }
         }
-        var codeRanges = blocks.map(\.range) + commentRanges
-        tableBlocks = MarkdownTables.blocks(in: string).filter { block in !commentRanges.contains { NSIntersectionRange($0, block.range).length > 0 } }
+        var codeRanges = blocks.map(\.range) + commentRanges + htmlRanges
+        tableBlocks = MarkdownTables.blocks(in: string).filter { block in !(commentRanges + htmlRanges).contains { NSIntersectionRange($0, block.range).length > 0 } }
         renderedTables = []
         for block in tableBlocks {
             let firstLine = NSIntersectionRange(source.lineRange(for: NSRange(location: block.range.location, length: 0)), block.range)
@@ -1156,6 +1165,32 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         }
         previousImageViews.filter { !retainedImageViews.contains(ObjectIdentifier($0)) }.forEach { $0.removeFromSuperview() }
         (layoutManager as? FoldingLayoutManager)?.math = Dictionary(uniqueKeysWithValues: renderedMath.map { ($0.span.range.location, $0) })
+        let previousHTML = renderedHTML
+        renderedHTML = []
+        htmlSupportRanges = showHTML ? htmlDocument.supportRanges : []
+        let hiddenHTML = NSMutableParagraphStyle(); hiddenHTML.minimumLineHeight = 0.01; hiddenHTML.maximumLineHeight = 0.01
+        if showHTML {
+            let width = max(80, (textContainer?.containerSize.width ?? frame.width) - 2 * (textContainer?.lineFragmentPadding ?? 5))
+            for block in htmlDocument.blocks where (try? NotebookCustomUI.validate(block.source)) != nil {
+                let view = previousHTML.first { $0.block.id == block.id }?.view ?? MarkdownHTMLView()
+                let render = RenderedMarkdownHTML(block: block, view: view, size: NSSize(width: width, height: view.contentHeight))
+                renderedHTML.append(render)
+                storage.addAttributes([.font: NSFont.systemFont(ofSize: 0.01), .foregroundColor: NSColor.clear, .paragraphStyle: hiddenHTML], range: block.range)
+                let firstLine = source.lineRange(for: NSRange(location: block.range.location, length: 0))
+                let strut = NSMutableParagraphStyle(); strut.minimumLineHeight = render.size.height + 12; strut.maximumLineHeight = strut.minimumLineHeight
+                storage.addAttribute(.paragraphStyle, value: strut, range: NSIntersectionRange(firstLine, block.range))
+                if view.superview == nil { addSubview(view) }
+                view.heightChanged = { [weak self] in self?.refreshHTMLLayout() }
+                view.configure(source: htmlDocument.styles + block.source + htmlDocument.scripts,
+                    dark: effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua, accent: taskAccent)
+            }
+            for range in htmlSupportRanges {
+                storage.addAttributes([.font: NSFont.systemFont(ofSize: 0.01), .foregroundColor: NSColor.clear, .paragraphStyle: hiddenHTML], range: range)
+            }
+        }
+        let retainedHTML = Set(renderedHTML.map { ObjectIdentifier($0.view) })
+        for render in previousHTML where !retainedHTML.contains(ObjectIdentifier(render.view)) { render.view.stop(); render.view.removeFromSuperview() }
+        (layoutManager as? FoldingLayoutManager)?.html = Dictionary(uniqueKeysWithValues: renderedHTML.map { ($0.block.range.location, $0) })
         for range in commentRanges where !visible(range) {
             hide(range, context: range)
             let lines = source.paragraphRange(for: range)
@@ -1185,7 +1220,7 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         documentUndo.enableUndoRegistration()
         (layoutManager as? FoldingLayoutManager)?.foldedRanges = blocks.compactMap {
             collapsedBlocks.contains($0.id) ? foldedRange(for: $0) : nil
-        } + renderedTables.compactMap(\.foldedRange) + renderedMath.map(\.foldedRange) + renderedImages.map(\.foldedRange)
+        } + renderedTables.compactMap(\.foldedRange) + renderedMath.map(\.foldedRange) + renderedImages.map(\.foldedRange) + renderedHTML.map(\.foldedRange) + htmlSupportRanges
         // Selection callbacks can restyle text during an AppKit character edit.
         // In that path, font changes outside the edited paragraph can retain
         // glyph IDs from the previous font. Regenerate them after styling.
@@ -1197,6 +1232,24 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         window?.invalidateCursorRects(for: self)
         typingAttributes = [.font: NSFont.systemFont(ofSize: 16), .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph]
         syncVisualTableControls()
+        positionHTMLViews()
+    }
+    private func refreshHTMLLayout() {
+        renderedSource = nil
+        renderMarkdown()
+        if let textContainer { layoutManager?.ensureLayout(for: textContainer) }
+        sizeToFit()
+        positionHTMLViews()
+        if let scroll = enclosingScrollView { scroll.reflectScrolledClipView(scroll.contentView) }
+    }
+    private func positionHTMLViews() {
+        guard let layoutManager, let textContainer else { return }
+        for render in renderedHTML {
+            let glyph = layoutManager.glyphIndexForCharacter(at: render.block.range.location)
+            let line = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            render.view.frame = NSRect(x: textContainerOrigin.x + line.minX + textContainer.lineFragmentPadding, y: textContainerOrigin.y + line.minY, width: render.size.width, height: render.size.height)
+            render.view.layoutSubtreeIfNeeded()
+        }
     }
     func updateImageSelection() {
         for (render, view) in zip(renderedImages, imageViews) { view.selected = selectedImageLocation == render.range.location }

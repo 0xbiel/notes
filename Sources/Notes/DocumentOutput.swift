@@ -10,6 +10,8 @@ import LectureCore
         let view = MarkdownTextView(frame: NSRect(x: 0, y: 0, width: 515, height: 100))
         view.appearance = NSAppearance(named: .aqua)
         view.liveEditing = false
+        // Printing is synchronous; keep HTML source visible instead of printing an unloaded web frame.
+        view.rendersEmbeddedHTML = false
         view.isEditable = false
         view.imageDirectory = directory
         view.imageRoot = root
