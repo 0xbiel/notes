@@ -10,12 +10,13 @@ public enum NotebookCustomUI {
         }
     }
     public static let instructions = """
+    Embedded UI in Markdown: when the user wants a custom UI inside an existing .md note, use edits on that note and place self-contained HTML in a fenced html-ui block, surrounded by ordinary Markdown. Palladium renders this block in View mode and shows its exact source in Edit mode. Raw standalone <section>, <div>, <article>, <details> and similar container blocks also render, and standalone <style> definitions in the note apply to its HTML blocks. Each block is an isolated frame: keep its required scripts, markup and data together; do not rely on another block's DOM. Use the same notebook theme variables and capabilities described below. Ordinary fenced html code samples remain literal code. Prefer embedding for a requested change to an existing note; create a separate .ui.html only for a requested standalone view. HTML inside Markdown remains source text in PDF/print output for now.
     Custom notebook UI: when asked for a custom interactive view, calculator, dashboard or specialized interface, create outputs with format="html", a new notebook-scoped .ui.html path, sourcePath="", source=the self-contained HTML, and page/crop/test=null. The view opens embedded in the notebook. Use semantic HTML, accessible labels and inline JavaScript for local interactions; include all data required by the task. No external libraries, fonts, network requests, file access, app tools, navigation or persistent browser storage are available. Interaction state lasts while the view is open; do not promise saved entries or changes to notes. Keep the layout responsive and consistent with Palladium: system font, restrained spacing, subtle borders and rounded controls. Use the host's CSS variables for ALL colors: --notebook-background, --notebook-surface, --notebook-text, --notebook-secondary, --notebook-border, --notebook-accent, --notebook-on-accent. Use --notebook-radius and --notebook-font for shape and typography. Never hardcode light/dark palettes or request a mode toggle: Palladium updates these tokens and color-scheme live. data-theme on the document root is light or dark. Semantic elements (buttons, inputs, tables, sections) receive matching default styles; use class="primary" for an accent action. Custom CSS may arrange content but must preserve these theme tokens. No shell is necessary. Read required notebook sources before constructing grounded content. Link the .ui.html from a note if helpful. Read existing .ui.html views with readFiles and update them with edits (replaceEntireFile=true for a complete rewrite). Standard practice tests continue to use native quiz output unless the user specifically requests custom HTML.
     """
 
     /// The generated document runs in an opaque-origin frame with no native bridge,
     /// filesystem base URL, network access, forms, popups or parent-page access.
-    public static func document(source: String, theme: [String: String]) -> String {
+    public static func document(source: String, theme: [String: String], embedded: Bool = false) -> String {
         func attribute(_ text: String) -> String {
             text.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "\"", with: "&quot;")
                 .replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;")
@@ -30,7 +31,7 @@ public enum NotebookCustomUI {
         :root { \(variables) color-scheme: \(mode); --notebook-font: -apple-system, BlinkMacSystemFont, sans-serif; --notebook-radius: 10px; }
         * { box-sizing: border-box; }
         html, body { background: var(--notebook-background) !important; color: var(--notebook-text) !important; font-family: var(--notebook-font) !important; margin: 0; }
-        body { padding: 28px 28px calc(28px + var(--notebook-bottom-inset, 0px)); line-height: 1.55; font-size: 15px; overflow-wrap: anywhere; }
+        body { display: flow-root; padding: \(embedded ? "0" : "28px 28px calc(28px + var(--notebook-bottom-inset, 0px))"); line-height: 1.55; font-size: \(embedded ? "16" : "15")px; overflow-wrap: anywhere; }
         h1 { font-size: 26px; line-height: 1.2; } h2 { font-size: 20px; } h3 { font-size: 17px; }
         h1,h2,h3 { font-weight: 600; } p { margin: 0 0 1em; }
         small, figcaption, .secondary { color: var(--notebook-secondary); }
@@ -56,7 +57,8 @@ public enum NotebookCustomUI {
           document.documentElement.style.colorScheme = theme.mode;
           window.dispatchEvent(new Event('palladium-theme-change'));
         });
-        </script></head><body>\(source)</body></html>
+        </script></head><body>\(source)
+        \(embedded ? Self.sizeReporter : "")</body></html>
         """
         return """
         <!doctype html><html><head><meta charset="utf-8">
@@ -65,4 +67,23 @@ public enum NotebookCustomUI {
         </head><body><iframe title="Notebook custom view" sandbox="allow-scripts" srcdoc="\(attribute(child))"></iframe></body></html>
         """
     }
+
+    private static let sizeReporter = """
+    <script>
+    (() => {
+      let pending = false;
+      const report = () => {
+        if (pending) return; pending = true;
+        setTimeout(() => {
+          pending = false;
+          parent.postMessage({type:'palladium-size',height:Math.ceil(document.body.getBoundingClientRect().height)}, '*');
+        }, 0);
+      };
+      new ResizeObserver(report).observe(document.body);
+      new MutationObserver(report).observe(document.body, {subtree:true, childList:true, attributes:true, characterData:true});
+      window.addEventListener('load', report);
+      report();
+    })();
+    </script>
+    """
 }

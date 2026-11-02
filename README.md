@@ -22,6 +22,8 @@ Every branch push publishes a numbered development prerelease after tests and bo
 
 ### Custom views and notebook skills
 
+Custom interfaces can also live directly inside a Markdown note. Ask the assistant to embed the interface where it belongs: a `html-ui` fenced block renders inline in **View**, while **Edit** preserves its exact HTML source. Existing raw `<section>`, `<div>`, `<details>` and similar blocks render too, using shared `<style>` definitions from the note. Interactive content resizes with the note, including expanding details panels. Regular fenced `html` examples remain code. Inline blocks use the same isolated renderer and live theme as standalone views. PDF/print currently retains their HTML source rather than rendering the web content.
+
 Ask the notebook assistant to create a custom interface, for example “Create an interactive accounting-entry worksheet with Debe, Haber, and a balance check.” It saves a `.ui.html` file that opens inside the notebook. Views support self-contained HTML, CSS, and JavaScript, using the notebook's accent, system typography, and shared semantic colors. Switching light/dark appearance updates the view without clearing entered values. The floating assistant remains available to request changes to the view.
 
 Custom views run in an isolated frame with no notebook file access, network, or native app tools. Entered values last while the view stays open; closing or regenerating a view resets its interaction state. The HTML file itself is saved locally, and assistant edits can be restored from notebook history. Standard practice tests keep their native interface and saved attempts.
