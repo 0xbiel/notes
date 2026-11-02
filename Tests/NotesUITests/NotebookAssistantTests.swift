@@ -5,6 +5,53 @@ import LectureCore
 @testable import Notes
 
 final class NotebookAssistantTests: XCTestCase {
+    @MainActor func testNotebookCustomizationUpdatesContextAndGeneratesEditableHTML() async throws {
+        let (model, assistant, _) = try fixture()
+        let notebook = model.currentNotebook
+        let agent = NotebookCustomization.agentPath(notebook)
+        let skill = NotebookCustomization.skillsPrefix(notebook) + "asientos-contables/SKILL.md"
+        let other = Notebook(id: "other", name: "Other", rootPrefix: "Cuadernos/Other")
+        try assistant.store.workspace.createNote("Cuadernos/Other/AGENTS.md", text: "Foreign instructions")
+        assistant.store.notebooks.append(other)
+        let agentText = "# Instructions\nUse the Spanish chart of accounts."
+        let skillText = "# Asientos contables\nWhen making journal entries, show Debe and Haber and verify balance."
+        var rounds = 0
+        assistant.generate = { request, _ in
+            rounds += 1
+            XCTAssertFalse(request.notebookInstructions.values.contains("Foreign instructions"))
+            if rounds == 1 {
+                XCTAssertTrue(request.messages.last?.text.contains(skill) == true)
+                return .init(reply: "Saved notebook behavior.", edits: [
+                    .init(path: agent, replacement: agentText, create: true),
+                    .init(path: skill, replacement: skillText, create: true)
+                ], pendingTasks: ["Create the accounting entry view"])
+            }
+            XCTAssertEqual(request.notebookInstructions[agent], agentText)
+            XCTAssertEqual(request.notebookInstructions[skill], skillText)
+            return .init(reply: "Created the accounting entry view.", outputs: [
+                .init(path: "Asientos.ui.html", format: "html", source: "<h1>Asientos contables</h1><label>Debe <input type='number'></label>")
+            ])
+        }
+        XCTAssertTrue(model.requestNotebookCustomization(notebook: notebook, path: skill, request: "Create an accounting-entry skill and its custom view."))
+        await assistant.waitUntilFinished()
+        XCTAssertNil(assistant.error); XCTAssertEqual(rounds, 2)
+        XCTAssertEqual(try assistant.store.workspace.readNote(skill), skillText)
+        XCTAssertTrue(model.libraryFiles.contains("Asientos.ui.html"))
+        let before = try assistant.store.capture(notebook.id, summary: "Before changing HTML")
+        assistant.generate = { request, _ in
+            XCTAssertEqual(request.notebookInstructions[agent], agentText)
+            return .init(reply: "Updated", edits: [.init(path: "Asientos.ui.html", find: "<h1>Asientos contables</h1>", replacement: "<h1>Libro diario</h1>")])
+        }
+        model.openLibraryFile("Asientos.ui.html")
+        assistant.setDraft("Change the title to Libro diario", notebook: notebook)
+        model.submitNotebookPrompt(); await assistant.waitUntilFinished()
+        XCTAssertNil(assistant.error)
+        XCTAssertTrue(try assistant.store.workspace.readNote("Asientos.ui.html").contains("Libro diario"))
+        _ = try assistant.store.restore(before)
+        XCTAssertTrue(try assistant.store.workspace.readNote("Asientos.ui.html").contains("Asientos contables"))
+        XCTAssertFalse(model.requestNotebookCustomization(notebook: notebook, path: "Cuadernos/Other/AGENTS.md", request: "Change foreign instructions"))
+    }
+
     private func practiceTest() -> NotebookPracticeTest {
         .init(title: "Pipeline practice", instructions: "Choose one answer for each question.", questions: [
             .init(id: "latency", prompt: "What is the initial pipeline latency?", options: [

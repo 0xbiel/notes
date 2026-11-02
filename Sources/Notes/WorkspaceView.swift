@@ -620,7 +620,7 @@ struct NoteWorkspace: View {
                     LaTeXEditor(controller: controller, bottomInset: showsComposer ? composerHeight : 0).id(file)
                 } else {
                     NotebookFilePreview(workspace: workspace, path: file, bottomInset: showsComposer ? composerHeight : 0,
-                        imageRoot: workspace.courseRoot.appendingPathComponent(model.currentNotebook.rootPrefix), onFooterHeight: { quizFooterHeight = $0 }, gradeAnswers: { test, answers in
+                        imageRoot: workspace.courseRoot.appendingPathComponent(model.currentNotebook.rootPrefix), notebookColor: model.currentNotebook.color, onFooterHeight: { quizFooterHeight = $0 }, gradeAnswers: { test, answers in
                             guard let assistant = model.assistant, let ai = model.ai else { throw MediaError.invalid("AI grading is unavailable.") }
                             let configuration = ai.providerSettings.selected
                             let directory = try workspace.fileURL(file).deletingLastPathComponent()

@@ -54,6 +54,7 @@ public struct NotebookTextRequest: Codable, Sendable {
     public var language: String
     public var notebook: Notebook
     public var profile: NotebookProfile
+    public var notebookInstructions: [String: String] = [:]
     public var messages: [NotebookMessage]
     public var currentDocument: String?
     public var recentlyEditedDocuments: [String]
@@ -78,7 +79,8 @@ public struct NotebookTextRequest: Codable, Sendable {
             return String((headings.isEmpty ? text : headings).prefix(800))
         }
         for path in libraryFiles where catalog[path] == nil { catalog[path] = "Imported library file. Request this exact path in readFiles to read its contents. Source only; cannot be edited." }
-        documents = [:]
+        notebookInstructions = NotebookCustomization.files(in: texts, notebook: notebook)
+        documents = notebookInstructions
         let query = messages.last(where: { $0.role == "user" })?.text.lowercased() ?? ""
         let words = Set(query.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).filter { $0.count > 2 }.map(String.init))
         let ranked = texts.keys.sorted { a, b in
@@ -118,7 +120,7 @@ public enum NotebookAssistantProtocol {
     Always include commands=[] and pendingTasks=[] when unused. Imported sources should remain intact unless the user explicitly asks to change them.
     Action sequencing: readFiles cannot be combined with edits, outputs or webActions. webActions cannot be combined with edits or outputs. Outputs and edits may be combined after reading their sources.
     Additional current capability: include outputs=[] in every response. When the user requests a PDF of a Markdown note, use outputs=[{path:"notebook/root/output/name.pdf",sourcePath:"exact/read/note.md",format:"pdf",source:""}]. Use real notebook-relative paths from notebook.rootPrefix, not the example paths. Palladium generates a paginated PDF with its native Markdown renderer including math, tables and images. The source must have been read into documents (or created/updated by edits in this response). Request readFiles first if necessary. Parent folders are created automatically. For a LaTeX homework document, use format="latex", a new .tex path, sourcePath="", source=complete standalone LaTeX document. This creates editable source, not a compiled PDF. Compilation uses the explicit Compile PDF action in the LaTeX editor. Do not claim a .tex file is a PDF. To change an existing .tex source (for example to fix a compile error the user pasted), read it and return edits for that exact path, like a Markdown note; never answer that it cannot be edited. Never claim PDF export is unavailable. Imported PDFs cannot be edited or converted automatically into LaTeX: read/extract their content and create a faithful new standalone .tex document when requested. Output paths must be new and within this notebook; never overwrite existing files. Do not return outputs together with readFiles or webActions. Only generate outputs the user requested, never print automatically. Unsupported conversions must be explained honestly.
-    """ + artifactInstructions
+    """ + "\n" + NotebookCustomization.instructions + "\n" + NotebookCustomUI.instructions + "\n" + artifactInstructions
     public static let artifactInstructions = """
     Practice-test reference images: each question may include images=[{path,alt,caption}] or images=null. Paths are literal local paths relative to the .quiz.json file, confined to the same notebook (no URLs or absolute paths); do not percent-encode them. Use existing notebook image assets, or request format="image" extraction outputs in the same response first. Include a useful alt description and an optional caption (empty string if none). Put question reference figures in this structured images field, not Markdown image syntax; the app displays them before the answer choices in both layouts. Questions can refer to visible labels, regions or features in the figure. Ground them in images you have actually read; do not invent unseen details or put the correct answer in the caption/alt text.
 
@@ -186,7 +188,7 @@ public enum NotebookAssistantProtocol {
             "commands": ["type": "array", "items": object(["command": string, "workingDirectory": string, "timeoutSeconds": ["type": "integer"]])],
             "pendingTasks": ["type": "array", "items": string],
             "readFiles": ["type": "array", "items": string],
-            "outputs": ["type": "array", "items": object(["path": string, "sourcePath": string, "format": ["type": "string", "enum": ["pdf", "latex", "image", "quiz"]], "source": string,
+            "outputs": ["type": "array", "items": object(["path": string, "sourcePath": string, "format": ["type": "string", "enum": ["pdf", "latex", "image", "quiz", "html"]], "source": string,
                 "page": ["type": ["integer", "null"]], "crop": ["anyOf": [crop, ["type": "null"]]], "test": ["anyOf": [test, ["type": "null"]]]])],
             "webActions": ["type": "array", "items": object(["kind": ["type": "string", "enum": ["search", "read", "downloadImage", "downloadFile"]], "query": string, "url": string, "path": string])],
             "edits": ["type": "array", "items": object(["path": string, "find": string, "replacement": string, "create": ["type": "boolean"], "replaceEntireFile": ["type": "boolean"], "delete": ["type": "boolean"]])]
@@ -218,7 +220,7 @@ public enum NotebookAssistantProtocol {
         let grouped = Dictionary(grouping: response.edits, by: \.path)
         let changes = try grouped.keys.sorted().map { path -> NotebookFileChange in
             let edits = grouped[path]!
-            guard SafeWorkspace.isEditableText(path) else { throw MediaError.invalid("Only Markdown notes and LaTeX sources can be edited. Imported files are read-only sources.") }
+            guard SafeWorkspace.isEditableText(path) else { throw MediaError.invalid("Only Markdown notes, LaTeX sources and custom .ui.html views can be edited. Imported files are read-only sources.") }
             if edits.contains(where: { $0.delete == true }) {
                 guard allowDeletion else { throw MediaError.invalid("Deleting a note requires an explicit user request.") }
                 guard edits.count == 1, let edit = edits.first, !edit.create, edit.replaceEntireFile != true,

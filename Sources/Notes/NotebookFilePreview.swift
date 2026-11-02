@@ -8,13 +8,16 @@ struct NotebookFilePreview: View {
     let path: String
     var bottomInset: CGFloat = 0
     var imageRoot: URL? = nil
+    var notebookColor: String? = nil
     var onFooterHeight: ((CGFloat) -> Void)? = nil
     var gradeAnswers: NotebookPracticeGrader? = nil
     @AppStorage("notes.language") private var language = "es"
     var body: some View {
         if let url = try? workspace.fileURL(path) {
             Group {
-                if NotebookPracticeTest.isPracticeTest(path) {
+                if NotebookCustomUI.isCustomUI(path) {
+                    NotebookCustomUIView(workspace: workspace, path: path, notebookColor: notebookColor, bottomInset: bottomInset)
+                } else if NotebookPracticeTest.isPracticeTest(path) {
                     NotebookPracticeTestView(workspace: workspace, path: path, imageRoot: imageRoot, bottomInset: bottomInset, onFooterHeight: onFooterHeight, gradeAnswers: gradeAnswers)
                 } else if url.pathExtension.lowercased() == "pdf" {
                     LibraryPDFView(url: url).accessibilityIdentifier("notebook.pdfPreview")
@@ -36,6 +39,7 @@ struct LibraryQuickLookView: NSViewRepresentable {
 enum LibraryFileIcon {
     static func symbol(_ path: String) -> String {
         if NotebookPracticeTest.isPracticeTest(path) { return "checklist" }
+        if NotebookCustomUI.isCustomUI(path) { return "rectangle.3.group" }
         return switch URL(fileURLWithPath: path).pathExtension.lowercased() {
         case "pdf": "doc.richtext"
         case "png", "jpg", "jpeg", "heic", "gif", "webp", "tiff", "svg": "photo"

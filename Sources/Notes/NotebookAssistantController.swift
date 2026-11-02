@@ -622,6 +622,7 @@ final class NotebookAssistantController: ObservableObject {
                     // Web rounds are not rationed: research runs until the assistant answers or the user stops it.
                     while true {
                         try Task.checkCancellation()
+                        request.notebookInstructions = NotebookCustomization.files(in: updatedTexts, notebook: notebook)
                         self.report("Conectando con el proveedor…", run: run)
                         let round = UUID().uuidString
                         let response: NotebookAssistantResponse
