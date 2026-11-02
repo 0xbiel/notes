@@ -46,6 +46,7 @@ struct NotesApp: App {
                 Button("Buscar nota…") { model.showQuickOpen = true }.keyboardShortcut("t")
                 Button("Atlas") { model.toggleMap() }.keyboardShortcut("m", modifiers: [.command, .shift]).disabled(model.maps == nil || model.activeNotebooks.isEmpty)
             }
+            DocumentWorkspaceCommands(model: model)
         }
     }
 }
@@ -81,6 +82,7 @@ final class Workbench: ObservableObject {
     /// A collapsed folder or notebook a drag has rested on; its row opens.
     @Published var libraryExpandRequest: NotebookSidebarSelection?
     @Published var librarySelections: Set<NotebookSidebarSelection> = []
+    @Published var documentDropPreview: DocumentPaneDropTarget?
     @Published var documentChatVisible = false
     @Published var folders: [String] = []
     @Published var noteText = ""
@@ -93,7 +95,14 @@ final class Workbench: ObservableObject {
     @Published var creationKind: String?
     @Published var renamingItem: NotebookSidebarSelection?
     @Published var creationInitialName = ""
-    @Published var layout = "preview"
+    @Published var layout = "preview" {
+        didSet { if layout != oldValue, !selectingWorkspaceTab { documentWorkspace.setMode(layout) } }
+    }
+    @Published var documentWorkspace = DocumentWorkspace() {
+        didSet { if !restoringDocumentWorkspace { persistDocumentWorkspace() } }
+    }
+    var restoringDocumentWorkspace = true
+    var selectingWorkspaceTab = false
     @Published var hideStudyComposer = false
     @Published var trash: [NotebookTrashEntry] = []
     @Published var notebooks: [Notebook] = [.copiedCourse] { didSet { projects?.notebooks = notebooks } }
@@ -214,6 +223,7 @@ final class Workbench: ObservableObject {
             if let session = sessions.first(where: { visibleNotes.contains($0.targetNote) }) { select(session.id) }
             if let first = visibleNotes.first(where: { $0.hasPrefix("Tema 1") }) ?? visibleNotes.first { openNote(first) }
             else { selectedNote = nil; selectedNotebookID = activeNotebooks.first?.id ?? "" }
+            restoreDocumentWorkspace()
             // Only someone opening their own, still empty library is new; a workspace handed in is not.
             if workspaceRoot == nil, argumentIndex == nil, activeNotebooks.isEmpty, notes.isEmpty, !UserDefaults.standard.bool(forKey: "notes.onboarded") {
                 if UserDefaults.standard.object(forKey: "notes.language") == nil {

@@ -38,6 +38,7 @@ extension Workbench {
             if let selectedNote { saveDraft(named: selectedNote) }
             librarySelections = [.note(path)]
             selectedNote = nil; selectedFile = path; selectedFolder = nil; selectedNotebookID = notebook.id; showPreferences = false
+            trackWorkspaceDocument(path)
         }
     }
     func selectLibraryFolder(_ path: String) {
@@ -297,6 +298,9 @@ extension Workbench {
         do { _ = try projects.capture(owner.id, summary: "Rename " + path + " → " + destination, invalidatesProposals: true) }
         catch { try move(destination, path); throw error }
         let moved = affected.map { destination + String($0.dropFirst(path.count)) }
+        documentWorkspace.remapPaths { original in
+            original == path || (folder && original.hasPrefix(path + "/")) ? destination + String(original.dropFirst(path.count)) : original
+        }
         refreshProjectFiles(affected + moved)
         if let selected, selected == path || (folder && selected.hasPrefix(path + "/")) { openLibraryFile(destination + String(selected.dropFirst(path.count))) }
         else if folder, let previousFolder, previousFolder == path || previousFolder.hasPrefix(path + "/") { selectLibraryFolder(destination + String(previousFolder.dropFirst(path.count))) }
@@ -442,6 +446,7 @@ extension Workbench {
                 for move in completed.reversed() { try workspace.moveLibraryItem(move.to, to: move.from, folder: move.folder) }
                 throw error
             }
+            documentWorkspace.remapPaths(mapped)
             refreshProjectFiles(affected)
             openNotebook(notebookID)
             if !destination.isEmpty { selectedFolder = destination }

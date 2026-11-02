@@ -1243,7 +1243,10 @@ struct LiveMarkdownEditor: NSViewRepresentable {
         if let scroll = enclosingScrollView { scroll.reflectScrolledClipView(scroll.contentView) }
     }
     private func positionHTMLViews() {
-        guard let layoutManager, let textContainer else { return }
+        guard !renderedHTML.isEmpty, let layoutManager, let textContainer else { return }
+        // Folding can move later paragraphs after an HTML anchor has been queried.
+        // Finish TextKit's layout before placing native web views over those anchors.
+        layoutManager.ensureLayout(for: textContainer)
         for render in renderedHTML {
             let glyph = layoutManager.glyphIndexForCharacter(at: render.block.range.location)
             let line = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)

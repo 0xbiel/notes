@@ -16,7 +16,9 @@ struct RenderedMarkdownHTML {
     let webView: WKWebView
     private let coordinator = NotebookHTMLSurface.Coordinator()
     private var loadedSource: String?
-    private(set) var contentHeight: CGFloat = 160
+    private(set) var contentHeight: CGFloat = 24
+    private(set) var hasMeasuredContent = false
+    nonisolated(unsafe) private var scrollMonitor: Any?
     var heightChanged: (() -> Void)?
     override var isFlipped: Bool { true }
     init() {
@@ -36,6 +38,7 @@ struct RenderedMarkdownHTML {
         webView.navigationDelegate = coordinator
         webView.setValue(false, forKey: "drawsBackground")
         addSubview(webView)
+        isHidden = true
         setAccessibilityIdentifier("document.embeddedHTML")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -44,6 +47,7 @@ struct RenderedMarkdownHTML {
         coordinator.theme = theme
         if loadedSource != source {
             loadedSource = source
+            hasMeasuredContent = false; isHidden = true
             webView.loadHTMLString(NotebookCustomUI.document(source: source, theme: theme, embedded: true), baseURL: nil)
         } else { coordinator.updateTheme(webView) }
     }
@@ -51,19 +55,52 @@ struct RenderedMarkdownHTML {
         super.layout()
         webView.frame = bounds
     }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        stopScrollMonitor()
+        guard window != nil else { return }
+        // WebKit's internal views consume wheel events before the containing
+        // note sees them. Inline HTML belongs to the note's scroll surface.
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            let handled = MainActor.assumeIsolated { self?.forwardScrollEvent(event) ?? false }
+            return handled ? nil : event
+        }
+    }
+    @discardableResult func forwardScrollEvent(_ event: NSEvent) -> Bool {
+        guard let window, event.window === window else { return false }
+        return forwardScrollEvent(event, at: event.locationInWindow, in: window)
+    }
+    @discardableResult func forwardScrollEvent(_ event: NSEvent, at location: NSPoint, in targetWindow: NSWindow) -> Bool {
+        guard event.type == .scrollWheel, let window, targetWindow === window, window.attachedSheet == nil,
+              !isHiddenOrHasHiddenAncestor, let scroll = enclosingScrollView,
+              visibleRect.intersection(bounds).contains(convert(location, from: nil)),
+              let hit = (window.contentView?.superview ?? window.contentView)?.hitTest(location),
+              hit === webView || hit.isDescendant(of: webView) else { return false }
+        scroll.scrollWheel(with: event)
+        return true
+    }
+    private func stopScrollMonitor() {
+        if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor); self.scrollMonitor = nil }
+    }
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.frameInfo.isMainFrame, let number = message.body as? NSNumber else { return }
         let value = number.doubleValue
         guard value.isFinite, value >= 0 else { return }
         let height = min(10_000, max(24, ceil(value) + 2))
-        guard abs(height - contentHeight) > 1 else { return }
+        guard !hasMeasuredContent || abs(height - contentHeight) > 1 else { return }
         contentHeight = height
+        hasMeasuredContent = true
         heightChanged?()
+        // Apply the measured height to TextKit before exposing the web content.
+        // In particular, the first report must run even when the height is unchanged.
+        isHidden = false
     }
     func stop() {
+        stopScrollMonitor()
         heightChanged = nil; webView.stopLoading()
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "notebookHTMLHeight")
     }
+    deinit { if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) } }
     private final class WeakHeightHandler: NSObject, WKScriptMessageHandler {
         weak var owner: MarkdownHTMLView?
         init(_ owner: MarkdownHTMLView) { self.owner = owner }
