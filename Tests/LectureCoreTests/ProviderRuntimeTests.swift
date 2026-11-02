@@ -2,6 +2,16 @@ import XCTest
 @testable import LectureCore
 
 final class ProviderRuntimeTests: XCTestCase {
+    func testFinderEnvironmentCanLaunchNodeWrappersAndPreservesExplicitPath() throws {
+        var configuration = AIProviderConfiguration(provider: .codexCLI, executablePath: "/manual/codex")
+        let inherited = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "CODEX_UNTRUSTED": "ignored"]
+        let environment = try NotesProviderTransport.codexEnvironment(configuration, inherited: inherited)
+        XCTAssertEqual(environment["PATH"], "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin")
+        XCTAssertNil(environment["CODEX_UNTRUSTED"])
+        configuration.environment = [.init(name: "PATH", value: "/custom/node/bin:/usr/bin")]
+        XCTAssertEqual(try NotesProviderTransport.codexEnvironment(configuration, inherited: inherited)["PATH"], "/custom/node/bin:/usr/bin")
+    }
+
     func testFreshSettingsDoNotDiscoverT3() throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: home) }

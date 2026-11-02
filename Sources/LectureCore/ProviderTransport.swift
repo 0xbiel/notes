@@ -84,8 +84,13 @@ public struct NotesProviderTransport: Sendable {
 
     /// The inherited environment without ambient Codex/T3 variables, then the
     /// instance variables, then the account home.
-    static func codexEnvironment(_ configuration: AIProviderConfiguration, home: String? = nil, secret: ProviderEnvironment.SecretReader = { try ProviderSecrets.read($0, $1) }) throws -> [String: String] {
-        var environment = ProcessInfo.processInfo.environment
+    static func codexEnvironment(_ configuration: AIProviderConfiguration, home: String? = nil, inherited: [String: String] = ProcessInfo.processInfo.environment, secret: ProviderEnvironment.SecretReader = { try ProviderSecrets.read($0, $1) }) throws -> [String: String] {
+        var environment = inherited
+        // Finder launches omit package-manager paths. npm-based CLI wrappers
+        // use /usr/bin/env node, including CLIProxy's managed Codex launcher.
+        var paths = (environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin").components(separatedBy: ":")
+        for path in ["/opt/homebrew/bin", "/usr/local/bin"] where !paths.contains(path) { paths.append(path) }
+        environment["PATH"] = paths.joined(separator: ":")
         for name in Array(environment.keys) where name.hasPrefix("CODEX_") || name.hasPrefix("T3CODE_") { environment.removeValue(forKey: name) }
         try ProviderEnvironment.apply(configuration, to: &environment, secret: secret)
         let home = home ?? configuration.accountHomePath
