@@ -567,6 +567,7 @@ public class MTExtensibleArrow: MTMathAtom {
 }
 
 public class MTBox: MTMathAtom {
+    public var underbrace = false
     public var innerList: MTMathList?
 
     override public var finalized: MTMathAtom {
@@ -579,6 +580,7 @@ public class MTBox: MTMathAtom {
         super.init(box)
         self.type = .boxed
         self.innerList = MTMathList(box?.innerList)
+        self.underbrace = box?.underbrace ?? false
     }
 
     override init() {

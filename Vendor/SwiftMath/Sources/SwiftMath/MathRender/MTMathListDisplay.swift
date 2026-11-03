@@ -924,3 +924,60 @@ class MTAccentDisplay : MTDisplay {
     }
     
 }
+
+/// A horizontal brace spanning its argument, with a centered annotation below.
+class MTUnderbraceDisplay: MTDisplay {
+    let inner: MTMathListDisplay
+    let label: MTMathListDisplay?
+    let braceWidth: CGFloat
+    let gap: CGFloat
+    let braceHeight: CGFloat
+
+    init(inner: MTMathListDisplay, label: MTMathListDisplay?, fontSize: CGFloat, range: NSRange) {
+        self.inner = inner
+        self.label = label
+        braceWidth = max(inner.width, fontSize * 0.6)
+        gap = fontSize * 0.12
+        braceHeight = fontSize * 0.3
+        super.init()
+        self.range = range
+        width = max(braceWidth, label?.width ?? 0)
+        ascent = inner.ascent
+        descent = inner.descent + gap + braceHeight
+        inner.position = CGPoint(x: (width - inner.width) / 2, y: 0)
+        if let label {
+            label.position = CGPoint(x: (width - label.width) / 2, y: -descent - gap - label.ascent)
+            descent += gap + label.ascent + label.descent
+        }
+    }
+
+    override var textColor: MTColor? {
+        get { super.textColor }
+        set { super.textColor = newValue; inner.textColor = newValue; label?.textColor = newValue }
+    }
+
+    override func draw(_ context: CGContext) {
+        super.draw(context)
+        context.saveGState()
+        context.translateBy(x: position.x, y: position.y)
+        inner.draw(context)
+        label?.draw(context)
+        let x = (width - braceWidth) / 2
+        let y = -inner.descent - gap
+        let h = braceHeight
+        let mid = x + braceWidth / 2
+        let end = x + braceWidth
+        let curl = min(h, braceWidth / 4)
+        context.setStrokeColor((textColor ?? MTColor.black).cgColor)
+        context.setLineWidth(max(0.5, h * 0.12))
+        context.move(to: CGPoint(x: x, y: y))
+        context.addCurve(to: CGPoint(x: x + curl, y: y - h / 2), control1: CGPoint(x: x, y: y - h / 2), control2: CGPoint(x: x, y: y - h / 2))
+        context.addLine(to: CGPoint(x: mid - curl, y: y - h / 2))
+        context.addCurve(to: CGPoint(x: mid, y: y - h), control1: CGPoint(x: mid, y: y - h / 2), control2: CGPoint(x: mid, y: y - h / 2))
+        context.addCurve(to: CGPoint(x: mid + curl, y: y - h / 2), control1: CGPoint(x: mid, y: y - h / 2), control2: CGPoint(x: mid, y: y - h / 2))
+        context.addLine(to: CGPoint(x: end - curl, y: y - h / 2))
+        context.addCurve(to: CGPoint(x: end, y: y), control1: CGPoint(x: end, y: y - h / 2), control2: CGPoint(x: end, y: y - h / 2))
+        context.strokePath()
+        context.restoreGState()
+    }
+}
