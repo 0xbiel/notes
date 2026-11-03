@@ -16,7 +16,6 @@ final class CompactChrome: ObservableObject {
     @Published var pinned = false
     @Published private(set) var sidebarRevealed = false
     @Published private(set) var toolbarRevealed = false
-    weak var windowButtons: WindowButtonsView?
     private var suppressRevealUntilExit = false
     private var sidebarDeadline: TimeInterval?
     private var toolbarDeadline: TimeInterval?
@@ -131,10 +130,8 @@ final class ChromeWindowView: NSView {
     static let buttonTypes: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
     func syncButtons() {
         guard let window = attachedWindow else { return }
-        // AppKit can reposition/reparent traffic lights on activation and resizing.
-        // Reconcile their native views with the sidebar host after each such layout.
-        chrome.windowButtons?.installButtons()
-        for type in Self.buttonTypes { window.standardWindowButton(type)?.isHidden = false }
+        // Custom sidebar controls replace AppKit's; keep the native ones hidden.
+        for type in Self.buttonTypes { window.standardWindowButton(type)?.isHidden = true }
     }
     func trackPointer() {
         guard let window = attachedWindow, window.isVisible else { return }
@@ -187,106 +184,154 @@ struct WindowDragRegion: NSViewRepresentable {
     }
 }
 
-/// Hosts AppKit's actual window buttons in the sidebar, preserving native actions.
+/// Sidebar window controls drawn from scratch (T3 Code style). AppKit's own traffic
+/// lights stay hidden while the chrome is attached; these never reparent native views,
+/// so geometry is fixed and hovering only changes colour and glyphs.
 struct NativeWindowControls: NSViewRepresentable {
     let chrome: CompactChrome
-    func makeNSView(context: Context) -> WindowButtonsView {
-        let view = WindowButtonsView()
-        chrome.windowButtons = view
-        return view
-    }
-    func updateNSView(_ view: WindowButtonsView, context: Context) { view.installButtons() }
-    static func dismantleNSView(_ view: WindowButtonsView, coordinator: ()) { view.restoreButtons() }
+    func makeNSView(context: Context) -> WindowButtonsView { WindowButtonsView() }
+    func updateNSView(_ view: WindowButtonsView, context: Context) {}
 }
 
 @MainActor
 final class WindowButtonsView: NSView {
-    private struct Original {
-        let button: NSButton
-        let parent: NSView
-        let frame: NSRect
-        let bounds: NSRect
-    }
-    private var originals: [Original] = []
-    private var controlsHovered = false
+    static let diameter: CGFloat = 14
+    static let spacing: CGFloat = 23
+    private(set) var buttons: [WindowControlButton] = []
+    private(set) var groupHovered = false
     private var hoverArea: NSTrackingArea?
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        if window == nil { restoreButtons() } else { installButtons() }
+    private var observers: [NSObjectProtocol] = []
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        buttons = ChromeWindowView.buttonTypes.map { WindowControlButton(kind: $0) }
+        buttons.forEach(addSubview)
     }
-    func installButtons() {
-        guard let window else { return }
-        if originals.isEmpty {
-        for type in ChromeWindowView.buttonTypes {
-            guard let button = window.standardWindowButton(type), let parent = button.superview else { continue }
-            originals.append(Original(button: button, parent: parent, frame: button.frame, bounds: button.bounds))
-            addSubview(button)
-        }
-        }
-        for original in originals where original.button.superview !== self {
-            addSubview(original.button)
-        }
-        positionButtons()
-        updateMonochromeAppearance()
-    }
-    private func positionButtons() {
-        for (index, original) in originals.enumerated() {
-            let size = NSSize(width: original.frame.width * 1.15, height: original.frame.height * 1.15)
-            original.button.frame = NSRect(x: CGFloat(index) * 24, y: (bounds.height - size.height) / 2, width: size.width, height: size.height)
-            original.button.bounds = original.bounds
-        }
-    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override var mouseDownCanMoveWindow: Bool { false }
     override func layout() {
         super.layout()
-        positionButtons()
+        for (index, button) in buttons.enumerated() {
+            button.frame = NSRect(x: CGFloat(index) * Self.spacing, y: ((bounds.height - Self.diameter) / 2).rounded(),
+                                  width: Self.diameter, height: Self.diameter)
+        }
     }
-    // Zen's mono-window-controls uses three theme-colored dots until hover,
-    // then reveals the real macOS controls. Keep AppKit actions and accessibility.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers.removeAll()
+        guard let window else { return }
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.buttons.forEach { $0.needsDisplay = true } }
+            })
+        }
+    }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let hoverArea { removeTrackingArea(hoverArea) }
-        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect], owner: self)
         addTrackingArea(area)
         hoverArea = area
-        updateMonochromeAppearance()
     }
-    override func mouseEntered(with event: NSEvent) {
-        updateHoverState(at: convert(event.locationInWindow, from: nil))
-    }
+    override func mouseEntered(with event: NSEvent) { updateHoverState(at: convert(event.locationInWindow, from: nil)) }
+    override func mouseMoved(with event: NSEvent) { updateHoverState(at: convert(event.locationInWindow, from: nil)) }
     override func mouseExited(with event: NSEvent) { updateHoverState(at: nil) }
-    private func updateMonochromeAppearance() {
-        guard let window else { return }
-        updateHoverState(at: convert(window.mouseLocationOutsideOfEventStream, from: nil))
-    }
     func updateHoverState(at point: NSPoint?) {
-        controlsHovered = point.map { bounds.contains($0) } ?? false
-        for original in originals {
-            original.button.wantsLayer = true
-            original.button.layer?.opacity = controlsHovered ? 1 : 0
+        let hovered = point.map { bounds.contains($0) } ?? false
+        guard hovered != groupHovered else { return }
+        groupHovered = hovered
+        buttons.forEach { $0.needsDisplay = true }
+    }
+}
+
+@MainActor
+final class WindowControlButton: NSButton {
+    let kind: NSWindow.ButtonType
+    init(kind: NSWindow.ButtonType) {
+        self.kind = kind
+        super.init(frame: .zero)
+        isBordered = false
+        title = ""
+        setButtonType(.momentaryChange)
+        focusRingType = .none
+        target = self
+        action = #selector(performWindowAction)
+        let label: String = switch kind {
+        case .closeButton: "Close"
+        case .miniaturizeButton: "Minimize"
+        default: "Full Screen"
         }
-        needsDisplay = true
+        setAccessibilityLabel(label)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override var isHighlighted: Bool { didSet { needsDisplay = true } }
+    @objc private func performWindowAction() {
+        guard let window else { return }
+        switch kind {
+        case .closeButton: window.performClose(nil)
+        case .miniaturizeButton: window.performMiniaturize(nil)
+        default:
+            if NSEvent.modifierFlags.contains(.option) { window.performZoom(nil) } else { window.toggleFullScreen(nil) }
+        }
+    }
+    private var fill: NSColor {
+        switch kind {
+        case .closeButton: NSColor(srgbRed: 1, green: 0.373, blue: 0.341, alpha: 1)
+        case .miniaturizeButton: NSColor(srgbRed: 0.996, green: 0.737, blue: 0.180, alpha: 1)
+        default: NSColor(srgbRed: 0.157, green: 0.784, blue: 0.251, alpha: 1)
+        }
     }
     override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        if controlsHovered {
-            NSColor.labelColor.withAlphaComponent(0.06).setFill()
-            NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 3), xRadius: 8, yRadius: 8).fill()
+        let hovered = (superview as? WindowButtonsView)?.groupHovered ?? false
+        if hovered, let image = NativeWindowButtonArtwork.image(kind, pressed: isHighlighted, appearance: effectiveAppearance) {
+            image.draw(in: bounds)
             return
         }
-        NSColor.labelColor.withAlphaComponent(window?.isKeyWindow == true ? 0.28 : 0.16).setFill()
-        for original in originals {
-            let center = original.button.frame
-            NSBezierPath(ovalIn: NSRect(x: center.midX - 7, y: center.midY - 7, width: 14, height: 14)).fill()
+        if hovered {
+            fill.setFill()
+            NSBezierPath(ovalIn: bounds).fill()
+            return
         }
+        // Flat, borderless dot while idle.
+        NSColor.labelColor.withAlphaComponent(window?.isKeyWindow == true ? 0.26 : 0.15).setFill()
+        NSBezierPath(ovalIn: bounds).fill()
     }
-    func restoreButtons() {
-        for original in originals {
-            original.button.layer?.opacity = 1
-            original.parent.addSubview(original.button)
-            original.button.frame = original.frame
-            original.button.bounds = original.bounds
-        }
-        originals.removeAll()
+}
+
+/// Snapshots of AppKit's real traffic-light artwork (Liquid Glass on current macOS),
+/// rendered offscreen at high resolution so hovered controls look native while their
+/// geometry stays ours.
+@MainActor
+enum NativeWindowButtonArtwork {
+    private final class GroupHost: NSView {
+        // Native buttons draw their glyphs only when their group reports hover.
+        @objc(_mouseInGroup:) func mouseInGroup(_ button: NSButton) -> Bool { true }
+    }
+    private static var cache: [String: NSImage] = [:]
+    static func image(_ kind: NSWindow.ButtonType, pressed: Bool, appearance: NSAppearance) -> NSImage? {
+        let name = appearance.bestMatch(from: [.darkAqua, .aqua]) ?? .aqua
+        let key = "\(kind.rawValue)-\(pressed)-\(name.rawValue)"
+        if let cached = cache[key] { return cached }
+        let mask: NSWindow.StyleMask = [.titled, .closable, .miniaturizable, .resizable]
+        guard let button = NSWindow.standardWindowButton(kind, for: mask) else { return nil }
+        let size = button.frame.size
+        let host = GroupHost(frame: NSRect(origin: .zero, size: size))
+        host.appearance = NSAppearance(named: name)
+        button.setFrameOrigin(.zero)
+        host.addSubview(button)
+        button.isHighlighted = pressed
+        let scale: CGFloat = 4
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * scale), pixelsHigh: Int(size.height * scale),
+                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                         colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return nil }
+        rep.size = size
+        host.cacheDisplay(in: host.bounds, to: rep)
+        let image = NSImage(size: size)
+        image.addRepresentation(rep)
+        cache[key] = image
+        return image
     }
 }
 

@@ -4,11 +4,15 @@ import LectureCore
 enum NotebookColor: String, CaseIterable, Identifiable {
     case red, orange, yellow, green, mint, teal, blue, indigo, purple, pink, brown
     var id: String { rawValue }
+    /// Explicit swatches: several system colours (pink vs red, mint vs teal,
+    /// indigo vs blue) are too close in dark mode to match their names.
     var color: Color {
-        switch self {
-        case .red: .red; case .orange: .orange; case .yellow: .yellow; case .green: .green; case .mint: .mint
-        case .teal: .teal; case .blue: .blue; case .indigo: .indigo; case .purple: .purple; case .pink: .pink; case .brown: .brown
+        let hex: UInt32 = switch self {
+        case .red: 0xFF3B30; case .orange: 0xFF9500; case .yellow: 0xFFD60A; case .green: 0x34C759
+        case .mint: 0x7FE5C8; case .teal: 0x138D90; case .blue: 0x0A84FF; case .indigo: 0x4B3FD1
+        case .purple: 0x9B51E0; case .pink: 0xFF7EB9; case .brown: 0x8E6A45
         }
+        return Color(red: Double(hex >> 16 & 0xFF) / 255, green: Double(hex >> 8 & 0xFF) / 255, blue: Double(hex & 0xFF) / 255)
     }
     func title(_ language: String) -> String {
         let en = language == "en"

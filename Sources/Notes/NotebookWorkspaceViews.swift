@@ -64,6 +64,27 @@ struct ChatWorkingIndicator: View {
     }
 }
 
+/// Quiet per-notebook activity cue for the sidebar; the top status bar carries detail.
+struct NotebookActivityDot: View {
+    @ObservedObject var assistant: NotebookAssistantController
+    let notebook: Notebook
+    @AppStorage("notes.accent") private var accent = ""
+    @AppStorage("notes.language") private var language = "es"
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        if assistant.runningCount(in: notebook) > 0 {
+            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { context in
+                let phase = reduceMotion ? 1 : (sin(context.date.timeIntervalSinceReferenceDate * .pi / 0.9) + 1) / 2
+                Circle().fill(NotebookAccent.color(accent)).opacity(0.45 + 0.55 * phase)
+            }.frame(width: 6, height: 6)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(language == "en" ? "Working" : "Trabajando")
+                .help(language == "en" ? "Chat working" : "Chat trabajando")
+                .accessibilityIdentifier("notebook.activity." + notebook.id)
+        }
+    }
+}
+
 struct NotebookHomePicker: View {
     @ObservedObject var model: Workbench
     @ObservedObject var assistant: NotebookAssistantController
@@ -94,7 +115,6 @@ struct NotebookHomePicker: View {
                         }.frame(height: 3)
                     }
                     .contentShape(Rectangle())
-                if assistant.runningCount(in: model.currentNotebook) > 0 { ChatWorkingIndicator() }
             }
         }.buttonStyle(.plain)
             .onHover { titleHovered = $0 }
@@ -169,7 +189,6 @@ struct NotebookChatPicker: View {
                 HStack(spacing: 7) {
                     Image(systemName: "bubble.left.and.bubble.right").foregroundStyle(.secondary)
                     Text(title).lineLimit(1).truncationMode(.tail).frame(width: titleWidth, alignment: .leading)
-                    if assistant.runningCount(in: notebook) > 0 { ChatWorkingIndicator() }
                     Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
                 }.padding(.horizontal, 10).padding(.vertical, 8)
                     .modifier(NotebookInputSurface(radius: 7))

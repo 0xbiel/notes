@@ -47,33 +47,30 @@ final class CompactChromeTests: XCTestCase {
         chrome.update(now: 11.1, sidebarHit: false, toolbarHit: false, hold: false)
         XCTAssertFalse(chrome.toolbarVisible)
     }
-    @MainActor func testWindowButtonsLiveInsideSidebarAndRestore() {
+    @MainActor func testCustomWindowButtonsKeepFixedGeometryOnHover() {
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 940, height: 620), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let button = window.standardWindowButton(.closeButton)!
-        let originalParent = button.superview
-        let host = WindowButtonsView(frame: NSRect(x: 18, y: 550, width: 76, height: 44))
+        let native = window.standardWindowButton(.closeButton)!
+        let nativeParent = native.superview
+        let host = WindowButtonsView(frame: NSRect(x: 18, y: 550, width: 76, height: 34))
         window.contentView?.addSubview(host)
         host.layoutSubtreeIfNeeded()
-        XCTAssertTrue(button.superview === host)
-        XCTAssertTrue(host.bounds.contains(button.frame))
+        XCTAssertTrue(native.superview === nativeParent)
+        XCTAssertEqual(host.buttons.count, 3)
+        let idle = host.buttons.map(\.frame)
+        for (index, frame) in idle.enumerated() {
+            XCTAssertEqual(frame.size, NSSize(width: 14, height: 14))
+            XCTAssertEqual(frame.minX, CGFloat(index) * 23)
+            XCTAssertTrue(host.bounds.contains(frame))
+        }
         host.updateHoverState(at: NSPoint(x: host.bounds.midX, y: host.bounds.midY))
-        for type in ChromeWindowView.buttonTypes {
-            XCTAssertEqual(window.standardWindowButton(type)?.layer?.opacity, 1)
-        }
+        XCTAssertTrue(host.groupHovered)
+        host.layoutSubtreeIfNeeded()
+        XCTAssertEqual(host.buttons.map(\.frame), idle)
         host.updateHoverState(at: nil)
-        for type in ChromeWindowView.buttonTypes {
-            XCTAssertEqual(window.standardWindowButton(type)?.layer?.opacity, 0)
-        }
-        XCTAssertTrue(CompactChrome().sidebarVisible)
-        originalParent?.addSubview(button)
-        button.setFrameOrigin(NSPoint(x: 0, y: 0))
-        host.installButtons()
-        XCTAssertTrue(button.superview === host)
-        XCTAssertEqual(button.frame.midY, host.bounds.midY)
-        host.restoreButtons()
-        XCTAssertTrue(button.superview === originalParent)
+        XCTAssertFalse(host.groupHovered)
+        XCTAssertEqual(host.buttons.map(\.kind), ChromeWindowView.buttonTypes)
         window.close()
     }
     @MainActor func testEnteringCompactClearsPinAndCloseStaysClosedUntilPointerExit() {
@@ -90,7 +87,7 @@ final class CompactChromeTests: XCTestCase {
         chrome.update(now: 3, sidebarHit: true, toolbarHit: false, hold: false)
         XCTAssertFalse(chrome.sidebarVisible)
     }
-    @MainActor func testNativeButtonsStayAvailableWithCollapsedSidebarWithoutReplacingEditor() {
+    @MainActor func testNativeButtonsStayInSidebarWithoutReplacingEditor() {
         _ = NSApplication.shared
         let chrome = CompactChrome()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 940, height: 620), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
@@ -104,13 +101,22 @@ final class CompactChromeTests: XCTestCase {
         let bridge = ChromeWindowView(chrome: chrome)
         window.contentView?.addSubview(bridge)
         chrome.toggleCompact(); bridge.syncButtons()
-        for type in ChromeWindowView.buttonTypes { XCTAssertEqual(window.standardWindowButton(type)?.isHidden, false) }
+        for type in ChromeWindowView.buttonTypes { XCTAssertEqual(window.standardWindowButton(type)?.isHidden, true) }
+        chrome.update(now: 0, sidebarHit: false, toolbarHit: true, hold: false)
+        bridge.syncButtons()
+        XCTAssertFalse(chrome.sidebarVisible)
+        for type in ChromeWindowView.buttonTypes { XCTAssertEqual(window.standardWindowButton(type)?.isHidden, true) }
+        chrome.update(now: 1, sidebarHit: false, toolbarHit: false, hold: false)
+        chrome.update(now: 2.1, sidebarHit: false, toolbarHit: false, hold: false)
+        bridge.syncButtons()
+        for type in ChromeWindowView.buttonTypes { XCTAssertEqual(window.standardWindowButton(type)?.isHidden, true) }
         XCTAssertTrue(window.styleMask.contains(.fullSizeContentView))
         XCTAssertTrue(window.firstResponder === editor)
         XCTAssertEqual(editor.selectedRange(), selected)
         chrome.toggleSidebar(); bridge.syncButtons()
-        for type in ChromeWindowView.buttonTypes { XCTAssertEqual(window.standardWindowButton(type)?.isHidden, false) }
+        for type in ChromeWindowView.buttonTypes { XCTAssertEqual(window.standardWindowButton(type)?.isHidden, true) }
         bridge.detach()
+        for type in ChromeWindowView.buttonTypes { XCTAssertEqual(window.standardWindowButton(type)?.isHidden, false) }
         XCTAssertFalse(window.styleMask.contains(.fullSizeContentView))
         XCTAssertEqual(window.titleVisibility, .visible)
         XCTAssertEqual(editor.string, "Acción, niño y cafe\u{301}")
