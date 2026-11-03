@@ -20,6 +20,11 @@ struct WorkbenchView: View {
         chrome.compact && chrome.sidebarVisible ? sidebarWidth + CompactLayout.horizontalInset - 8 : 0
     }
 
+    private var splitDocuments: Bool {
+        model.selectedLibraryPath != nil && !model.mapVisible && !model.showPreferences
+            && model.documentWorkspace.visibleIDs.count > 1
+    }
+
     var body: some View {
         ZStack(alignment: .topLeading) {
             HStack(spacing: 0) {
@@ -48,9 +53,13 @@ struct WorkbenchView: View {
                 .overlay {
                     if model.showPreferences { NotebookPreferences(model: model, section: $preferencesSection) }
                 }
-                .background(Color(nsColor: .textBackgroundColor))
+                .background(splitDocuments ? Color.clear : Color(nsColor: .textBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 14))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(.separator.opacity(0.25)))
+                .overlay {
+                    if !splitDocuments {
+                        RoundedRectangle(cornerRadius: 14).stroke(.separator.opacity(0.25))
+                    }
+                }
                 .shadow(color: .black.opacity(0.12), radius: 5, y: 2)
                 .padding(8)
                 .overlay(alignment: .top) {
@@ -83,13 +92,13 @@ struct WorkbenchView: View {
                 OnboardingView(model: model).frame(maxWidth: .infinity, maxHeight: .infinity).transition(.opacity)
             }
             // The real window buttons sit where the sidebar header leaves room, above the introduction.
-            let sidebarControls = chrome.compact && !model.showOnboarding
+            let sidebarControls = chrome.compact && chrome.sidebarVisible && !model.showOnboarding
             NativeWindowControls(chrome: chrome).frame(width: 76, height: 34)
                 .padding(.leading, 18 + (sidebarControls ? CompactLayout.horizontalInset : 0))
                 .padding(.top, sidebarControls ? CompactLayout.verticalInset + 8 : 12)
                 .opacity(chrome.sidebarVisible || model.showOnboarding ? 1 : 0)
-                .offset(x: chrome.sidebarVisible || model.showOnboarding ? 0 : -sidebarWidth)
                 .allowsHitTesting(chrome.sidebarVisible || model.showOnboarding)
+                .accessibilityHidden(!chrome.sidebarVisible && !model.showOnboarding)
         }
         .tint(.gray).accentColor(.gray)
         .background(NotebookAccentCaret())
@@ -455,6 +464,7 @@ struct CourseSidebar: View {
                                     .lineLimit(2).truncationMode(.tail).fixedSize(horizontal: false, vertical: true)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 Spacer(minLength: 2)
+                                if let assistant = model.assistant { NotebookActivityDot(assistant: assistant, notebook: notebook) }
                                 Text("\(model.fileNames(in: notebook).filter { LibraryContentFilter.notes.includes(path: $0) }.count)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                             }.padding(.vertical, 6).padding(.leading, 8).padding(.trailing, 2).contentShape(Rectangle())
                                 // The native outline arrow follows the label baseline; anchor it to the row center.
