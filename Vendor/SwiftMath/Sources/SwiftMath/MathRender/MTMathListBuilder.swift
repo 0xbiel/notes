@@ -435,7 +435,7 @@ public struct MTMathListBuilder {
                     if let lowerLabel = arrow.lowerLabel { str += "[\(mathListToString(lowerLabel))]" }
                     str += "{\(mathListToString(arrow.upperLabel ?? MTMathList()))}"
                 } else if atom.type == .boxed, let box = atom as? MTBox, let innerList = box.innerList {
-                    str += "\\boxed{\(mathListToString(innerList))}"
+                    str += "\\" + (box.underbrace ? "underbrace" : "boxed") + "{\(mathListToString(innerList))}"
                 } else if atom.type == .overline {
                     if let overline = atom as? MTOverLine {
                         str += "\\overline"
@@ -582,8 +582,9 @@ public struct MTMathListBuilder {
             let newInner = currentInnerAtom;
             currentInnerAtom = oldInner;
             return newInner;
-        } else if command == "boxed" {
+        } else if command == "boxed" || command == "underbrace" {
             let box = MTBox()
+            box.underbrace = command == "underbrace"
             box.innerList = self.buildInternal(true)
             return box
         } else if command == "overline" {
@@ -863,8 +864,9 @@ public struct MTMathListBuilder {
             let newInner = self.currentInnerAtom
             currentInnerAtom = oldInner
             return newInner
-        } else if command == "boxed" {
+        } else if command == "boxed" || command == "underbrace" {
             let box = MTBox()
+            box.underbrace = command == "underbrace"
             box.innerList = self.buildInternal(true)
             return box
         } else if command == "overline" {

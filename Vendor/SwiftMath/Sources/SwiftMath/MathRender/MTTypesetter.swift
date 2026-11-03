@@ -574,12 +574,14 @@ class MTTypesetter {
                     self.addInterElementSpace(prevNode, currentType: .ordinary)
                     let box = atom as! MTBox
                     let inner = MTTypesetter.createLineForMathList(box.innerList, font: font, style: style)!
-                    let display = MTBoxDisplay(inner: inner, padding: styleFont.fontSize * 0.2, lineThickness: max(0.5, styleFont.fontSize * 0.04), range: box.indexRange)
+                    let display: MTDisplay = box.underbrace ? MTUnderbraceDisplay(inner: inner, label: box.subScript.flatMap { MTTypesetter.createLineForMathList($0, font: font, style: self.scriptStyle()) }, fontSize: styleFont.fontSize, range: box.indexRange) : MTBoxDisplay(inner: inner, padding: styleFont.fontSize * 0.2, lineThickness: max(0.5, styleFont.fontSize * 0.04), range: box.indexRange)
                     display.position = currentPosition
                     displayAtoms.append(display)
                     currentPosition.x += display.width
-                    if atom.subScript != nil || atom.superScript != nil {
-                        self.makeScripts(atom, display: display, index: UInt(box.indexRange.location), delta: 0)
+                    if (!box.underbrace && atom.subScript != nil) || atom.superScript != nil {
+                        let scripted: MTMathAtom = box.copy()
+                        if box.underbrace { scripted.subScript = nil }
+                        self.makeScripts(scripted, display: display, index: UInt(box.indexRange.location), delta: 0)
                     }
 
                 case .radical:

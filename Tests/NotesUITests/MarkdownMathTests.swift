@@ -6,6 +6,45 @@ import LectureCore
 @testable import Notes
 
 final class MarkdownMathTests: XCTestCase {
+    @MainActor func testDebtEquationUnderbracesRenderWithoutChangingSource() throws {
+        let source = #"$$\underbrace{59.400}_{\text{deuda inicial}}-\underbrace{29.792,09}_{\text{parte a largo}}=\boxed{29.607,91\text{ € a corto}}$$"#
+        let span = try XCTUnwrap(MarkdownMath.spans(in: source).first)
+        let render = try XCTUnwrap(MarkdownMathRenderer.render(span, source: source))
+        XCTAssertGreaterThan(render.descent, 10)
+        XCTAssertEqual(MarkdownMathText.attributed(source).string, "\u{fffc}")
+        XCTAssertEqual(NotebookChatMarkdown.blocks(source).map(\.kind), ["math"])
+        let view = MarkdownTextView(frame: NSRect(x: 0, y: 0, width: 900, height: 200))
+        view.string = source; view.liveEditing = false; view.renderMarkdown()
+        XCTAssertEqual(view.string, source)
+        XCTAssertEqual(view.renderedMath.count, 1)
+        for formula in [#"\underbrace{x}"#, #"\underbrace{\frac{1}{2}}_{n}^{2}"#, #"\underbrace{\underbrace{x}_{a}+y}_{\text{long label}}"#] {
+            let list = try XCTUnwrap(MTMathListBuilder.build(fromString: formula))
+            let serialized = MTMathListBuilder.mathListToString(list)
+            XCTAssertTrue(serialized.contains(#"\underbrace"#))
+            let roundTrip = "$" + serialized + "$"
+            XCTAssertNotNil(MarkdownMathRenderer.render(try XCTUnwrap(MarkdownMath.spans(in: roundTrip).first), source: roundTrip))
+        }
+    }
+
+    @MainActor func testDebtReconciliationWithLongUnderbraceLabels() throws {
+        let source = #"$$\underbrace{29.607,92}_{\text{saldo inicial}}+\underbrace{174,55+217,53}_{\text{aumentos por implícitos}}=\underbrace{30.000}_{\text{capital que cancelas al pagar}}$$"#
+        let span = try XCTUnwrap(MarkdownMath.spans(in: source).first)
+        let render = try XCTUnwrap(MarkdownMathRenderer.render(span, source: source))
+        XCTAssertGreaterThan(render.descent, 10)
+        for width: CGFloat in [320, 700] {
+            let attributed = MarkdownMathText.attributed(source, mathWidth: width)
+            XCTAssertEqual(attributed.string, "\u{fffc}")
+            let attachment = try XCTUnwrap(attributed.attribute(.attachment, at: 0, effectiveRange: nil) as? NSTextAttachment)
+            XCTAssertLessThanOrEqual(attachment.bounds.width, width)
+            XCTAssertGreaterThan(attachment.bounds.height, 0)
+        }
+        let view = MarkdownTextView(frame: NSRect(x: 0, y: 0, width: 700, height: 200))
+        view.string = source; view.liveEditing = false; view.renderMarkdown()
+        XCTAssertEqual(view.string, source)
+        XCTAssertEqual(view.renderedMath.count, 1)
+        XCTAssertEqual(NotebookChatMarkdown.blocks(source).map(\.kind), ["math"])
+    }
+
     @MainActor func testLabeledArrowScreenshotRendersWithoutChangingSource() throws {
         let formulas = [Self.labeledArrowFormula, #"a\xrightarrow{N\to\infty}b"#,
                         #"a\xrightarrow[\text{below}]{\text{long label above}}b"#,
