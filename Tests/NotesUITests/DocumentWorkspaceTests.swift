@@ -294,6 +294,20 @@ final class DocumentWorkspaceTests: XCTestCase {
         try click(at: editor.convert(NSPoint(x: 80, y: 25), to: nil))
         XCTAssertEqual(model.selectedNote, "First.md", "Clicking a native editor must activate its pane before editing")
         let chatView = try XCTUnwrap(observers.first?.excluding.view)
+        func assertComposerCentered(file: StaticString = #filePath, line: UInt = #line) {
+            let rect = chatView.convert(chatView.bounds, to: host)
+            XCTAssertEqual(rect.midX, host.bounds.midX, accuracy: 1, file: file, line: line)
+            XCTAssertGreaterThan(rect.width, 0, file: file, line: line)
+        }
+        assertComposerCentered()
+        if case .split(let id, _, _, _, _) = model.documentWorkspace.root {
+            model.documentWorkspace.root = model.documentWorkspace.root?.resizing(id, fraction: 0.3)
+        }
+        try await settle()
+        assertComposerCentered()
+        window.setContentSize(NSSize(width: 900, height: 680))
+        try await settle()
+        assertComposerCentered()
         try click(at: chatView.convert(NSPoint(x: 40, y: chatView.bounds.midY), to: nil))
         XCTAssertEqual(model.selectedNote, "First.md", "Clicking the shared composer must not activate the pane underneath it")
         editor.insertText("Typed in first pane", replacementRange: NSRange(location: 0, length: 0))

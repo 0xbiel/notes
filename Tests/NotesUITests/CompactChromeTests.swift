@@ -58,6 +58,14 @@ final class CompactChromeTests: XCTestCase {
         host.layoutSubtreeIfNeeded()
         XCTAssertTrue(button.superview === host)
         XCTAssertTrue(host.bounds.contains(button.frame))
+        host.updateHoverState(at: NSPoint(x: host.bounds.midX, y: host.bounds.midY))
+        for type in ChromeWindowView.buttonTypes {
+            XCTAssertEqual(window.standardWindowButton(type)?.layer?.opacity, 1)
+        }
+        host.updateHoverState(at: nil)
+        for type in ChromeWindowView.buttonTypes {
+            XCTAssertEqual(window.standardWindowButton(type)?.layer?.opacity, 0)
+        }
         XCTAssertTrue(CompactChrome().sidebarVisible)
         originalParent?.addSubview(button)
         button.setFrameOrigin(NSPoint(x: 0, y: 0))
@@ -82,7 +90,7 @@ final class CompactChromeTests: XCTestCase {
         chrome.update(now: 3, sidebarHit: true, toolbarHit: false, hold: false)
         XCTAssertFalse(chrome.sidebarVisible)
     }
-    @MainActor func testNativeButtonsHideAndRestoreWithoutReplacingEditor() {
+    @MainActor func testNativeButtonsStayAvailableWithCollapsedSidebarWithoutReplacingEditor() {
         _ = NSApplication.shared
         let chrome = CompactChrome()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 940, height: 620), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
@@ -96,7 +104,7 @@ final class CompactChromeTests: XCTestCase {
         let bridge = ChromeWindowView(chrome: chrome)
         window.contentView?.addSubview(bridge)
         chrome.toggleCompact(); bridge.syncButtons()
-        for type in ChromeWindowView.buttonTypes { XCTAssertEqual(window.standardWindowButton(type)?.isHidden, true) }
+        for type in ChromeWindowView.buttonTypes { XCTAssertEqual(window.standardWindowButton(type)?.isHidden, false) }
         XCTAssertTrue(window.styleMask.contains(.fullSizeContentView))
         XCTAssertTrue(window.firstResponder === editor)
         XCTAssertEqual(editor.selectedRange(), selected)

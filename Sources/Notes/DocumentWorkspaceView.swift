@@ -57,6 +57,7 @@ struct DocumentWorkspaceView: View {
                         }
                     }
                 }
+                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
                 .coordinateSpace(name: "document-panes")
                 .overlay(alignment: .bottom) {
                     if model.showsDocumentComposer, let assistant = model.assistant {
@@ -67,9 +68,8 @@ struct DocumentWorkspaceView: View {
                             .padding(.bottom, footerInset)
                     }
                 }
-            }.padding(model.documentWorkspace.visibleIDs.count > 1 ? 6 : 0)
+            }
         }
-        .background(Color.primary.opacity(model.documentWorkspace.visibleIDs.count > 1 ? 0.025 : 0))
         .accessibilityIdentifier("workspace.documents")
         .background(DocumentPaneCloseShortcut(model: model))
     }
@@ -130,9 +130,10 @@ private struct DocumentSplitDivider: View {
     @State private var hovering = false
     var body: some View {
         RoundedRectangle(cornerRadius: 2)
-            .fill(Color.primary.opacity(hovering ? 0.25 : 0.08))
-            .frame(width: axis == .horizontal ? 2 : 30, height: axis == .horizontal ? 30 : 2)
+            .fill(.primary.opacity(hovering ? 0.4 : 0.18))
+            .frame(width: axis == .horizontal ? 2 : 32, height: axis == .horizontal ? 32 : 2)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .animation(.easeOut(duration: 0.12), value: hovering)
             .onHover { inside in
                 hovering = inside
                 if inside { (axis == .horizontal ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).push() }
@@ -149,8 +150,6 @@ private struct DocumentPaneView: View {
     let leadingInset: CGFloat
     let composerRegion: DocumentComposerRegion
     let onFooterHeight: (CGFloat) -> Void
-    @AppStorage("notes.accent") private var accent = ""
-    private var focused: Bool { model.documentWorkspace.focusedID == document.id }
     private var split: Bool { model.documentWorkspace.visibleIDs.count > 1 }
 
     var body: some View {
@@ -160,16 +159,18 @@ private struct DocumentPaneView: View {
         }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(nsColor: .textBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: split ? 9 : 0))
+            .clipShape(RoundedRectangle(cornerRadius: split ? 14 : 0))
             .overlay {
                 if split {
-                    RoundedRectangle(cornerRadius: 9)
-                        .strokeBorder(focused ? NotebookAccent.color(accent).opacity(0.65) : Color.primary.opacity(0.12), lineWidth: focused ? 1.5 : 1)
+                    RoundedRectangle(cornerRadius: 14)
+                        .strokeBorder(.separator.opacity(0.25), lineWidth: 1)
                         .allowsHitTesting(false)
                 }
             }
             .overlay(alignment: .top) {
-                DocumentPaneHandle(model: model, document: document).padding(.top, 1)
+                if split {
+                    DocumentPaneHandle(model: model, document: document).padding(.top, 1)
+                }
             }
             .overlay {
                 if let target = model.documentDropPreview, target.paneID == document.id {

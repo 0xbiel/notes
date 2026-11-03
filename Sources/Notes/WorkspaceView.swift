@@ -17,7 +17,13 @@ struct WorkbenchView: View {
     private let sidebarWidth = CompactLayout.sidebarWidth
     /// The compact sidebar floats over the document, so the title bar starts past it.
     private var titleBarInset: CGFloat {
-        chrome.compact && chrome.sidebarVisible ? sidebarWidth + CompactLayout.horizontalInset - 8 : 0
+        guard chrome.compact else { return 0 }
+        return chrome.sidebarVisible ? sidebarWidth + CompactLayout.horizontalInset - 8 : 88
+    }
+
+    private var splitDocuments: Bool {
+        model.selectedLibraryPath != nil && !model.mapVisible && !model.showPreferences
+            && model.documentWorkspace.visibleIDs.count > 1
     }
 
     var body: some View {
@@ -48,9 +54,13 @@ struct WorkbenchView: View {
                 .overlay {
                     if model.showPreferences { NotebookPreferences(model: model, section: $preferencesSection) }
                 }
-                .background(Color(nsColor: .textBackgroundColor))
+                .background(splitDocuments ? Color.clear : Color(nsColor: .textBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 14))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(.separator.opacity(0.25)))
+                .overlay {
+                    if !splitDocuments {
+                        RoundedRectangle(cornerRadius: 14).stroke(.separator.opacity(0.25))
+                    }
+                }
                 .shadow(color: .black.opacity(0.12), radius: 5, y: 2)
                 .padding(8)
                 .overlay(alignment: .top) {
@@ -87,9 +97,6 @@ struct WorkbenchView: View {
             NativeWindowControls(chrome: chrome).frame(width: 76, height: 34)
                 .padding(.leading, 18 + (sidebarControls ? CompactLayout.horizontalInset : 0))
                 .padding(.top, sidebarControls ? CompactLayout.verticalInset + 8 : 12)
-                .opacity(chrome.sidebarVisible || model.showOnboarding ? 1 : 0)
-                .offset(x: chrome.sidebarVisible || model.showOnboarding ? 0 : -sidebarWidth)
-                .allowsHitTesting(chrome.sidebarVisible || model.showOnboarding)
         }
         .tint(.gray).accentColor(.gray)
         .background(NotebookAccentCaret())

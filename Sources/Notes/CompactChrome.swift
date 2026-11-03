@@ -134,7 +134,7 @@ final class ChromeWindowView: NSView {
         // AppKit can reposition/reparent traffic lights on activation and resizing.
         // Reconcile their native views with the sidebar host after each such layout.
         chrome.windowButtons?.installButtons()
-        for type in Self.buttonTypes { window.standardWindowButton(type)?.isHidden = !chrome.sidebarVisible }
+        for type in Self.buttonTypes { window.standardWindowButton(type)?.isHidden = false }
     }
     func trackPointer() {
         guard let window = attachedWindow, window.isVisible else { return }
@@ -209,6 +209,7 @@ final class WindowButtonsView: NSView {
     }
     private var originals: [Original] = []
     private var controlsHovered = false
+    private var hoverArea: NSTrackingArea?
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window == nil { restoreButtons() } else { installButtons() }
@@ -241,19 +242,37 @@ final class WindowButtonsView: NSView {
     }
     // Zen's mono-window-controls uses three theme-colored dots until hover,
     // then reveals the real macOS controls. Keep AppKit actions and accessibility.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverArea { removeTrackingArea(hoverArea) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        hoverArea = area
+        updateMonochromeAppearance()
+    }
+    override func mouseEntered(with event: NSEvent) {
+        updateHoverState(at: convert(event.locationInWindow, from: nil))
+    }
+    override func mouseExited(with event: NSEvent) { updateHoverState(at: nil) }
     private func updateMonochromeAppearance() {
         guard let window else { return }
-        let hovered = bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
-        if hovered != controlsHovered { controlsHovered = hovered; needsDisplay = true }
+        updateHoverState(at: convert(window.mouseLocationOutsideOfEventStream, from: nil))
+    }
+    func updateHoverState(at point: NSPoint?) {
+        controlsHovered = point.map { bounds.contains($0) } ?? false
         for original in originals {
             original.button.wantsLayer = true
-            original.button.layer?.opacity = hovered ? 1 : 0
+            original.button.layer?.opacity = controlsHovered ? 1 : 0
         }
         needsDisplay = true
     }
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        guard !controlsHovered else { return }
+        if controlsHovered {
+            NSColor.labelColor.withAlphaComponent(0.06).setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 3), xRadius: 8, yRadius: 8).fill()
+            return
+        }
         NSColor.labelColor.withAlphaComponent(window?.isKeyWindow == true ? 0.28 : 0.16).setFill()
         for original in originals {
             let center = original.button.frame
